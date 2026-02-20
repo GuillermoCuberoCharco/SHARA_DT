@@ -1,0 +1,43 @@
+{
+  "name": "vishara-server",
+  "version": "1.0.0",
+  "description": "Backend server for ViSHARA application",
+  "main": "server.js",
+  "scripts": {
+    "build": "npm install",
+    "dev": "nodemon server.js",
+    "start": "node server.js"
+  },
+  "keywords": [
+    "vishara",
+    "server",
+    "ai",
+    "chat",
+    "voice"
+  ],
+  "author": "Guillermo Cubero Charco",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google-cloud/speech": "^6.7.0",
+    "@google-cloud/text-to-speech": "^5.8.0",
+    "axios": "^0.27.2",
+    "axios-cookiejar-support": "^4.0.3",
+    "body-parser": "^1.20.3",
+    "canvas": "^2.11.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "socket.io": "^4.8.1",
+    "ws": "^8.18.0",
+    "@vladmandic/face-api": "^1.7.13",
+    "openai": "4.86.1",
+    "@tensorflow/tfjs-node": "^4.17.0",
+    "@tensorflow/tfjs-core": "^4.17.0",
+    "@tensorflow/tfjs-data": "^4.17.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

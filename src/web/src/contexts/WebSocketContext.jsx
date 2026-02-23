@@ -1,5 +1,18 @@
+/**
+ * WebSocketContext
+ *
+ * Connects to the Flask-SocketIO server /message namespace.
+ *
+ * Migration note (Node.js → Flask):
+ *   Before: io(SERVER_URL, { path: '/message-socket' })
+ *   After:  io(SERVER_URL + '/message')   ← Socket.IO namespace syntax
+ *
+ * The namespace approach is idiomatic for Flask-SocketIO and requires
+ * no path configuration — the namespace is part of the URL.
+ */
+
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import io from "socket.io-client";
+import { io } from "socket.io-client";
 import { SERVER_URL } from "../config";
 
 const WebSocketContext = createContext(null);
@@ -18,139 +31,87 @@ export const WebSocketProvider = ({ children, handlers }) => {
     const socketRef = useRef(null);
 
     useEffect(() => {
-        console.log('Initializing WebSocket connection at:', SERVER_URL);
+        console.log('[WebSocket] Connecting to:', SERVER_URL + '/message');
 
         if (!socketRef.current || !socketRef.current.connected) {
-
-            const newSocket = io(SERVER_URL, {
-                path: '/message-socket',
+            // Flask-SocketIO namespace: SERVER_URL + '/message'
+            const newSocket = io(`${SERVER_URL}/message`, {
                 transports: ['websocket', 'polling'],
-                reconnectionAttempts: 5,
+                reconnectionAttempts: 10,
                 reconnectionDelay: 1000,
                 timeout: 20000,
-                autoConnect: true
+                autoConnect: true,
             });
-
             socketRef.current = newSocket;
         }
 
         const socket = socketRef.current;
-
         socket.removeAllListeners();
 
         socket.on('connect', () => {
-            console.log('WebSocket connected with id:', socket.id);
+            console.log('[WebSocket] Connected:', socket.id);
             setIsConnected(true);
             socket.emit('register_client', { client: 'web' });
         });
 
         socket.on('disconnect', (reason) => {
-            console.log('WebSocket disconnected:', reason);
+            console.log('[WebSocket] Disconnected:', reason);
             setIsConnected(false);
             setIsRegistered(false);
 
             setTimeout(() => {
-                if (socket.current && !socket.connected) {
+                if (socketRef.current && !socket.connected) {
                     socket.connect();
                 }
             }, 1000);
         });
 
-        socket.on('registration_success', (data) => {
-            console.log('WebSocket registered successfully');
+        socket.on('registration_success', () => {
+            console.log('[WebSocket] Registered successfully');
             setIsRegistered(true);
-            if (handlers && handlers.handleRegistrationSuccess) {
-                handlers.handleRegistrationSuccess();
-            }
+            handlers?.handleRegistrationSuccess?.();
         });
 
-        if (handlers) {
-            if (handlers.handleRobotMessage) {
-                socket.on('robot_message', (message) => {
-                    console.log('Received robot message:', message);
-                    try {
-                        handlers.handleRobotMessage(message);
-                    } catch (error) {
-                        console.error('Error handling robot message:', error);
-                    }
-                });
-            }
+        socket.on('connect_error', (error) => {
+            console.error('[WebSocket] Connection error:', error);
+            handlers?.handleConnectError?.(error);
+        });
 
-            if (handlers.handleWizardMessage) {
-                socket.on('wizard_message', (message) => {
-                    console.log('Received wizard message:', message);
-                    try {
-                        handlers.handleWizardMessage(message);
-                    } catch (error) {
-                        console.error('Error handling wizard message:', error);
-                    }
-                });
-            }
-
-            if (handlers.handleClientMessage) {
-                socket.on('client_message', (message) => {
-                    console.log('Sended client message:', message);
-                    try {
-                        handlers.handleClientMessage(message);
-                    } catch (error) {
-                        console.error('Error handling client message:', error);
-                    }
-                });
-            }
-
-            if (handlers.handleConnectError) {
-                socket.on('connect_error', (error) => {
-                    console.error('WebSocket connection error:', error);
-                    try {
-                        handlers.handleConnectError(error);
-                    } catch (error) {
-                        console.error('Error handling error message:', error);
-                    }
-                });
-            }
-        }
-
-        socket.on('reconnect_attempt', (attemptNumber) => {
-            console.log(`Reconnecting... Attempt ${attemptNumber}`);
+        socket.on('reconnect_attempt', (attempt) => {
+            console.log(`[WebSocket] Reconnecting... attempt ${attempt}`);
         });
 
         socket.on('reconnect', () => {
-            console.log('Reconnected to WebSocket');
+            console.log('[WebSocket] Reconnected');
             socket.emit('register_client', { client: 'web' });
         });
 
         socket.on('error', (error) => {
-            console.error('WebSocket error:', error);
+            console.error('[WebSocket] Error:', error);
         });
 
         return () => {
-            console.log('Cleaning up WebSocket connection...');
-            if (socketRef.current) {
-                socketRef.current.removeAllListeners();
-            }
+            socket.removeAllListeners();
         };
     }, [handlers]);
 
     const emit = (event, data) => {
-        if (socketRef.current && socketRef.current.connected) {
+        if (socketRef.current?.connected) {
             socketRef.current.emit(event, data);
             return true;
-        } else {
-            console.error('WebSocket is not connected');
-            return false;
         }
-    };
-
-    const value = {
-        socket: socketRef.current,
-        isConnected,
-        isRegistered,
-        emit,
-        id: socketRef.current?.id
+        console.error('[WebSocket] Cannot emit — not connected');
+        return false;
     };
 
     return (
-        <WebSocketContext.Provider value={value}>
+        <WebSocketContext.Provider value={{
+            socket: socketRef.current,
+            isConnected,
+            isRegistered,
+            emit,
+            id: socketRef.current?.id,
+        }}>
             {children}
         </WebSocketContext.Provider>
     );

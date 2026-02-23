@@ -1,7 +1,4 @@
 import PropTypes from 'prop-types';
-import React from 'react';
-import { ReactMic } from 'react-mic';
-import { AUDIO_SETTINGS } from '../../../config';
 
 const AudioControls = ({
     isRecording,
@@ -11,19 +8,6 @@ const AudioControls = ({
     onStopRecording
 }) => (
     <div className="audio-controls">
-        <div className="sound-wave-container">
-            <ReactMic
-                record={isRecording}
-                className="sound-wave"
-                onData={() => { }}
-                strokeColor="#000000"
-                backgroundColor="#FF4081"
-                mimeType={AUDIO_SETTINGS.mimeType}
-                bufferSize={AUDIO_SETTINGS.bufferSize}
-                sampleRate={AUDIO_SETTINGS.sampleRate}
-            />
-        </div>
-
         <button
             onClick={isRecording ? onStopRecording : onStartRecording}
             disabled={isSpeaking || isWaitingResponse}

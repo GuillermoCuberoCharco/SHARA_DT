@@ -1,3 +1,12 @@
+"""
+eyes/draw.py
+
+Drawing functions for the Eyes service.
+
+Same code as the original draw module
+"""
+
+
 import cv2
 import numpy as np
 

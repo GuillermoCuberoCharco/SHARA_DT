@@ -1,3 +1,11 @@
+"""
+eyes/utils.py
+
+Utility functions for the Eyes service.
+
+Same code as the original interpolation module.
+"""
+
 import json
 
 import cv2

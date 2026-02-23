@@ -1,3 +1,13 @@
+"""
+eyes/interpolation.py
+
+Functions to interpolate between two face configurations.
+Used for smooth transitions in the Eyes service when changing expressions or gaze direction.
+
+Same code as the original interpolation module.
+"""
+
+
 import copy
 import math
 

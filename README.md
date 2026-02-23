@@ -2,6 +2,8 @@
 
 A system that enables remote simulation and evaluation of the $\text{SHARA}^3$ social assistive robot through a semi-automatic approach based on the Wizard of Oz (WoZ) methodology. This infrastructure facilitates human-robot interaction evaluation and refinement without the need to deploy physical equipment or proffesionals teams.
 
+The original robot a the code that uses the same services are property of Laura-VFA in the repo (https://github.com/Laura-VFA/Proactive-Shara-Robot)
+
 ![webGeneral](https://github.com/user-attachments/assets/d7968e9e-ac2a-4df3-aac1-479300e9e399)
 
 ## 🤖 General Description

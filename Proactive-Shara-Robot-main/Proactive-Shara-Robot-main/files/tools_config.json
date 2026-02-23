@@ -1,0 +1,38 @@
+[
+  {
+    "type": "function",
+    "description": "Registrar un usuario en el sistema. Esta función solo debe ejecutarse cuando 'proactive_question' en la entrada del usuario es exactamente 'who_are_you_response' y el usuario proporciona explícitamente un nombre. Si la respuesta del usuario es vaga, evita llamar esta función.",
+    "name": "record_face",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "username": {
+          "description": "SOLO el nombre real del usuario. Extrae SOLO el nombre propio de frases como 'me llamo X', 'soy X', 'mi nombre es X'. Por ejemplo: si el usuario dice 'me llamo Maria', extrae 'Maria'. NO incluyas palabras como 'me llamo', 'soy', 'mi nombre es', etc. Ejemplos válidos: 'Maria', 'Juan', 'José Luis'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "username"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "type": "function",
+    "description": "Establecer el nombre de usuario en el sistema. Esta función debe llamarse si el usuario proporciona explícitamente su nombre en la conversación (si la respuesta del usuario es vaga, evita llamar esta función), para actualizar el nombre de usuario y cargar la conversación desde la base de datos.",
+    "name": "set_username",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "username": {
+          "description": "SOLO el nombre real del usuario. Extrae SOLO el nombre propio de frases como 'me llamo X', 'soy X', 'mi nombre es X'. Por ejemplo: si el usuario dice 'me llamo Maria', extrae 'Maria'. NO incluyas palabras como 'me llamo', 'soy', 'mi nombre es', etc. Ejemplos válidos: 'Maria', 'Juan', 'José Luis'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "username"
+      ],
+      "type": "object"
+    }
+  }
+]

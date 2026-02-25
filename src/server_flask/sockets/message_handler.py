@@ -19,8 +19,8 @@ Events emitted to frontend:
 
 import logging
 
-from flask_socketio import Namespace, emit
-from flask import request, join_room
+from flask_socketio import Namespace, emit, join_room
+from flask import request
 
 import state_machine
 

@@ -20,6 +20,7 @@ Events emitted:
 import logging
 
 from flask_socketio import Namespace, emit
+from flask import request
 
 logger = logging.getLogger('VideoHandler')
 
@@ -29,17 +30,17 @@ _clients: dict = {}
 class VideoNamespace(Namespace):
 
     def on_connect(self):
-        logger.info(f'[/video] Client connected: {self.sid}')
-        _clients[self.sid] = {'registered': False}
+        logger.info(f'[/video] Client connected: {request.sid}')
+        _clients[request.sid] = {'registered': False}
 
     def on_disconnect(self):
-        logger.info(f'[/video] Client disconnected: {self.sid}')
-        _clients.pop(self.sid, None)
+        logger.info(f'[/video] Client disconnected: {request.sid}')
+        _clients.pop(request.sid, None)
 
     def on_register(self, data):
         client_type = data.get('client', 'web') if isinstance(data, dict) else str(data)
-        logger.info(f'[/video] Registering {self.sid} as {client_type}')
-        _clients[self.sid]['registered'] = True
+        logger.info(f'[/video] Registering {request.sid} as {client_type}')
+        _clients[request.sid]['registered'] = True
         emit('registration_success', {'status': 'ok', 'role': client_type})
 
     def on_video_frame(self, data):

@@ -19,7 +19,8 @@ Events emitted to frontend:
 
 import logging
 
-from flask_socketio import Namespace, emit, join_room
+from flask_socketio import Namespace, emit
+from flask import request, join_room
 
 import state_machine
 
@@ -32,12 +33,12 @@ _clients: dict = {}
 class MessageNamespace(Namespace):
 
     def on_connect(self):
-        logger.info(f'[/message] Client connected: {self.sid}')
-        _clients[self.sid] = {'registered': False, 'username': None}
+        logger.info(f'[/message] Client connected: {request.sid}')
+        _clients[request.sid] = {'registered': False, 'username': None}
 
     def on_disconnect(self):
-        logger.info(f'[/message] Client disconnected: {self.sid}')
-        _clients.pop(self.sid, None)
+        logger.info(f'[/message] Client disconnected: {request.sid}')
+        _clients.pop(request.sid, None)
 
     def on_register_client(self, data):
         """
@@ -45,10 +46,10 @@ class MessageNamespace(Namespace):
         Equivalent to socket.on('register_client') in messageHandler.cjs.
         """
         client_type = data if isinstance(data, str) else data.get('client', 'web')
-        logger.info(f'[/message] Registering client {self.sid} as {client_type}')
+        logger.info(f'[/message] Registering client {request.sid} as {client_type}')
 
-        if self.sid in _clients:
-            _clients[self.sid]['registered'] = True
+        if request.sid in _clients:
+            _clients[request.sid]['registered'] = True
 
         emit('registration_success', {'status': 'ok', 'role': client_type})
 
@@ -69,42 +70,42 @@ class MessageNamespace(Namespace):
         if msg_type == 'audio':
             audio_b64 = data.get('data', '')
             if audio_b64:
-                logger.info(f'[/message] Audio received from {self.sid}')
-                state_machine.on_audio_message(audio_b64, self.sid)
+                logger.info(f'[/message] Audio received from {request.sid}')
+                state_machine.on_audio_message(audio_b64, request.sid)
             else:
                 logger.warning('[/message] Audio message with empty data')
 
         elif msg_type in ('client_message', 'text'):
             text = data.get('text', '').strip()
             if text:
-                logger.info(f'[/message] Text received from {self.sid}: "{text}"')
+                logger.info(f'[/message] Text received from {request.sid}: "{text}"')
                 # Echo back so chat UI shows the user message
                 emit('client_message', {'text': text, 'sender': 'client'}, broadcast=True)
-                state_machine.on_text_message(text, self.sid)
+                state_machine.on_text_message(text, request.sid)
 
         else:
             # Fallback: plain text message
             text = data.get('text', '').strip()
             if text:
-                state_machine.on_text_message(text, self.sid)
+                state_machine.on_text_message(text, request.sid)
 
     def on_user_detected(self, data):
         """
         Face detected by FaceDetection.jsx.
         Replaces wakeface 'face_listen' + face recognition hardware events.
         """
-        logger.info(f'[/message] user_detected from {self.sid}: {data}')
+        logger.info(f'[/message] user_detected from {request.sid}: {data}')
         state_machine.on_user_detected(data or {})
 
     def on_user_lost(self, data):
         """Face lost by FaceDetection.jsx."""
-        logger.info(f'[/message] user_lost from {self.sid}')
+        logger.info(f'[/message] user_lost from {request.sid}')
         state_machine.on_user_lost(data or {})
 
     def on_tts_complete(self, data):
         """Frontend finished playing TTS audio."""
-        logger.info(f'[/message] tts_complete from {self.sid}')
-        state_machine.on_tts_complete(self.sid)
+        logger.info(f'[/message] tts_complete from {request.sid}')
+        state_machine.on_tts_complete(request.sid)
 
     def on_transcription_result(self, data):
         """
@@ -114,4 +115,4 @@ class MessageNamespace(Namespace):
         if text:
             logger.info(f'[/message] transcription_result: "{text}"')
             emit('client_message', {'text': text, 'sender': 'client'}, broadcast=True)
-            state_machine.on_text_message(text, self.sid)
+            state_machine.on_text_message(text, request.sid)

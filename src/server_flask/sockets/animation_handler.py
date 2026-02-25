@@ -16,6 +16,7 @@ Flow:
 import logging
 
 from flask_socketio import Namespace, emit
+from flask import request
 
 logger = logging.getLogger('AnimationHandler')
 
@@ -35,24 +36,24 @@ def init_animation_handler(socketio_instance):
 class AnimationNamespace(Namespace):
 
     def on_connect(self):
-        logger.info(f'[/animation] Client connected: {self.sid}')
+        logger.info(f'[/animation] Client connected: {request.sid}')
 
     def on_disconnect(self):
-        logger.info(f'[/animation] Client disconnected: {self.sid}')
-        _eyes_clients.discard(self.sid)
-        _web_clients.discard(self.sid)
+        logger.info(f'[/animation] Client disconnected: {request.sid}')
+        _eyes_clients.discard(request.sid)
+        _web_clients.discard(request.sid)
         _log_clients()
 
     def on_register_animation(self, data):
         client_type = data.get('client') if isinstance(data, dict) else str(data)
-        logger.info(f'[/animation] Registering {self.sid} as {client_type}')
+        logger.info(f'[/animation] Registering {request.sid} as {client_type}')
 
         if client_type == 'eyes':
-            _eyes_clients.add(self.sid)
+            _eyes_clients.add(request.sid)
             emit('registration_success', {'status': 'ok', 'role': 'eyes'})
 
         elif client_type == 'web':
-            _web_clients.add(self.sid)
+            _web_clients.add(request.sid)
             emit('registration_success', {'status': 'ok', 'role': 'web'})
 
         else:
@@ -66,8 +67,8 @@ class AnimationNamespace(Namespace):
         Received from Python Eyes service.
         Relay to all connected web clients.
         """
-        if self.sid not in _eyes_clients:
-            logger.warning(f'[/animation] eye_frame from non-eyes client: {self.sid}')
+        if request.sid not in _eyes_clients:
+            logger.warning(f'[/animation] eye_frame from non-eyes client: {request.sid}')
             return
 
         if not data or not data.get('frame'):

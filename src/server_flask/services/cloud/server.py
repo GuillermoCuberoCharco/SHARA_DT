@@ -4,14 +4,15 @@ Main server module for cloud services. Handles the main query flow: receiving au
 performing STT, generating LLM response, converting to TTS, and returning the response.
 Also includes a separate function for streaming STT to get quick transcripts with proper state synchronization.
 
-Same code as the original server module.
+Same code as the original server module on the robot, but adapted to be used as a service module in the Flask server.
+The function streaming_stt is currently not used but can be integrated in the future for improved responsiveness while maintaining state synchronization.
 """
 
 import logging
 import time
 from dataclasses import dataclass
 
-from .google_api import speech_to_text, text_to_speech, compose_streaming_fallback_speech_to_text
+from .google_api import speech_to_text, text_to_speech
 from .openai_api import generate_response, load_conversation_history, save_conversation_history, clear_conversation_history
 
 logger = logging.getLogger('Server')
@@ -128,25 +129,25 @@ def query_with_text(request: Request):
     )
 
 
-def streaming_stt(audio_generator):
-    """
-    Perform only streaming STT
-    This is used to get the transcript quickly while maintaining proper state synchronization
+# def streaming_stt(audio_generator):
+#     """
+#     Perform only streaming STT
+#     This is used to get the transcript quickly while maintaining proper state synchronization
     
-    Args:
-        audio_generator: Generator that yields audio chunks from the microphone
+#     Args:
+#         audio_generator: Generator that yields audio chunks from the microphone
         
-    Returns:
-        str: Transcript from streaming STT, or empty string if no speech detected
-    """
-    transcript, silence_detection_time = compose_streaming_fallback_speech_to_text(audio_generator)
+#     Returns:
+#         str: Transcript from streaming STT, or empty string if no speech detected
+#     """
+#     transcript, silence_detection_time = compose_streaming_fallback_speech_to_text(audio_generator)
     
-    if silence_detection_time is not None:
-        logger.info(f"Streaming STT result (silence detection: {silence_detection_time:.3f} seconds) :: '{transcript}'")
-    else:
-        logger.info(f"Streaming STT result (no final result) :: '{transcript}'")
+#     if silence_detection_time is not None:
+#         logger.info(f"Streaming STT result (silence detection: {silence_detection_time:.3f} seconds) :: '{transcript}'")
+#     else:
+#         logger.info(f"Streaming STT result (no final result) :: '{transcript}'")
     
-    return transcript
+#     return transcript
 
 
 def proactive_query(request: Request):

@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
 
 // Position of the robot's white screen relative to the full image
-const SCREEN = { top: 0.22, left: 0.25, width: 0.49, height: 0.27 };
+const SCREEN = { top: 0.19, left: 0.15, width: 0.70, height: 0.30 };
 
 const RobotView = ({ robotState }) => {
     const { socket } = useWebSocketContext();
@@ -89,7 +89,7 @@ const RobotView = ({ robotState }) => {
                         zIndex: 2,
                         overflow: 'hidden',
                         borderRadius: '6px',
-                        // Decomment for debugging overlay position:
+                        // Descomment for debugging overlay position:
                         outline: '2px dashed rgba(255,0,0,0.5)',
                     }}
                 >

@@ -15,6 +15,8 @@ import io from 'socket.io-client';
 import { SERVER_URL } from '../config';
 import { useEyeRenderer } from '../eyes/useEyeRenderer';
 
+const SCREEN = { top: 0.18, left: 0.275, width: 0.40, height: 0.17 };
+
 const RobotView = ({ robotState }) => {
     const [overlayRect, setOverlayRect] = useState(null);
     const imgRef = useRef(null);

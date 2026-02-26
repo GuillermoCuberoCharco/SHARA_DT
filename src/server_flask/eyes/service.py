@@ -112,6 +112,8 @@ class Eyes:
 
                 self._emit_frame(canvas)
 
+                time.sleep(0.03)  # Adjust frame rate as needed
+
             except queue.Empty:
                 if time.time() > next_blink and '_closed' not in self.current_face:
                     current_face = self.current_face

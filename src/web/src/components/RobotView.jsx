@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
 import { SERVER_URL } from '../config';
 
-const SCREEN = { top: 0.20, left: 0.275, width: 0.40, height: 0.17 };
+const SCREEN = { top: 0.18, left: 0.275, width: 0.40, height: 0.17 };
 
 const RobotView = ({ robotState }) => {
     const [eyeFrame, setEyeFrame] = useState(null);

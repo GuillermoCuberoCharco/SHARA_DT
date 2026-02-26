@@ -2,44 +2,68 @@
  * RobotView
  *
  * Renders the physical robot image fitting the full viewport height.
- * The eye animation overlay is positioned dynamically over the robot's
- * white screen area using a ResizeObserver on the rendered image.
+ * Connects independently to the /animation namespace to receive eye_frame events
+ * emitted by the Python Eyes service.
  *
  * Screen area coordinates (as % of original image dimensions):
- *   top:    22%   left:  25%
- *   height: 27%   width: 49%
+ *   top: 19%  left: 15%  width: 70%  height: 30%
  */
 
 import PropTypes from 'prop-types';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useWebSocketContext } from '../contexts/WebSocketContext';
+import io from 'socket.io-client';
+import { SERVER_URL } from '../config';
 
-// Position of the robot's white screen relative to the full image
 const SCREEN = { top: 0.19, left: 0.15, width: 0.70, height: 0.30 };
 
 const RobotView = ({ robotState }) => {
-    const { socket } = useWebSocketContext();
     const [eyeFrame, setEyeFrame] = useState(null);
     const [overlayRect, setOverlayRect] = useState(null);
     const imgRef = useRef(null);
+    const socketRef = useRef(null);
 
-    // Receive eye frames from the server via /message socket
+    // Own socket connection to /animation namespace
     useEffect(() => {
-        if (!socket) return;
-        const handle = (data) => {
-            if (data?.frame) setEyeFrame(`data:image/png;base64,${data.frame}`);
-        };
-        socket.on('eye_frame', handle);
-        return () => socket.off('eye_frame', handle);
-    }, [socket]);
+        console.log('[AnimationSocket] Connecting to', SERVER_URL + '/animation');
 
-    // Compute overlay position from the rendered image dimensions
+        const socket = io(`${SERVER_URL}/animation`, {
+            transports: ['websocket', 'polling'],
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1000,
+            timeout: 20000,
+        });
+        socketRef.current = socket;
+
+        socket.on('connect', () => {
+            console.log('[AnimationSocket] Connected:', socket.id);
+            socket.emit('register_animation', { client: 'web' });
+        });
+
+        socket.on('eye_frame', (data) => {
+            if (data?.frame) {
+                setEyeFrame(`data:image/png;base64,${data.frame}`);
+            }
+        });
+
+        socket.on('connect_error', (err) => {
+            console.error('[AnimationSocket] Connection error:', err.message);
+        });
+
+        socket.on('disconnect', (reason) => {
+            console.log('[AnimationSocket] Disconnected:', reason);
+        });
+
+        return () => {
+            socket.removeAllListeners();
+            socket.disconnect();
+        };
+    }, []);
+
+    // Compute overlay position from rendered image
     const computeOverlay = useCallback(() => {
         const img = imgRef.current;
         if (!img) return;
-
         const { width: rw, height: rh, left: rl, top: rt } = img.getBoundingClientRect();
-
         setOverlayRect({
             top: rt + rh * SCREEN.top,
             left: rl + rw * SCREEN.left,
@@ -48,17 +72,13 @@ const RobotView = ({ robotState }) => {
         });
     }, []);
 
-    // Recompute whenever the image resizes
     useEffect(() => {
         const img = imgRef.current;
         if (!img) return;
-
         computeOverlay();
-
         const ro = new ResizeObserver(computeOverlay);
         ro.observe(img);
         window.addEventListener('resize', computeOverlay);
-
         return () => {
             ro.disconnect();
             window.removeEventListener('resize', computeOverlay);
@@ -79,20 +99,17 @@ const RobotView = ({ robotState }) => {
             />
 
             {overlayRect && (
-                <div
-                    style={{
-                        position: 'fixed',
-                        top: overlayRect.top,
-                        left: overlayRect.left,
-                        width: overlayRect.width,
-                        height: overlayRect.height,
-                        zIndex: 2,
-                        overflow: 'hidden',
-                        borderRadius: '6px',
-                        // Descomment for debugging overlay position:
-                        outline: '2px dashed rgba(255,0,0,0.5)',
-                    }}
-                >
+                <div style={{
+                    position: 'fixed',
+                    top: overlayRect.top,
+                    left: overlayRect.left,
+                    width: overlayRect.width,
+                    height: overlayRect.height,
+                    zIndex: 2,
+                    overflow: 'hidden',
+                    borderRadius: '6px',
+                    outline: '2px dashed rgba(255,0,0,0.5)', // debug
+                }}>
                     {eyeFrame ? (
                         <img
                             src={eyeFrame}
@@ -100,7 +117,7 @@ const RobotView = ({ robotState }) => {
                             style={{ width: '100%', height: '100%', objectFit: 'fill' }}
                         />
                     ) : (
-                        <div style={styles.eyePlaceholder} />
+                        <div style={{ width: '100%', height: '100%' }} />
                     )}
                 </div>
             )}
@@ -124,7 +141,7 @@ const styles = {
     background: {
         position: 'absolute',
         inset: 0,
-        backgroundColor: '#000',
+        backgroundColor: '#cce7ef',
         zIndex: 0,
     },
     robotImage: {
@@ -133,11 +150,6 @@ const styles = {
         width: 'auto',
         objectFit: 'contain',
         zIndex: 1,
-    },
-    eyePlaceholder: {
-        width: '100%',
-        height: '100%',
-        backgroundColor: 'rgba(255,255,255,0.0)',
     },
 };
 

@@ -13,53 +13,31 @@ import PropTypes from 'prop-types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
 import { SERVER_URL } from '../config';
-
-const SCREEN = { top: 0.18, left: 0.275, width: 0.40, height: 0.17 };
+import { useEyeRenderer } from '../eyes/useEyeRenderer';
 
 const RobotView = ({ robotState }) => {
-    const [eyeFrame, setEyeFrame] = useState(null);
     const [overlayRect, setOverlayRect] = useState(null);
     const imgRef = useRef(null);
-    const socketRef = useRef(null);
+    const canvasRef = useRef(null);
 
-    // Own socket connection to /animation namespace
-    useEffect(() => {
-        console.log('[AnimationSocket] Connecting to', SERVER_URL + '/animation');
+    // Eye renderer hook — owns the rAF loop and face transitions
+    const { setFace } = useEyeRenderer(canvasRef);
 
-        const socket = io(`${SERVER_URL}/animation`, {
-            transports: ['websocket', 'polling'],
-            reconnectionAttempts: 10,
-            reconnectionDelay: 1000,
-            timeout: 20000,
-        });
-        socketRef.current = socket;
+    // ── Canvas resolution ────────────────────────────────────────────────────
+    // Keep canvas pixel dimensions in sync with its CSS display size
 
-        socket.on('connect', () => {
-            console.log('[AnimationSocket] Connected:', socket.id);
-            socket.emit('register_animation', { client: 'web' });
-        });
-
-        socket.on('eye_frame', (data) => {
-            if (data?.frame) {
-                setEyeFrame(`data:image/png;base64,${data.frame}`);
-            }
-        });
-
-        socket.on('connect_error', (err) => {
-            console.error('[AnimationSocket] Connection error:', err.message);
-        });
-
-        socket.on('disconnect', (reason) => {
-            console.log('[AnimationSocket] Disconnected:', reason);
-        });
-
-        return () => {
-            socket.removeAllListeners();
-            socket.disconnect();
-        };
+    const syncCanvasSize = useCallback(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const { width, height } = canvas.getBoundingClientRect();
+        if (canvas.width !== Math.round(width) || canvas.height !== Math.round(height)) {
+            canvas.width = Math.round(width);
+            canvas.height = Math.round(height);
+        }
     }, []);
 
-    // Compute overlay position from rendered image
+    // ── Overlay position (follows rendered image size) ────────────────────────
+
     const computeOverlay = useCallback(() => {
         const img = imgRef.current;
         if (!img) return;
@@ -70,7 +48,8 @@ const RobotView = ({ robotState }) => {
             width: rw * SCREEN.width,
             height: rh * SCREEN.height,
         });
-    }, []);
+        syncCanvasSize();
+    }, [syncCanvasSize]);
 
     useEffect(() => {
         const img = imgRef.current;
@@ -79,11 +58,44 @@ const RobotView = ({ robotState }) => {
         const ro = new ResizeObserver(computeOverlay);
         ro.observe(img);
         window.addEventListener('resize', computeOverlay);
-        return () => {
-            ro.disconnect();
-            window.removeEventListener('resize', computeOverlay);
-        };
+        return () => { ro.disconnect(); window.removeEventListener('resize', computeOverlay); };
     }, [computeOverlay]);
+
+    // ── Socket: /animation — receives only { face: name } ────────────────────
+
+    useEffect(() => {
+        const socket = io(`${SERVER_URL}/animation`, {
+            transports: ['websocket', 'polling'],
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1000,
+            timeout: 20000,
+        });
+
+        socket.on('connect', () => {
+            console.log('[AnimationSocket] Connected:', socket.id);
+            socket.emit('register_animation', { client: 'web' });
+            // Request current face on reconnect
+            socket.emit('get_current_face');
+        });
+
+        socket.on('set_face', ({ face }) => {
+            console.log('[AnimationSocket] set_face:', face);
+            setFace(face);
+        });
+
+        socket.on('connect_error', (err) =>
+            console.error('[AnimationSocket] Error:', err.message)
+        );
+
+        return () => { socket.removeAllListeners(); socket.disconnect(); };
+    }, [setFace]);
+
+    // ── Also sync face when robotState prop changes (from UI/state machine) ──
+    useEffect(() => {
+        if (robotState) setFace(robotState);
+    }, [robotState, setFace]);
+
+    // ── Render ───────────────────────────────────────────────────────────────
 
     return (
         <div style={styles.container}>
@@ -99,27 +111,19 @@ const RobotView = ({ robotState }) => {
             />
 
             {overlayRect && (
-                <div style={{
-                    position: 'fixed',
-                    top: overlayRect.top,
-                    left: overlayRect.left,
-                    width: overlayRect.width,
-                    height: overlayRect.height,
-                    zIndex: 2,
-                    overflow: 'hidden',
-                    borderRadius: '6px',
-                    // outline: '2px dashed rgba(255,0,0,0.5)', // debug
-                }}>
-                    {eyeFrame ? (
-                        <img
-                            src={eyeFrame}
-                            alt={`Robot eye state: ${robotState}`}
-                            style={{ width: '100%', height: '100%', objectFit: 'fill' }}
-                        />
-                    ) : (
-                        <div style={{ width: '100%', height: '100%' }} />
-                    )}
-                </div>
+                <canvas
+                    ref={canvasRef}
+                    style={{
+                        position: 'fixed',
+                        top: overlayRect.top,
+                        left: overlayRect.left,
+                        width: overlayRect.width,
+                        height: overlayRect.height,
+                        zIndex: 2,
+                        borderRadius: '6px',
+                        // outline: '2px dashed red', // debug
+                    }}
+                />
             )}
         </div>
     );
@@ -141,7 +145,7 @@ const styles = {
     background: {
         position: 'absolute',
         inset: 0,
-        backgroundColor: '#cce7ef',
+        backgroundColor: '#000',
         zIndex: 0,
     },
     robotImage: {
@@ -153,12 +157,7 @@ const styles = {
     },
 };
 
-RobotView.propTypes = {
-    robotState: PropTypes.string,
-};
-
-RobotView.defaultProps = {
-    robotState: 'neutral',
-};
+RobotView.propTypes = { robotState: PropTypes.string };
+RobotView.defaultProps = { robotState: 'neutral' };
 
 export default RobotView;

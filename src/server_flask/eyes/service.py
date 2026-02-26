@@ -1,156 +1,110 @@
 """
 eyes/service.py
 
-Eyes service adapted for the Flask server.
+Eyes service — greatly simplified for the ViSHARA web deployment.
 
-Changes from original (physical robot):
-    - cv2.imshow() replaced by socketio.emit('eye_frame', ...) to /animation namespace
-    - cv2.namedWindow / setWindowProperty removed
-    - EyeSender (external WebSocket client) not needed — runs in-process
-    - socketio_instance injected at construction time
+The original service rendered frames with OpenCV and streamed PNGs over
+WebSocket.  This version delegates ALL rendering to the React frontend:
+  - The server only emits { face: <name> } when the expression changes.
+  - Interpolation, blink animation, and canvas drawing run client-side.
+  - No OpenCV, no NumPy, no base64 encoding, no background render thread.
 
-The rendering loop, transition queue, blink logic, and cache remain unchanged.
+The public API (set / stop / start) is preserved for compatibility with
+state_machine.py and any other callers.
 """
 
-import base64
 import logging
-import os
-import queue
 import random
 import time
 from pathlib import Path
 from threading import Event, Lock, Thread
 
-import cv2
-
-from .draw import draw_face
-from .utils import get_face_from_file
-from .interpolation import get_in_between_faces
-
+logger = logging.getLogger('Eyes')
 
 class Eyes:
 
     def __init__(
         self,
         faces_dir: str = 'files/faces',
-        face_cache: str = 'files/face_cache',
-        sc_width: int = 1080,
-        sc_height: int = 1920,
+        face_cache: str = 'files/face_cache',  # kept for API compatibility, unused here
+        sc_width: int = 1080,                  # kept for API compatibility, unused here
+        sc_height: int = 1920,                 # kept for API compatibility, unused here
         server_url: str = None,       # kept for API compatibility, unused here
         socketio_instance=None,       # Flask-SocketIO instance for direct emission
     ):
-        self.logger = logging.getLogger('Eyes')
-        self.logger.setLevel(logging.DEBUG)
 
         self.faces_dir = Path(faces_dir)
-        self.face_cache = Path(face_cache)
-        self.screen_width = sc_width
-        self.screen_height = sc_height
         self.socketio = socketio_instance
 
-        # Ensure cache directory exists
-        self.face_cache.mkdir(parents=True, exist_ok=True)
-
-        # Transition queue
-        self.transition_faces = queue.Queue()
-
         self.current_face = 'neutral'
-        self.current_face_points = get_face_from_file(self.faces_dir / 'neutral.json')
-        self.transition_faces.put((self.current_face, self.current_face_points))
 
         self.stopped = Event()
         self.lock = Lock()
 
-        self.logger.info('Ready')
+        logger.info('Eyes service ready. Frontend rendering mode')
+
+        self._emit('neutral')
+
         self.start()
 
-    # ── State management ──────────────────────────────────────────────────────
+    # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _set(self, face: str, steps: int = 3):
+    def _set(self, face: str):
+        """Set face (must be called with self.lock held)."""
+        face_path = self.faces_dir / f'{face}.json'
+        if not face_path.exists():
+            logger.warning(f"Face '{face}' not found, defaulting to 'neutral'")
+            face = 'neutral'
+
         if self.current_face == face:
             return
 
-        face_file_path = self.faces_dir / f'{face}.json'
-        if not face_file_path.exists():
-            self.logger.warning(f"Face '{face}' not found, defaulting to 'neutral'.")
-            face = 'neutral'
-
-        target_face = get_face_from_file(self.faces_dir / f'{face}.json')
-        in_between_faces = get_in_between_faces(self.current_face_points, target_face, steps)
-
-        for index, face_points in enumerate(in_between_faces):
-            self.transition_faces.put(
-                (f'{self.current_face}TO{face}_{index + 1}of{steps}', face_points)
-            )
-
-        self.transition_faces.put((face, target_face))
-        self.logger.info(f'Queued transitions: {self.current_face} → {face}')
-
-        self.current_face_points = target_face
         self.current_face = face
+        self._emit(face)
+
+    def _emit(self, face: str):
+        """Broadcast set_face to all /animation clients."""
+        if self.socketio is None:
+            return
+        try:
+            self.socketio.emit(
+                'set_face',
+                {'face': face},
+                namespace='/animation',
+            )
+            logger.debug(f'[Eyes] set_face → {face}')
+        except Exception as e:
+            logger.error(f'[Eyes] emit error: {e}')
+
+    def _blink_loop(self):
+        """
+        Mirrors the original blink logic: every 4–7 s, if not already on a
+        _closed face, trigger face_closed → face (frontend handles the
+        interpolation and timing of each transition).
+        """
+        while not self.stopped.wait(timeout=random.uniform(4, 7)):
+            with self.lock:
+                face = self.current_face
+                if '_closed' not in face:
+                    self._set(f'{face}_closed')
+                    # Brief hold before reopening (frontend will interpolate)
+                    time.sleep(0.12)
+                    self._set(face)
+
+# ── Public Api ────────────────────────────────────────────────────────────────
 
     def set(self, face: str):
         with self.lock:
             self._set(face)
 
-    # ── Rendering loop ────────────────────────────────────────────────────────
-
-    def _run(self):
-        next_blink = time.time() + random.randint(4, 7)
-
-        while not self.stopped.is_set():
-            try:
-                name_transition, new_face = self.transition_faces.get(timeout=0.1)
-
-                # Use cache if available
-                face_file = str(self.face_cache / f'{name_transition}.png')
-                if os.path.exists(face_file):
-                    canvas = cv2.imread(face_file)
-                else:
-                    canvas = draw_face(new_face, self.screen_width, self.screen_height)
-                    cv2.imwrite(face_file, canvas)
-
-                self._emit_frame(canvas)
-
-                time.sleep(0.01)  # Adjust frame rate as needed
-
-            except queue.Empty:
-                if time.time() > next_blink and '_closed' not in self.current_face:
-                    current_face = self.current_face
-                    with self.lock:
-                        self._set(f'{current_face}_closed', 1)
-                        self._set(current_face, 1)
-                    next_blink = time.time() + random.randint(4, 7)
-
-    def _emit_frame(self, canvas):
-        """Encode canvas as PNG base64 and emit to /animation namespace."""
-        if self.socketio is None:
-            return
-
-        try:
-            success, buffer = cv2.imencode('.png', canvas)
-            if not success:
-                self.logger.warning('Failed to encode frame as PNG')
-                return
-
-            frame_b64 = base64.b64encode(buffer).decode('utf-8')
-            self.socketio.emit(
-                'eye_frame',
-                {'frame': frame_b64},
-                namespace='/animation'
-            )
-        except Exception as e:
-            self.logger.error(f'Error emitting eye frame: {e}')
-
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
-
-    def start(self):
-        self.thread = Thread(target=self._run, daemon=True)
-        self.stopped.clear()
-        self.thread.start()
-        self.logger.info('Eyes service started')
-
     def stop(self):
         self.stopped.set()
-        self.thread.join(timeout=5)
-        self.logger.info('Eyes service stopped')
+        if hasattr(self, '_thread'):
+            self._thread.join(timeout=5)
+        logger.info('Eyes service stopped')
+
+    def start(self):
+        self.stopped.clear()
+        self._thread = Thread(target=self._blink_loop, daemon=True)
+        self._thread.start()
+        logger.info('Eyes blink loop started')

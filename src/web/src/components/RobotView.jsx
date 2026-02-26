@@ -6,7 +6,7 @@
  * emitted by the Python Eyes service.
  *
  * Screen area coordinates (as % of original image dimensions):
- *   top: 19%  left: 15%  width: 70%  height: 30%
+ *   top: 19%  left: 30%  width: 40%  height: 17%
  */
 
 import PropTypes from 'prop-types';
@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
 import { SERVER_URL } from '../config';
 
-const SCREEN = { top: 0.19, left: 0.20, width: 0.40, height: 0.17 };
+const SCREEN = { top: 0.19, left: 0.30, width: 0.40, height: 0.17 };
 
 const RobotView = ({ robotState }) => {
     const [eyeFrame, setEyeFrame] = useState(null);

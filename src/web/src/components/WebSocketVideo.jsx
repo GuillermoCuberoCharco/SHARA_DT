@@ -176,7 +176,7 @@ const WebSocketVideoComponent = ({ onStreamReady, onStreamError }) => {
     };
 
     return (
-        <div style={{ position: 'absolute', opacity: 0.1, pointerEvents: 'none' }}>
+        <div style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}>
             <video
                 ref={videoRef}
                 autoPlay

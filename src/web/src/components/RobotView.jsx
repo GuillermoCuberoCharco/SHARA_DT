@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
 import { SERVER_URL } from '../config';
 
-const SCREEN = { top: 0.19, left: 0.27, width: 0.40, height: 0.17 };
+const SCREEN = { top: 0.20, left: 0.275, width: 0.40, height: 0.17 };
 
 const RobotView = ({ robotState }) => {
     const [eyeFrame, setEyeFrame] = useState(null);
@@ -108,7 +108,7 @@ const RobotView = ({ robotState }) => {
                     zIndex: 2,
                     overflow: 'hidden',
                     borderRadius: '6px',
-                    outline: '2px dashed rgba(255,0,0,0.5)', // debug
+                    // outline: '2px dashed rgba(255,0,0,0.5)', // debug
                 }}>
                     {eyeFrame ? (
                         <img

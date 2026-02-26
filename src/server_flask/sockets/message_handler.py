@@ -80,7 +80,7 @@ class MessageNamespace(Namespace):
             if text:
                 logger.info(f'[/message] Text received from {request.sid}: "{text}"')
                 # Echo back so chat UI shows the user message
-                # emit('client_message', {'text': text, 'sender': 'client'}, broadcast=True)
+                emit('client_message', {'text': text, 'sender': 'client'}, broadcast=True)
                 state_machine.on_text_message(text, request.sid)
 
         else:

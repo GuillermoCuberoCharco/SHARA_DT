@@ -114,12 +114,22 @@ function drawEye(ctx, eye, sx, sy) {
     ctx.quadraticCurveTo(topPts[1][0], topPts[1][1], topPts[2][0], topPts[2][1]);
     ctx.stroke();
 
+    // White erase stroke — covers ellipse contour remnant at eyelid boundary
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = lw + 4 * Math.min(sx, sy);
     ctx.beginPath();
     ctx.moveTo(botPts[0][0], botPts[0][1]);
     ctx.quadraticCurveTo(botPts[1][0], botPts[1][1], botPts[2][0], botPts[2][1]);
     ctx.stroke();
 
+    // Black bezier line on top
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = lw;
 
+    ctx.beginPath();
+    ctx.moveTo(botPts[0][0], botPts[0][1]);
+    ctx.quadraticCurveTo(botPts[1][0], botPts[1][1], botPts[2][0], botPts[2][1]);
+    ctx.stroke();
 
     ctx.restore();
 }

@@ -7,6 +7,4 @@ python-dotenv==1.1.0
 openai==1.78.0
 google-cloud-speech==2.30.0
 google-cloud-texttospeech==2.24.0
-opencv-python-headless==4.10.0.84
-numpy==2.2.5
 python-socketio==5.12.1

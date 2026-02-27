@@ -15,12 +15,10 @@ Architecture:
 
 import logging
 import os
-import json
-import re
 
 from dotenv import load_dotenv
 from flask import Flask, send_from_directory
-from flask_socketio import SocketIO
+from flask_socketio import Namespace, SocketIO
 
 load_dotenv()
 
@@ -51,14 +49,7 @@ socketio = SocketIO(
 # ── Services ──────────────────────────────────────────────────────────────────
 from eyes.service import Eyes
 
-eyes = Eyes(
-    faces_dir='files/faces',
-    face_cache='files/face_cache',
-    sc_width=int(os.getenv('EYES_WIDTH', 600)),
-    sc_height=int(os.getenv('EYES_HEIGHT', 1024)),
-    server_url=None,
-    socketio_instance=socketio,
-)
+eyes = Eyes(socketio_instance=socketio)
 
 from services.cloud import server as cloud_server
 from proactive_service import ProactiveService
@@ -76,32 +67,13 @@ state_machine.init(
 # ── Socket namespaces ─────────────────────────────────────────────────────────
 from sockets.message_handler import MessageNamespace
 from sockets.video_handler import VideoNamespace
-from sockets.animation_handler import AnimationNamespace, init_animation_handler
 
-init_animation_handler(socketio)
 
 socketio.on_namespace(MessageNamespace('/message'))
 socketio.on_namespace(VideoNamespace('/video'))
-socketio.on_namespace(AnimationNamespace('/animation'))
 
 logger.info('Namespaces registered: /message, /video, /animation')
 
-# ── Face JSON API ── serves face data to the React eye render ─────────────────
-FACE_DIR = os.path.join(os.path.dirname(__file__), 'files', 'faces')
-
-@app.route('/api/faces/<face_name>')
-def get_face(face_name):
-    """Return face JSON for the given name."""
-    # Sanitise: only allow letters, digits and underscores
-    if not re.fullmatch(r'[a-zA-Z0-9_]+', face_name):
-        return jsonify({'error': 'Invalid face name'}), 400
-    face_path = os.path.join(FACES_DIR, f'{face_name}.json')
-    if not os.path.exists(face_path):
-        return jsonify({'error': f'Face not found: {face_name}'}), 404
-    with open(face_path, 'r') as f:
-        return jsonify(json.load(f))
-
-# ── Health check ──────────────────────────────────────────────────────────────
 @app.route('/health')
 def health():
     return {'status': 'ok', 'robot_state': state_machine.robot_context.state}

@@ -71,6 +71,7 @@ export function useEyeRenderer(canvasRef) {
         }
 
         const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, w, h);
         if (baseName) {
             let osc = getCachedBitmap(baseName, w, h);
             if (!osc) osc = cacheBitmap(baseName, faceData, w, h);

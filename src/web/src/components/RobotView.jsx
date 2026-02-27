@@ -147,7 +147,7 @@ const styles = {
     background: {
         position: 'absolute',
         inset: 0,
-        backgroundColor: '#000',
+        backgroundColor: '#84dcff',
         zIndex: 0,
     },
     robotImage: {

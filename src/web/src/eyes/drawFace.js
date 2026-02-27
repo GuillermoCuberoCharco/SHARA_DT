@@ -116,7 +116,7 @@ function drawEye(ctx, eye, sx, sy) {
 
     // White erase stroke — covers ellipse contour remnant at eyelid boundary
     ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = lw + 4 * Math.min(sx, sy);
+    ctx.lineWidth = lw + 8 * Math.min(sx, sy);
     ctx.beginPath();
     ctx.moveTo(botPts[0][0], botPts[0][1]);
     ctx.quadraticCurveTo(botPts[1][0], botPts[1][1], botPts[2][0], botPts[2][1]);

@@ -86,6 +86,13 @@ function drawEye(ctx, eye, sx, sy) {
     ctx.closePath();
     ctx.fill();
 
+    // ── Eye contour — after restore, sits cleanly on top ─────────────────────
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 7 * Math.min(sx, sy);
+    ctx.stroke();
+
     // Eyelid bottom — white fill below the bezier curve
     ctx.beginPath();
     ctx.moveTo(botPts[0][0], botPts[0][1]);
@@ -112,12 +119,7 @@ function drawEye(ctx, eye, sx, sy) {
     ctx.quadraticCurveTo(botPts[1][0], botPts[1][1], botPts[2][0], botPts[2][1]);
     ctx.stroke();
 
-    // ── Eye contour — after restore, sits cleanly on top ─────────────────────
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 7 * Math.min(sx, sy);
-    ctx.stroke();
+
 
     ctx.restore();
 }

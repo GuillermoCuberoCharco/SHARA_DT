@@ -165,6 +165,9 @@ def proactive_query(request: Request):
     logger.info(f'Response text :: {text_response}')
     logger.info(f'Response context :: {robot_context}')
 
+    if not text_response:
+        return None
+
     # TTS
     start_time = time.time()
     audio_response = text_to_speech(text_response)

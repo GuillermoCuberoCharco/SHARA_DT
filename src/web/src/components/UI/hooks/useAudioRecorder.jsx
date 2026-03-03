@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AUDIO_SETTINGS, SERVER_URL } from '../../../config';
 import { useWebSocketContext } from '../../../contexts/WebSocketContext';
 
-const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
+const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSent) => {
     const [isRecording, setIsRecording] = useState(false);
     const [audioSrc, setAudioSrc] = useState(null);
     const [isSpeaking, setIsSpeaking] = useState(false);
@@ -222,47 +222,42 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
     }, []);
 
     const handleTranscribe = async (audioBlob) => {
+        if (isWaitingResponseRef.current) {
+            console.log('⏸️  Waiting for response, canceling transcription');
+            return;
+        }
+
+        if (!audioBlob || audioBlob.size === 0) {
+            console.log('⚠️ No audio blob to transcribe');
+            return;
+        }
+
+        const actualBlob = audioBlob.blob || audioBlob;
+        console.log(`🔄 Transcribing audio blob of size: ${(actualBlob.size / 1024).toFixed(2)} KB`);
+
         try {
+            const base64Audio = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = reject;
+                reader.readAsDataURL(actualBlob);
+            });
 
-            if (isWaitingResponseRef.current) {
-                console.log('⏸️  Waiting for response, canceling transcription');
-                return;
+            if (socket && socket.connected) {
+                const messageObject = {
+                    type: 'audio',
+                    data: base64Audio,
+                    socketId: socket.id,
+                };
+                emit('client_message', messageObject);
+                isWaitingResponseRef.current = true;
+                onAudioSent?.();
+                console.log('Audio sent via socket for transcription and processing');
+            } else {
+                console.error('❌ Socket not connected, cannot send audio');
             }
-
-            if (!audioBlob || audioBlob.size === 0) {
-                console.log('⚠️ No audio blob to transcribe');
-                return;
-            }
-
-            isWaitingResponseRef.current = true;
-
-            const actualBlob = audioBlob.blob || audioBlob;
-            console.log(`🔄 Transcribing audio blob of size: ${(actualBlob.size / 1024).toFixed(2)} KB`);
-
-            const reader = new FileReader();
-            reader.readAsDataURL(actualBlob);
-
-            reader.onloadend = async () => {
-                const base64Audio = reader.result.split(',')[1];
-
-                if (socket && socket.connected) {
-                    const messageObject = {
-                        type: 'audio',
-                        data: base64Audio,
-                        socketId: socket.id
-                    };
-                    emit('client_message', messageObject);
-
-                    console.log('📤 Audio sent via socket for transcription and processing');
-                } else {
-                    console.error('❌ Socket not connected, cannot send audio');
-                }
-
-            };
         } catch (error) {
             console.error('Error transcribing audio:', error);
-        } finally {
-            isWaitingResponseRef.current = false;
         }
     };
 

@@ -114,6 +114,9 @@ stt_config = speech.RecognitionConfig(
 
 # ── Public API (unchanged from robot) ────────────────────────────────────────
 
+_GOOGLE_API_TIMEOUT = 15.0  # seconds
+
+
 def speech_to_text(audio_bytes: bytes) -> str:
     """
     Converts speech audio (WEBM_OPUS from browser) to text.
@@ -125,7 +128,7 @@ def speech_to_text(audio_bytes: bytes) -> str:
         Transcribed text string, or empty string if no speech detected
     """
     audio = speech.RecognitionAudio(content=audio_bytes)
-    response = clientSTT.recognize(config=stt_config, audio=audio)
+    response = clientSTT.recognize(config=stt_config, audio=audio, timeout=_GOOGLE_API_TIMEOUT)
     return ''.join(
         result.alternatives[0].transcript for result in response.results
     )
@@ -145,6 +148,7 @@ def text_to_speech(text: str) -> bytes:
     response = clientTTS.synthesize_speech(
         input=synthesis_input,
         voice=voice,
-        audio_config=tts_config
+        audio_config=tts_config,
+        timeout=_GOOGLE_API_TIMEOUT,
     )
     return response.audio_content

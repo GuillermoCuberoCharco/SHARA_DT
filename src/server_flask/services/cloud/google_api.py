@@ -1,120 +1,150 @@
 """
-app.py
+services/cloud/google_api.py
 
-Flask-SocketIO server — single-service deployment on Render.
-Flask serves both the React frontend (static build) and the WebSocket API.
+Google STT and TTS wrapper — adapted from the physical robot for cloud deployment.
 
-Since frontend and backend share the same origin, CORS is not needed.
+Changes from original:
+    - Credentials built from individual env vars (GOOGLE_CLIENT_EMAIL,
+      GOOGLE_PRIVATE_KEY, GOOGLE_PROJECT_ID) instead of a local JSON file.
+    - Falls back to GOOGLE_APPLICATION_CREDENTIALS file path if individual
+      vars are not set (preserves local development compatibility).
+    - Audio encoding updated to WEBM_OPUS to match browser MediaRecorder output.
 
-Architecture:
-    /message   namespace — conversation (audio, text, face events)
-    /video     namespace — video stream from browser
-    /animation namespace — eye animation frames relay (Python → Web)
-    /*                   — serves React SPA static build
+Original robot used LINEAR16 from PyAudio mic. Browser sends WEBM_OPUS (webm/opus).
 """
 
-import base64
-import logging
+import json
 import os
 
-from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory
-from flask_socketio import Namespace, SocketIO
+from google.cloud import speech, texttospeech
+from google.oauth2 import service_account
 
-load_dotenv()
+import logging
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-)
-logger = logging.getLogger('App')
-
-# ── Flask app — static folder points to React build output ────────────────────
-STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
-
-app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='')
-app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'shara-woz-secret')
-
-# ── Socket.IO — same origin, no CORS needed ───────────────────────────────────
-socketio = SocketIO(
-    app,
-    cors_allowed_origins='*',   # same-origin in production; '*' for local dev
-    async_mode='gevent',
-    logger=False,
-    engineio_logger=False,
-    ping_timeout=60,
-    ping_interval=25,
-)
-
-# ── Services ──────────────────────────────────────────────────────────────────
-from eyes.service import Eyes
-
-eyes = Eyes(socketio_instance=socketio)
-
-from services.cloud import server as cloud_server
-from proactive_service import ProactiveService
-import state_machine
-
-proactive = ProactiveService(callback=state_machine.proactive_event_handler)
-
-state_machine.init(
-    socketio_instance=socketio,
-    server_module=cloud_server,
-    eyes_instance=eyes,
-    proactive_instance=proactive,
-)
-
-# ── Socket namespaces ─────────────────────────────────────────────────────────
-from sockets.message_handler import MessageNamespace
-from sockets.video_handler import VideoNamespace
+logger = logging.getLogger('GoogleAPI')
 
 
-socketio.on_namespace(MessageNamespace('/message'))
-socketio.on_namespace(VideoNamespace('/video'))
-
-logger.info('Namespaces registered: /message, /video, /animation')
-
-@app.route('/health')
-def health():
-    return {'status': 'ok', 'robot_state': state_machine.robot_context.state}
-
-
-@app.route('/api/synthesize', methods=['POST'])
-def synthesize():
+def _build_credentials():
     """
-    Fallback HTTP endpoint for TTS synthesis (MP3).
-    Used when the server doesn't include pre-synthesized audio in robot_message,
-    e.g. for wizard messages sent from an external interface.
+    Build Google credentials from environment variables.
 
-    Request body: { "text": "<string>" }
-    Response:     { "audioContent": "<base64 MP3>" }
+    Priority:
+        1. Individual env vars (GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY,
+           GOOGLE_PROJECT_ID) — used in cloud deployments like Render.
+        2. GOOGLE_APPLICATION_CREDENTIALS as JSON string — legacy Node.js style.
+        3. GOOGLE_APPLICATION_CREDENTIALS as file path — local development.
     """
-    data = request.get_json(silent=True) or {}
-    text = data.get('text', '').strip()
+    client_email = os.getenv('GOOGLE_CLIENT_EMAIL')
+    private_key = os.getenv('GOOGLE_PRIVATE_KEY', '').replace('\\n', '\n')
+    project_id = os.getenv('GOOGLE_PROJECT_ID')
 
-    if not text:
-        return jsonify({'error': 'No text provided'}), 400
+    if client_email and private_key and project_id:
+        logger.info('Building Google credentials from individual env vars')
+        credentials_dict = {
+            'type': 'service_account',
+            'project_id': project_id,
+            'private_key': private_key,
+            'client_email': client_email,
+            'token_uri': 'https://oauth2.googleapis.com/token',
+        }
+        return service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=[
+                'https://www.googleapis.com/auth/cloud-platform',
+                'https://www.googleapis.com/auth/speech',
+            ]
+        )
 
-    try:
-        from services.cloud.google_api import text_to_speech
-        audio_bytes = text_to_speech(text)
-        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        return jsonify({'audioContent': audio_b64})
-    except Exception as e:
-        logger.error(f'TTS synthesis error: {e}')
-        return jsonify({'error': str(e)}), 500
+    # Fallback: GOOGLE_APPLICATION_CREDENTIALS as JSON string or file path
+    app_creds = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if app_creds:
+        try:
+            creds_dict = json.loads(app_creds)
+            logger.info('Building Google credentials from JSON string env var')
+            return service_account.Credentials.from_service_account_info(
+                creds_dict,
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+        except (json.JSONDecodeError, ValueError):
+            logger.info(f'Using Google credentials file: {app_creds}')
+            return service_account.Credentials.from_service_account_file(
+                app_creds,
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
 
-# ── React SPA — catch-all serves index.html for client-side routing ───────────
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def serve_frontend(path):
-    if path and os.path.exists(os.path.join(STATIC_DIR, path)):
-        return send_from_directory(STATIC_DIR, path)
-    return send_from_directory(STATIC_DIR, 'index.html')
+    logger.warning('No Google credentials found — clients will use ADC')
+    return None
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 8081))
-    logger.info(f'Starting SHARA server on port {port}')
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+
+# Build credentials once at module load
+_credentials = _build_credentials()
+_project_id = os.getenv('GOOGLE_PROJECT_ID')
+
+# ── TTS client ────────────────────────────────────────────────────────────────
+clientTTS = texttospeech.TextToSpeechClient(
+    credentials=_credentials
+) if _credentials else texttospeech.TextToSpeechClient()
+
+voice = texttospeech.VoiceSelectionParams(
+    language_code='es-ES',
+    ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+)
+
+tts_config = texttospeech.AudioConfig(
+    audio_encoding=texttospeech.AudioEncoding.MP3,
+    pitch=-0.4,
+)
+
+# ── STT client ────────────────────────────────────────────────────────────────
+clientSTT = speech.SpeechClient(
+    credentials=_credentials
+) if _credentials else speech.SpeechClient()
+
+# STT Config — WEBM_OPUS matches browser MediaRecorder output
+# (original robot used LINEAR16 from PyAudio physical mic)
+stt_config = speech.RecognitionConfig(
+    encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+    sample_rate_hertz=48000,
+    language_code='es-ES',
+    enable_automatic_punctuation=True,
+    model='latest_short',
+    audio_channel_count=1,
+)
+
+
+# ── Public API (unchanged from robot) ────────────────────────────────────────
+
+def speech_to_text(audio_bytes: bytes) -> str:
+    """
+    Converts speech audio (WEBM_OPUS from browser) to text.
+
+    Args:
+        audio_bytes: Raw audio bytes from browser MediaRecorder
+
+    Returns:
+        Transcribed text string, or empty string if no speech detected
+    """
+    audio = speech.RecognitionAudio(content=audio_bytes)
+    response = clientSTT.recognize(config=stt_config, audio=audio)
+    return ''.join(
+        result.alternatives[0].transcript for result in response.results
+    )
+
+
+def text_to_speech(text: str) -> bytes:
+    """
+    Converts text to speech audio (MP3).
+
+    Args:
+        text: Text to synthesize
+
+    Returns:
+        Audio bytes (MP3)
+    """
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+    response = clientTTS.synthesize_speech(
+        input=synthesis_input,
+        voice=voice,
+        audio_config=tts_config
+    )
+    return response.audio_content

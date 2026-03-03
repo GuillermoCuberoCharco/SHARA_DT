@@ -266,44 +266,79 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
         }
     };
 
-    const handleSynthesize = async (text) => {
+    /**
+     * Plays pre-synthesized audio (MP3 base64) received from the server via Socket.IO.
+     * Emits 'tts_complete' when playback finishes so the state machine can transition.
+     */
+    const handlePlayAudio = useCallback(async (base64Audio) => {
+        if (!base64Audio) return;
+
+        try {
+            setIsSpeaking(true);
+            console.log('🔊 Playing pre-synthesized audio...');
+
+            const src = `data:audio/mpeg;base64,${base64Audio}`;
+            setAudioSrc(src);
+
+            await new Promise((resolve, reject) => {
+                const audio = new Audio(src);
+                audio.onerror = (e) => {
+                    console.error('❌ Error playing audio:', e);
+                    reject(e);
+                };
+                audio.onended = () => {
+                    console.log('✅ Audio playback finished');
+                    resolve();
+                };
+                audio.play().catch(reject);
+            });
+        } catch (error) {
+            console.error('❌ Error playing audio:', error);
+        } finally {
+            setIsSpeaking(false);
+            setAudioSrc(null);
+            if (socket && socket.connected) {
+                emit('tts_complete');
+                console.log('tts_complete emitted');
+            }
+        }
+    }, [socket, emit]);
+
+    /**
+     * Fallback: synthesizes text via the /api/synthesize HTTP endpoint.
+     * Used when the server doesn't include pre-synthesized audio (e.g. wizard messages).
+     */
+    const handleSynthesize = useCallback(async (text) => {
         if (!text) return;
 
         try {
             setIsSpeaking(true);
-            console.log('🔊 Synthesizing speech...');
+            console.log('🔊 Synthesizing speech via API...');
 
-            const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text: text });
+            const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text });
 
-            if (response.data && response.data.audioContent) {
-                const audioContent = response.data.audioContent;
-                const audioSrc = `data:audio/wav;base64,${audioContent}`;
-                setAudioSrc(audioSrc);
+            if (response.data?.audioContent) {
+                const src = `data:audio/mpeg;base64,${response.data.audioContent}`;
+                setAudioSrc(src);
 
-                const audio = new Audio(audioSrc);
-                audio.onerror = (e) => {
-                    console.error('Error playing audio:', e);
-                    setIsSpeaking(false);
-                    setAudioSrc(null);
-                }
-
-                audio.onended = () => {
-                    console.log('✅ Audio playback finished');
-                    setIsSpeaking(false);
-                    setAudioSrc(null);
-                }
-
-                await audio.play();
+                await new Promise((resolve, reject) => {
+                    const audio = new Audio(src);
+                    audio.onerror = (e) => reject(e);
+                    audio.onended = () => resolve();
+                    audio.play().catch(reject);
+                });
             }
         } catch (error) {
             console.error('❌ Error synthesizing speech:', error);
-            setIsSpeaking(false);
-            setAudioSrc(null);
         } finally {
             setIsSpeaking(false);
+            setAudioSrc(null);
+            if (socket && socket.connected) {
+                emit('tts_complete');
+                console.log('tts_complete emitted');
+            }
         }
-
-    };
+    }, [socket, emit]);
 
     handleSynthesize.cancel = () => {
         setIsSpeaking(false);
@@ -324,6 +359,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
         startRecording,
         stopRecording,
         handleTranscribe,
+        handlePlayAudio,
         handleSynthesize,
         onStop
     };

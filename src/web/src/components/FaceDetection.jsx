@@ -68,7 +68,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         const width = face.bottomRight[0] - startX;
         const height = face.bottomRight[1] - startY;
 
-        if (width < 120 || height < 120) {
+        if (width < 30 || height < 30) {
             console.log(`Face too small: ${width}x${height} (minimum 120x120)`);
             return false;
         }
@@ -306,14 +306,15 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
                         setIsFaceDetected(true);
                         onFaceDetected();
                     }
-                    if (isFaceDetected) {
-                        const batch = batchCollectionRef.current;
-                        if (!batch.isCollecting && detectionStatus === 'idle') {
-                            startBatchCollection(predictions);
-                        } else if (batch.isCollecting && batch.frames.length < 5) {
-                            addFrameToBatch(predictions[0]);
-                        }
-                    }
+                    // TODO: re-enable when /api/recognize-face is implemented
+                    // if (isFaceDetected) {
+                    //     const batch = batchCollectionRef.current;
+                    //     if (!batch.isCollecting && detectionStatus === 'idle') {
+                    //         startBatchCollection(predictions);
+                    //     } else if (batch.isCollecting && batch.frames.length < 5) {
+                    //         addFrameToBatch(predictions[0]);
+                    //     }
+                    // }
                 } else {
                     consecutiveDetectionsRef.current = 0;
                     consecutiveLossesRef.current++;

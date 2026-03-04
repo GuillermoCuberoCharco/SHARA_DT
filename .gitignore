@@ -6,7 +6,6 @@ __pycache__
 venv
 .venvp8
 .venv11
-.claude
 webrtc_event_logs
 vite.config.js.timestamp-*
 testing

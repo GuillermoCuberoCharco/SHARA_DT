@@ -68,8 +68,8 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         const width = face.bottomRight[0] - startX;
         const height = face.bottomRight[1] - startY;
 
-        if (width < 30 || height < 30) {
-            console.log(`Face too small: ${width}x${height} (minimum 30x30)`);
+        if (width < 120 || height < 120) {
+            console.log(`Face too small: ${width}x${height} (minimum 120x120)`);
             return false;
         }
 
@@ -305,18 +305,15 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
                     if (!isFaceDetected && consecutiveDetectionsRef.current >= 2) {
                         setIsFaceDetected(true);
                         onFaceDetected();
-                        // Notify server immediately — recognition not yet implemented
-                        emit('user_detected', { isNewUser: true });
                     }
-                    // TODO: re-enable batch face recognition when /api/recognize-face is available
-                    // if (isFaceDetected) {
-                    //     const batch = batchCollectionRef.current;
-                    //     if (!batch.isCollecting && detectionStatus === 'idle') {
-                    //         startBatchCollection(predictions);
-                    //     } else if (batch.isCollecting && batch.frames.length < 5) {
-                    //         addFrameToBatch(predictions[0]);
-                    //     }
-                    // }
+                    if (isFaceDetected) {
+                        const batch = batchCollectionRef.current;
+                        if (!batch.isCollecting && detectionStatus === 'idle') {
+                            startBatchCollection(predictions);
+                        } else if (batch.isCollecting && batch.frames.length < 5) {
+                            addFrameToBatch(predictions[0]);
+                        }
+                    }
                 } else {
                     consecutiveDetectionsRef.current = 0;
                     consecutiveLossesRef.current++;
@@ -330,7 +327,11 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
 
                         setTimeout(() => {
                             if (!isFaceDetected) {
-                                emit('user_lost', {});
+                                if (currentUserIdRef.current) {
+                                    emit('user_lost', {
+                                        userId: currentUserIdRef.current
+                                    });
+                                }
                                 resetDetectionState();
                             }
                         }, 3000);

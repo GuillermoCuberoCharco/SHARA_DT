@@ -47,13 +47,10 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
         transcribedText,
         startRecording,
         stopRecording,
-        handleSynthesize,
-        handlePlayAudio,
-    } = useAudioRecorder(
-        () => setIsWaitingResponse(false),
-        isWaitingResponse,
-        () => setIsWaitingResponse(true),
-    );
+        handleSynthesize
+    } = useAudioRecorder(() => {
+        setIsWaitingResponse(false);
+    }, isWaitingResponse);
 
     /**
      * Extracts the state name from the message and notifies RobotView.
@@ -75,14 +72,10 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
         if (message.text?.trim()) {
             console.log("Received robot message:", message.text);
             setMessages((prev) => [...prev, { text: message.text, sender: 'robot' }]);
-            if (message.audio) {
-                await handlePlayAudio(message.audio);
-            } else {
-                await handleSynthesize(message.text);
-            }
+            await handleSynthesize(message.text);
         }
         setIsWaitingResponse(false);
-    }, [notifyRobotState, handleSynthesize, handlePlayAudio]);
+    }, [notifyRobotState, handleSynthesize]);
 
     const handleWizardMessage = useCallback(async (message) => {
         if (message.state) {

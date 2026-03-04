@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AUDIO_SETTINGS, SERVER_URL } from '../../../config';
 import { useWebSocketContext } from '../../../contexts/WebSocketContext';
 
-const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSent) => {
+const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
     const [isRecording, setIsRecording] = useState(false);
     const [audioSrc, setAudioSrc] = useState(null);
     const [isSpeaking, setIsSpeaking] = useState(false);
@@ -23,7 +23,6 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSen
     const lastAverageRef = useRef(0);
     const consecutiveSilenceFramesRef = useRef(0);
     const consecutiveAudioFramesRef = useRef(0);
-    const waitingTimeoutRef = useRef(null);
 
     const { socket, emit } = useWebSocketContext();
 
@@ -55,12 +54,6 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSen
         if (isWaitingResponseRef.current && isRecordingRef.current) {
             console.log('Waiting for response, stopping recording...');
             stopRecording();
-        }
-
-        // Clear safety timeout when waiting state is released by any means
-        if (!isWaitingResponse && waitingTimeoutRef.current) {
-            clearTimeout(waitingTimeoutRef.current);
-            waitingTimeoutRef.current = null;
         }
     }, [isWaitingResponse])
 
@@ -225,154 +218,92 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSen
             if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
                 audioContextRef.current.close();
             }
-            if (waitingTimeoutRef.current) {
-                clearTimeout(waitingTimeoutRef.current);
-            }
         };
     }, []);
 
-    // Release waiting state when server signals audio was not processed
-    useEffect(() => {
-        if (!socket) return;
-
-        const handleAudioIgnored = () => {
-            console.log('⚠️ Audio ignorado por el servidor — liberando estado de espera');
-            isWaitingResponseRef.current = false;
-            if (waitingTimeoutRef.current) {
-                clearTimeout(waitingTimeoutRef.current);
-                waitingTimeoutRef.current = null;
-            }
-            onTranscriptionComplete?.();
-        };
-
-        socket.on('audio_ignored', handleAudioIgnored);
-        return () => socket.off('audio_ignored', handleAudioIgnored);
-    }, [socket, onTranscriptionComplete]);
-
     const handleTranscribe = async (audioBlob) => {
-        if (isWaitingResponseRef.current) {
-            console.log('⏸️  Waiting for response, canceling transcription');
-            return;
-        }
-
-        if (!audioBlob || audioBlob.size === 0) {
-            console.log('⚠️ No audio blob to transcribe');
-            return;
-        }
-
-        const actualBlob = audioBlob.blob || audioBlob;
-        console.log(`🔄 Transcribing audio blob of size: ${(actualBlob.size / 1024).toFixed(2)} KB`);
-
         try {
-            const base64Audio = await new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onloadend = () => resolve(reader.result.split(',')[1]);
-                reader.onerror = reject;
-                reader.readAsDataURL(actualBlob);
-            });
 
-            if (socket && socket.connected) {
-                const messageObject = {
-                    type: 'audio',
-                    data: base64Audio,
-                    socketId: socket.id,
-                };
-                emit('client_message', messageObject);
-                isWaitingResponseRef.current = true;
-                onAudioSent?.();
-                console.log('Audio sent via socket for transcription and processing');
-
-                // Safety timeout: if server never responds, release the waiting state
-                if (waitingTimeoutRef.current) clearTimeout(waitingTimeoutRef.current);
-                waitingTimeoutRef.current = setTimeout(() => {
-                    if (isWaitingResponseRef.current) {
-                        console.warn('⚠️ Timeout de respuesta del servidor — liberando estado de espera');
-                        isWaitingResponseRef.current = false;
-                        onTranscriptionComplete?.();
-                    }
-                    waitingTimeoutRef.current = null;
-                }, 35000);
-            } else {
-                console.error('❌ Socket not connected, cannot send audio');
+            if (isWaitingResponseRef.current) {
+                console.log('⏸️  Waiting for response, canceling transcription');
+                return;
             }
+
+            if (!audioBlob || audioBlob.size === 0) {
+                console.log('⚠️ No audio blob to transcribe');
+                return;
+            }
+
+            isWaitingResponseRef.current = true;
+
+            const actualBlob = audioBlob.blob || audioBlob;
+            console.log(`🔄 Transcribing audio blob of size: ${(actualBlob.size / 1024).toFixed(2)} KB`);
+
+            const reader = new FileReader();
+            reader.readAsDataURL(actualBlob);
+
+            reader.onloadend = async () => {
+                const base64Audio = reader.result.split(',')[1];
+
+                if (socket && socket.connected) {
+                    const messageObject = {
+                        type: 'audio',
+                        data: base64Audio,
+                        socketId: socket.id
+                    };
+                    emit('client_message', messageObject);
+
+                    console.log('📤 Audio sent via socket for transcription and processing');
+                } else {
+                    console.error('❌ Socket not connected, cannot send audio');
+                }
+
+            };
         } catch (error) {
             console.error('Error transcribing audio:', error);
+        } finally {
+            isWaitingResponseRef.current = false;
         }
     };
 
-    /**
-     * Plays pre-synthesized audio (MP3 base64) received from the server via Socket.IO.
-     * Emits 'tts_complete' when playback finishes so the state machine can transition.
-     */
-    const handlePlayAudio = useCallback(async (base64Audio) => {
-        if (!base64Audio) return;
-
-        try {
-            setIsSpeaking(true);
-            console.log('🔊 Playing pre-synthesized audio...');
-
-            const src = `data:audio/mpeg;base64,${base64Audio}`;
-            setAudioSrc(src);
-
-            await new Promise((resolve, reject) => {
-                const audio = new Audio(src);
-                audio.onerror = (e) => {
-                    console.error('❌ Error playing audio:', e);
-                    reject(e);
-                };
-                audio.onended = () => {
-                    console.log('✅ Audio playback finished');
-                    resolve();
-                };
-                audio.play().catch(reject);
-            });
-        } catch (error) {
-            console.error('❌ Error playing audio:', error);
-        } finally {
-            setIsSpeaking(false);
-            setAudioSrc(null);
-            if (socket && socket.connected) {
-                emit('tts_complete');
-                console.log('tts_complete emitted');
-            }
-        }
-    }, [socket, emit]);
-
-    /**
-     * Fallback: synthesizes text via the /api/synthesize HTTP endpoint.
-     * Used when the server doesn't include pre-synthesized audio (e.g. wizard messages).
-     */
-    const handleSynthesize = useCallback(async (text) => {
+    const handleSynthesize = async (text) => {
         if (!text) return;
 
         try {
             setIsSpeaking(true);
-            console.log('🔊 Synthesizing speech via API...');
+            console.log('🔊 Synthesizing speech...');
 
-            const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text });
+            const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text: text });
 
-            if (response.data?.audioContent) {
-                const src = `data:audio/mpeg;base64,${response.data.audioContent}`;
-                setAudioSrc(src);
+            if (response.data && response.data.audioContent) {
+                const audioContent = response.data.audioContent;
+                const audioSrc = `data:audio/wav;base64,${audioContent}`;
+                setAudioSrc(audioSrc);
 
-                await new Promise((resolve, reject) => {
-                    const audio = new Audio(src);
-                    audio.onerror = (e) => reject(e);
-                    audio.onended = () => resolve();
-                    audio.play().catch(reject);
-                });
+                const audio = new Audio(audioSrc);
+                audio.onerror = (e) => {
+                    console.error('Error playing audio:', e);
+                    setIsSpeaking(false);
+                    setAudioSrc(null);
+                }
+
+                audio.onended = () => {
+                    console.log('✅ Audio playback finished');
+                    setIsSpeaking(false);
+                    setAudioSrc(null);
+                }
+
+                await audio.play();
             }
         } catch (error) {
             console.error('❌ Error synthesizing speech:', error);
-        } finally {
             setIsSpeaking(false);
             setAudioSrc(null);
-            if (socket && socket.connected) {
-                emit('tts_complete');
-                console.log('tts_complete emitted');
-            }
+        } finally {
+            setIsSpeaking(false);
         }
-    }, [socket, emit]);
+
+    };
 
     handleSynthesize.cancel = () => {
         setIsSpeaking(false);
@@ -393,7 +324,6 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSen
         startRecording,
         stopRecording,
         handleTranscribe,
-        handlePlayAudio,
         handleSynthesize,
         onStop
     };

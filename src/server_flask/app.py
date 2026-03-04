@@ -13,12 +13,11 @@ Architecture:
     /*                   — serves React SPA static build
 """
 
-import base64
 import logging
 import os
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, send_from_directory
 from flask_socketio import Namespace, SocketIO
 
 load_dotenv()
@@ -78,32 +77,6 @@ logger.info('Namespaces registered: /message, /video, /animation')
 @app.route('/health')
 def health():
     return {'status': 'ok', 'robot_state': state_machine.robot_context.state}
-
-
-@app.route('/api/synthesize', methods=['POST'])
-def synthesize():
-    """
-    Fallback HTTP endpoint for TTS synthesis (MP3).
-    Used when the server doesn't include pre-synthesized audio in robot_message,
-    e.g. for wizard messages sent from an external interface.
-
-    Request body: { "text": "<string>" }
-    Response:     { "audioContent": "<base64 MP3>" }
-    """
-    data = request.get_json(silent=True) or {}
-    text = data.get('text', '').strip()
-
-    if not text:
-        return jsonify({'error': 'No text provided'}), 400
-
-    try:
-        from services.cloud.google_api import text_to_speech
-        audio_bytes = text_to_speech(text)
-        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        return jsonify({'audioContent': audio_b64})
-    except Exception as e:
-        logger.error(f'TTS synthesis error: {e}')
-        return jsonify({'error': str(e)}), 500
 
 # ── React SPA — catch-all serves index.html for client-side routing ───────────
 @app.route('/', defaults={'path': ''})

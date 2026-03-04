@@ -91,7 +91,8 @@ voice = texttospeech.VoiceSelectionParams(
 )
 
 tts_config = texttospeech.AudioConfig(
-    audio_encoding=texttospeech.AudioEncoding.MP3,
+    audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+    sample_rate_hertz=24000,
     pitch=-0.4,
 )
 
@@ -114,9 +115,6 @@ stt_config = speech.RecognitionConfig(
 
 # ── Public API (unchanged from robot) ────────────────────────────────────────
 
-_GOOGLE_API_TIMEOUT = 15.0  # seconds
-
-
 def speech_to_text(audio_bytes: bytes) -> str:
     """
     Converts speech audio (WEBM_OPUS from browser) to text.
@@ -128,7 +126,7 @@ def speech_to_text(audio_bytes: bytes) -> str:
         Transcribed text string, or empty string if no speech detected
     """
     audio = speech.RecognitionAudio(content=audio_bytes)
-    response = clientSTT.recognize(config=stt_config, audio=audio, timeout=_GOOGLE_API_TIMEOUT)
+    response = clientSTT.recognize(config=stt_config, audio=audio)
     return ''.join(
         result.alternatives[0].transcript for result in response.results
     )
@@ -136,19 +134,18 @@ def speech_to_text(audio_bytes: bytes) -> str:
 
 def text_to_speech(text: str) -> bytes:
     """
-    Converts text to speech audio (MP3).
+    Converts text to speech audio (LINEAR16).
 
     Args:
         text: Text to synthesize
 
     Returns:
-        Audio bytes (MP3)
+        Audio bytes (LINEAR16, 24000 Hz)
     """
     synthesis_input = texttospeech.SynthesisInput(text=text)
     response = clientTTS.synthesize_speech(
         input=synthesis_input,
         voice=voice,
-        audio_config=tts_config,
-        timeout=_GOOGLE_API_TIMEOUT,
+        audio_config=tts_config
     )
     return response.audio_content

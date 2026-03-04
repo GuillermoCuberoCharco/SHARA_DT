@@ -20,7 +20,6 @@ import logging
 
 from robot_context import robot_context
 from proactive_service import ProactiveService
-from services.cloud.server import EMPTY_SPEECH
 
 logger = logging.getLogger('StateMachine')
 
@@ -117,8 +116,7 @@ def on_audio_message(audio_b64: str, sid: str):
     logger.info(f'Audio message received from {sid}, state={robot_context.state}')
 
     if robot_context.state not in ('listening', 'idle_presence', 'idle'):
-        logger.warning(f'Audio received in unexpected state: {robot_context.state} — releasing client')
-        _emit_audio_ignored(sid)
+        logger.warning(f'Audio received in unexpected state: {robot_context.state}')
         return
 
     robot_context.state = 'recording'
@@ -132,8 +130,8 @@ def on_text_message(text: str, sid: str):
     """
     logger.info(f'Text message from {sid}: "{text}"')
 
-    if robot_context.state in ('processing_query', 'recording', 'speaking'):
-        logger.warning(f'Text message rejected — busy state: {robot_context.state}')
+    if robot_context.state == 'processing_query':
+        logger.warning('Already processing a query, ignoring')
         return
 
     robot_context.state = 'processing_query'
@@ -219,14 +217,6 @@ def _process_audio_query(audio_b64: str, sid: str):
         # Call STT + LLM + TTS
         future = _executor.submit(_server.query, request)
         response = future.result(timeout=SERVER_QUERY_TIMEOUT)
-
-        if response is EMPTY_SPEECH:
-            # STT returned no text — user was silent, not an error
-            logger.info('No speech detected — returning to listening')
-            robot_context.state = 'listening'
-            _emit_state_update()
-            _emit_audio_ignored(sid)
-            return
 
         if response is None:
             logger.warning('Empty response from server.query')
@@ -378,22 +368,10 @@ def _emit_state_update():
     )
 
 
-def _emit_audio_ignored(sid=None):
-    """Notify the client that its audio was not processed (silence or wrong state).
-    The client uses this to release isWaitingResponse without showing an error."""
-    if sid and _socketio:
-        _socketio.emit('audio_ignored', {}, to=sid, namespace='/message')
-
-
 def _emit_error(sid=None):
-    """Emit error state and reset to idle_presence.
-    Releases the client waiting state immediately via audio_ignored so the
-    UI is not blocked while TTS synthesizes the error message.
-    """
+    """Emit error state and reset to idle_presence."""
     robot_context.state = 'idle_presence'
     _emit_state_update()
-    # Release client immediately — don't make it wait for TTS synthesis
-    _emit_audio_ignored(sid)
     if sid and _socketio:
         _socketio.emit(
             'robot_message',

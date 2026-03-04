@@ -222,48 +222,62 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
     }, []);
 
     const handleTranscribe = async (audioBlob) => {
+        if (isWaitingResponseRef.current) {
+            console.log('⏸️  Waiting for response, canceling transcription');
+            return;
+        }
+
+        if (!audioBlob || audioBlob.size === 0) {
+            console.log('⚠️ No audio blob to transcribe');
+            return;
+        }
+
+        isWaitingResponseRef.current = true;
+
+        const actualBlob = audioBlob.blob || audioBlob;
+        console.log(`🔄 Transcribing audio blob of size: ${(actualBlob.size / 1024).toFixed(2)} KB`);
+
         try {
-
-            if (isWaitingResponseRef.current) {
-                console.log('⏸️  Waiting for response, canceling transcription');
-                return;
-            }
-
-            if (!audioBlob || audioBlob.size === 0) {
-                console.log('⚠️ No audio blob to transcribe');
-                return;
-            }
-
-            isWaitingResponseRef.current = true;
-
-            const actualBlob = audioBlob.blob || audioBlob;
-            console.log(`🔄 Transcribing audio blob of size: ${(actualBlob.size / 1024).toFixed(2)} KB`);
-
-            const reader = new FileReader();
-            reader.readAsDataURL(actualBlob);
-
-            reader.onloadend = async () => {
-                const base64Audio = reader.result.split(',')[1];
-
-                if (socket && socket.connected) {
-                    const messageObject = {
-                        type: 'audio',
-                        data: base64Audio,
-                        socketId: socket.id
-                    };
-                    emit('client_message', messageObject);
-
-                    console.log('📤 Audio sent via socket for transcription and processing');
-                } else {
-                    console.error('❌ Socket not connected, cannot send audio');
-                }
-
-            };
+            // Wrap FileReader in a Promise so the await below actually waits
+            // for onloadend before continuing — the old pattern used readAsDataURL
+            // (non-blocking) inside try/finally, so finally ran synchronously
+            // BEFORE onloadend fired, resetting isWaitingResponseRef too early.
+            await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = reject;
+                reader.onloadend = () => {
+                    try {
+                        const base64Audio = reader.result.split(',')[1];
+                        const messageObject = {
+                            type: 'audio',
+                            data: base64Audio,
+                            socketId: socket?.id,
+                        };
+                        // emit() uses socketRef.current internally — always fresh,
+                        // avoids the stale-closure problem with the `socket` value.
+                        const sent = emit('client_message', messageObject);
+                        if (sent) {
+                            console.log('📤 Audio sent via socket for transcription and processing');
+                        } else {
+                            console.error('❌ Socket not connected, cannot send audio');
+                            isWaitingResponseRef.current = false;
+                        }
+                    } catch (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve();
+                };
+                reader.readAsDataURL(actualBlob);
+            });
         } catch (error) {
             console.error('Error transcribing audio:', error);
-        } finally {
             isWaitingResponseRef.current = false;
         }
+        // On success, isWaitingResponseRef.current stays true.
+        // It is released when the server responds: robot_message →
+        // handleRobotMessage in UI.jsx → setIsWaitingResponse(false) →
+        // useEffect syncs isWaitingResponseRef.current = false.
     };
 
     const handleSynthesize = async (text) => {

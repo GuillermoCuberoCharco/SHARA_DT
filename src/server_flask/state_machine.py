@@ -20,6 +20,7 @@ import logging
 
 from robot_context import robot_context
 from proactive_service import ProactiveService
+from services.cloud.server import EMPTY_SPEECH
 
 logger = logging.getLogger('StateMachine')
 
@@ -116,7 +117,8 @@ def on_audio_message(audio_b64: str, sid: str):
     logger.info(f'Audio message received from {sid}, state={robot_context.state}')
 
     if robot_context.state not in ('listening', 'idle_presence', 'idle'):
-        logger.warning(f'Audio received in unexpected state: {robot_context.state}')
+        logger.warning(f'Audio received in unexpected state: {robot_context.state} — releasing client')
+        _emit_audio_ignored(sid)
         return
 
     robot_context.state = 'recording'
@@ -217,6 +219,14 @@ def _process_audio_query(audio_b64: str, sid: str):
         # Call STT + LLM + TTS
         future = _executor.submit(_server.query, request)
         response = future.result(timeout=SERVER_QUERY_TIMEOUT)
+
+        if response is EMPTY_SPEECH:
+            # STT returned no text — user was silent, not an error
+            logger.info('No speech detected — returning to listening')
+            robot_context.state = 'listening'
+            _emit_state_update()
+            _emit_audio_ignored(sid)
+            return
 
         if response is None:
             logger.warning('Empty response from server.query')
@@ -366,6 +376,13 @@ def _emit_state_update():
         {'state': robot_context.state},
         namespace='/message'
     )
+
+
+def _emit_audio_ignored(sid=None):
+    """Notify the client that its audio was not processed (silence or wrong state).
+    The client uses this to release isWaitingResponse without showing an error."""
+    if sid and _socketio:
+        _socketio.emit('audio_ignored', {}, to=sid, namespace='/message')
 
 
 def _emit_error(sid=None):

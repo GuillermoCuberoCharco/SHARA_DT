@@ -23,6 +23,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSen
     const lastAverageRef = useRef(0);
     const consecutiveSilenceFramesRef = useRef(0);
     const consecutiveAudioFramesRef = useRef(0);
+    const waitingTimeoutRef = useRef(null);
 
     const { socket, emit } = useWebSocketContext();
 
@@ -54,6 +55,12 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSen
         if (isWaitingResponseRef.current && isRecordingRef.current) {
             console.log('Waiting for response, stopping recording...');
             stopRecording();
+        }
+
+        // Clear safety timeout when waiting state is released by any means
+        if (!isWaitingResponse && waitingTimeoutRef.current) {
+            clearTimeout(waitingTimeoutRef.current);
+            waitingTimeoutRef.current = null;
         }
     }, [isWaitingResponse])
 
@@ -218,8 +225,29 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSen
             if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
                 audioContextRef.current.close();
             }
+            if (waitingTimeoutRef.current) {
+                clearTimeout(waitingTimeoutRef.current);
+            }
         };
     }, []);
+
+    // Release waiting state when server signals audio was not processed
+    useEffect(() => {
+        if (!socket) return;
+
+        const handleAudioIgnored = () => {
+            console.log('⚠️ Audio ignorado por el servidor — liberando estado de espera');
+            isWaitingResponseRef.current = false;
+            if (waitingTimeoutRef.current) {
+                clearTimeout(waitingTimeoutRef.current);
+                waitingTimeoutRef.current = null;
+            }
+            onTranscriptionComplete?.();
+        };
+
+        socket.on('audio_ignored', handleAudioIgnored);
+        return () => socket.off('audio_ignored', handleAudioIgnored);
+    }, [socket, onTranscriptionComplete]);
 
     const handleTranscribe = async (audioBlob) => {
         if (isWaitingResponseRef.current) {
@@ -253,6 +281,17 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSen
                 isWaitingResponseRef.current = true;
                 onAudioSent?.();
                 console.log('Audio sent via socket for transcription and processing');
+
+                // Safety timeout: if server never responds, release the waiting state
+                if (waitingTimeoutRef.current) clearTimeout(waitingTimeoutRef.current);
+                waitingTimeoutRef.current = setTimeout(() => {
+                    if (isWaitingResponseRef.current) {
+                        console.warn('⚠️ Timeout de respuesta del servidor — liberando estado de espera');
+                        isWaitingResponseRef.current = false;
+                        onTranscriptionComplete?.();
+                    }
+                    waitingTimeoutRef.current = null;
+                }, 35000);
             } else {
                 console.error('❌ Socket not connected, cannot send audio');
             }

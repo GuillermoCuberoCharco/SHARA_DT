@@ -19,6 +19,16 @@ logger = logging.getLogger('Server')
 logger.setLevel(logging.DEBUG)
 
 
+class EmptySpeech:
+    """Sentinel returned by query() when STT finds no speech in the audio.
+    Distinct from None (which means an actual processing error).
+    """
+    pass
+
+
+EMPTY_SPEECH = EmptySpeech()
+
+
 @dataclass
 class Request:
     audio: str = b''
@@ -51,9 +61,9 @@ def query(request: Request):
     start_time = time.time()
     request.text = speech_to_text(request.audio)
     logger.info(f"STT result ({time.time() - start_time:.2f} seconds) :: '{request.text}'")
-    
+
     if not request.text:
-        return None
+        return EMPTY_SPEECH  # No speech detected — not an error
 
     # Set context variables
     context_variables = {}

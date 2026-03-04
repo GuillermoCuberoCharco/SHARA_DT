@@ -68,8 +68,8 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         const width = face.bottomRight[0] - startX;
         const height = face.bottomRight[1] - startY;
 
-        if (width < 120 || height < 120) {
-            console.log(`Face too small: ${width}x${height} (minimum 120x120)`);
+        if (width < 30 || height < 30) {
+            console.log(`Face too small: ${width}x${height} (minimum 30x30)`);
             return false;
         }
 

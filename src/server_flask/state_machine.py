@@ -132,8 +132,8 @@ def on_text_message(text: str, sid: str):
     """
     logger.info(f'Text message from {sid}: "{text}"')
 
-    if robot_context.state == 'processing_query':
-        logger.warning('Already processing a query, ignoring')
+    if robot_context.state in ('processing_query', 'recording', 'speaking'):
+        logger.warning(f'Text message rejected — busy state: {robot_context.state}')
         return
 
     robot_context.state = 'processing_query'
@@ -386,9 +386,14 @@ def _emit_audio_ignored(sid=None):
 
 
 def _emit_error(sid=None):
-    """Emit error state and reset to idle_presence."""
+    """Emit error state and reset to idle_presence.
+    Releases the client waiting state immediately via audio_ignored so the
+    UI is not blocked while TTS synthesizes the error message.
+    """
     robot_context.state = 'idle_presence'
     _emit_state_update()
+    # Release client immediately — don't make it wait for TTS synthesis
+    _emit_audio_ignored(sid)
     if sid and _socketio:
         _socketio.emit(
             'robot_message',

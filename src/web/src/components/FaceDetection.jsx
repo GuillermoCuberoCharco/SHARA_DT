@@ -305,15 +305,18 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
                     if (!isFaceDetected && consecutiveDetectionsRef.current >= 2) {
                         setIsFaceDetected(true);
                         onFaceDetected();
+                        // Notify server immediately — recognition not yet implemented
+                        emit('user_detected', { isNewUser: true });
                     }
-                    if (isFaceDetected) {
-                        const batch = batchCollectionRef.current;
-                        if (!batch.isCollecting && detectionStatus === 'idle') {
-                            startBatchCollection(predictions);
-                        } else if (batch.isCollecting && batch.frames.length < 5) {
-                            addFrameToBatch(predictions[0]);
-                        }
-                    }
+                    // TODO: re-enable batch face recognition when /api/recognize-face is available
+                    // if (isFaceDetected) {
+                    //     const batch = batchCollectionRef.current;
+                    //     if (!batch.isCollecting && detectionStatus === 'idle') {
+                    //         startBatchCollection(predictions);
+                    //     } else if (batch.isCollecting && batch.frames.length < 5) {
+                    //         addFrameToBatch(predictions[0]);
+                    //     }
+                    // }
                 } else {
                     consecutiveDetectionsRef.current = 0;
                     consecutiveLossesRef.current++;
@@ -327,11 +330,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
 
                         setTimeout(() => {
                             if (!isFaceDetected) {
-                                if (currentUserIdRef.current) {
-                                    emit('user_lost', {
-                                        userId: currentUserIdRef.current
-                                    });
-                                }
+                                emit('user_lost', {});
                                 resetDetectionState();
                             }
                         }, 3000);

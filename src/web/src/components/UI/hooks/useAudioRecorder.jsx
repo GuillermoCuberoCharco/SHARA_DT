@@ -258,6 +258,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
                         const sent = emit('client_message', messageObject);
                         if (sent) {
                             console.log('📤 Audio sent via socket for transcription and processing');
+                            isWaitingResponseRef.current = false;
                         } else {
                             console.error('❌ Socket not connected, cannot send audio');
                             isWaitingResponseRef.current = false;

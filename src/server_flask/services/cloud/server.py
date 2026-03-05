@@ -129,25 +129,25 @@ def query_with_text(request: Request):
     )
 
 
-# def streaming_stt(audio_generator):
-#     """
-#     Perform only streaming STT
-#     This is used to get the transcript quickly while maintaining proper state synchronization
+def streaming_stt(audio_generator):
+    """
+    Perform only streaming STT
+    This is used to get the transcript quickly while maintaining proper state synchronization
     
-#     Args:
-#         audio_generator: Generator that yields audio chunks from the microphone
+    Args:
+        audio_generator: Generator that yields audio chunks from the microphone
         
-#     Returns:
-#         str: Transcript from streaming STT, or empty string if no speech detected
-#     """
-#     transcript, silence_detection_time = compose_streaming_fallback_speech_to_text(audio_generator)
+    Returns:
+        str: Transcript from streaming STT, or empty string if no speech detected
+    """
+    transcript, silence_detection_time = compose_streaming_fallback_speech_to_text(audio_generator)
     
-#     if silence_detection_time is not None:
-#         logger.info(f"Streaming STT result (silence detection: {silence_detection_time:.3f} seconds) :: '{transcript}'")
-#     else:
-#         logger.info(f"Streaming STT result (no final result) :: '{transcript}'")
+    if silence_detection_time is not None:
+        logger.info(f"Streaming STT result (silence detection: {silence_detection_time:.3f} seconds) :: '{transcript}'")
+    else:
+        logger.info(f"Streaming STT result (no final result) :: '{transcript}'")
     
-#     return transcript
+    return transcript
 
 
 def proactive_query(request: Request):

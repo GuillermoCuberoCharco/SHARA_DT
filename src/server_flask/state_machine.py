@@ -4,14 +4,23 @@ state_machine.py
 State machine adapted from the physical robot's main.py.
 
 Hardware events → WebSocket events mapping:
-    mic start_recording   → client_message (audio)
-    mic stop_recording    → (implicit, handled by recording state)
-    speaker finish_speak  → emitted back as 'tts_complete' from socket handler
-    wakeface face_listen  → user_detected (from FaceDetection.jsx)
-    wakeface face_lost    → user_lost
+    mic start_recording       → audio_stream_start  (from useAudioRecorder)
+    mic audio chunks          → audio_chunk         (PCM LINEAR16 via AudioWorklet)
+    mic stop_recording        → audio_stream_end
+    speaker finish_speak      → tts_complete        (from frontend)
+    wakeface face_listen      → user_detected       (from FaceDetection.jsx)
+    wakeface face_not_listen  → user_lost
 
-The state machine processes transitions asynchronously using a thread pool,
-matching the original robot's concurrent.futures approach.
+Streaming STT pipeline (matches robot's main.py exactly):
+    1. audio_stream_start → on_audio_stream_start(generator, sid)
+       → state = 'recording'
+       → _executor.submit(_process_streaming_query, generator, sid)
+    2. audio_chunk events → message_handler puts bytes into queue → generator yields
+    3. audio_stream_end  → message_handler puts None sentinel → generator stops
+    4. _process_streaming_query:
+       a. streaming_stt(generator) → transcript  [Google streaming_recognize]
+       b. query_with_text(transcript) → LLM + TTS
+       c. _handle_response → emit robot_message
 """
 
 import base64
@@ -23,13 +32,10 @@ from proactive_service import ProactiveService
 
 logger = logging.getLogger('StateMachine')
 
-# Timeout waiting for cloud response (seconds)
-SERVER_QUERY_TIMEOUT = 20
+SERVER_QUERY_TIMEOUT = 20  # seconds
 
-# Global thread pool — same pattern as the robot's global_executor
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
-# Lazy imports to avoid circular imports at module load time
 _socketio = None
 _server = None
 _eyes = None
@@ -37,10 +43,7 @@ _proactive: ProactiveService = None
 
 
 def init(socketio_instance, server_module, eyes_instance, proactive_instance):
-    """
-    Called once from app.py after all services are initialized.
-    Injects dependencies to avoid circular imports.
-    """
+    """Inject dependencies — called once from app.py."""
     global _socketio, _server, _eyes, _proactive
     _socketio = socketio_instance
     _server = server_module
@@ -49,13 +52,9 @@ def init(socketio_instance, server_module, eyes_instance, proactive_instance):
     logger.info('StateMachine initialized')
 
 
-# ── Proactive service callback ────────────────────────────────────────────────
+# ── Proactive callback ────────────────────────────────────────────────────────
 
 def proactive_event_handler(event: str, params: dict = None):
-    """
-    Receives proactive events from ProactiveService and maps them
-    to state machine transitions.
-    """
     params = params or {}
     logger.info(f'Proactive event: {event} — {params}')
 
@@ -73,8 +72,7 @@ def proactive_event_handler(event: str, params: dict = None):
         )
 
 
-# ── WebSocket event entry points ──────────────────────────────────────────────
-# These are called from sockets/message_handler.py
+# ── WebSocket entry points (called from message_handler.py) ──────────────────
 
 def on_user_detected(user_data: dict):
     """Face detected by FaceDetection.jsx — replaces wf_event_handler 'face_listen'."""
@@ -83,14 +81,12 @@ def on_user_detected(user_data: dict):
 
     logger.info(f'User detected: {username} (new={is_new_user}), state={robot_context.state}')
 
-    # Update username in context
     if username:
         robot_context.username = username
         _proactive.update('sensor', 'close_face_recognized', {'username': username})
     else:
         _proactive.update('sensor', 'unknown_face')
 
-    # Trigger listening if idle
     if robot_context.state == 'idle_presence':
         _executor.submit(process_transition, 'idle_presence2listening', {})
     elif robot_context.state == 'idle':
@@ -108,26 +104,44 @@ def on_user_lost(user_data: dict):
         _executor.submit(process_transition, 'listening2idle_presence', {})
 
 
+def on_audio_stream_start(pcm_generator, sid: str):
+    """
+    PCM LINEAR16 stream started from AudioWorklet.
+
+    Equivalent to the robot's mic.enable_streaming() + executor.submit(server.streaming_stt).
+    Transitions to 'recording' and launches the streaming STT pipeline in background.
+    """
+    logger.info(f'Audio stream start from {sid}, state={robot_context.state}')
+
+    if robot_context.state not in ('listening', 'idle_presence', 'idle'):
+        logger.warning(f'audio_stream_start in unexpected state: {robot_context.state} — ignoring')
+        return
+
+    robot_context.state = 'recording'
+    _emit_state_update()
+
+    # Launch streaming pipeline in thread pool — same as robot's global_executor.submit()
+    _executor.submit(_process_streaming_query, pcm_generator, sid)
+
+
 def on_audio_message(audio_b64: str, sid: str):
     """
-    Audio blob received from the browser (base64 webm/opus).
-    Replaces mic start_recording + stop_recording + recording2processingquery.
+    Legacy: full audio blob (base64 webm/opus) — used when AudioWorklet unavailable.
+    Equivalent to the old on_audio_message path.
     """
-    logger.info(f'Audio message received from {sid}, state={robot_context.state}')
+    logger.info(f'Legacy audio blob from {sid}, state={robot_context.state}')
 
     if robot_context.state not in ('listening', 'idle_presence', 'idle'):
         logger.warning(f'Audio received in unexpected state: {robot_context.state}')
         return
 
     robot_context.state = 'recording'
+    _emit_state_update()
     _executor.submit(_process_audio_query, audio_b64, sid)
 
 
 def on_text_message(text: str, sid: str):
-    """
-    Text message typed in chat by the user.
-    Bypasses STT, goes directly to LLM.
-    """
+    """Text typed in chat — bypasses STT."""
     logger.info(f'Text message from {sid}: "{text}"')
 
     if robot_context.state == 'processing_query':
@@ -135,14 +149,12 @@ def on_text_message(text: str, sid: str):
         return
 
     robot_context.state = 'processing_query'
+    _emit_state_update()
     _executor.submit(_process_text_query, text, sid)
 
 
 def on_tts_complete(sid: str):
-    """
-    Frontend signals that audio playback finished.
-    Replaces speaker_event_handler 'finish_speak'.
-    """
+    """Frontend finished playing TTS audio."""
     logger.info(f'TTS complete from {sid}, continue={robot_context.continue_conversation}')
 
     if robot_context.continue_conversation:
@@ -154,9 +166,6 @@ def on_tts_complete(sid: str):
 # ── Core state transitions ────────────────────────────────────────────────────
 
 def process_transition(transition: str, params: dict = None):
-    """
-    Central dispatcher — equivalent to process_transition() in main.py.
-    """
     params = params or {}
     current = robot_context.state
     logger.info(f'Transition: {transition} | State: {current}')
@@ -196,7 +205,71 @@ def process_transition(transition: str, params: dict = None):
         logger.error(f'Error in transition {transition}: {e}', exc_info=True)
 
 
-# ── Query processing ──────────────────────────────────────────────────────────
+# ── Query pipelines ───────────────────────────────────────────────────────────
+
+def _process_streaming_query(pcm_generator, sid: str):
+    """
+    Streaming STT → LLM → TTS pipeline.
+
+    Mirrors the robot's recording2processingquery transition:
+        1. streaming_future.result() → transcript
+        2. server.query_with_text(transcript) → response
+        3. _handle_response(response, sid)
+    """
+    try:
+        robot_context.state = 'processing_query'
+        _emit_state_update()
+
+        # Step 1: Streaming STT (blocks until audio_stream_end sentinel received)
+        transcript = _server.streaming_stt(pcm_generator)
+
+        if not transcript:
+            logger.warning('Streaming STT returned empty transcript — silent or no speech')
+            # Echo empty result so frontend knows we heard nothing
+            if _socketio:
+                _socketio.emit(
+                    'transcription_result',
+                    {'text': ''},
+                    to=sid,
+                    namespace='/message'
+                )
+            robot_context.state = 'listening'
+            _emit_state_update()
+            return
+
+        # Echo transcript to chat UI (same as robot's implicit display)
+        logger.info(f'Streaming STT transcript: "{transcript}"')
+        if _socketio:
+            _socketio.emit(
+                'transcription_result',
+                {'text': transcript},
+                to=sid,
+                namespace='/message'
+            )
+
+        # Step 2: LLM + TTS
+        request = _server.Request(
+            text=transcript,
+            username=robot_context.username,
+            proactive_question=robot_context.proactive_question,
+        )
+        future = _executor.submit(_server.query_with_text, request)
+        response = future.result(timeout=SERVER_QUERY_TIMEOUT)
+
+        if response is None:
+            logger.warning('Empty LLM response')
+            _emit_error(sid)
+            return
+
+        _handle_response(response, sid)
+
+    except concurrent.futures.TimeoutError:
+        logger.error('Timeout in streaming query processing')
+        _emit_error(sid)
+    except Exception as e:
+        logger.error(f'Error in streaming query: {e}', exc_info=True)
+        _emit_error(sid)
+
 
 def _process_audio_query(audio_b64: str, sid: str):
     """STT → LLM → TTS pipeline for audio input."""
@@ -204,17 +277,13 @@ def _process_audio_query(audio_b64: str, sid: str):
         robot_context.state = 'processing_query'
         _emit_state_update()
 
-        # Decode base64 audio
         audio_bytes = base64.b64decode(audio_b64)
-
-        # Build request
         request = _server.Request(
             audio=audio_bytes,
             username=robot_context.username,
             proactive_question=robot_context.proactive_question,
         )
 
-        # Call STT + LLM + TTS
         future = _executor.submit(_server.query, request)
         response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
@@ -286,13 +355,10 @@ def _handle_proactive_query(params: dict):
             _emit_state_update()
             return
 
-        # Update proactive state before handling response
         if question == 'who_are_you':
             robot_context.proactive_question = 'who_are_you_response'
         
         _handle_response(response, sid=None)
-
-        # Confirm to proactive service
         _proactive.update('confirm', question, {'username': username})
 
     except concurrent.futures.TimeoutError:
@@ -314,7 +380,6 @@ def _handle_response(response, sid):
     robot_context.continue_conversation = response.continue_conversation
     robot_context.proactive_question = ''
 
-    # Update username if identified during conversation (e.g. who_are_you tool)
     if response.username:
         robot_context.username = response.username
         try:
@@ -322,17 +387,14 @@ def _handle_response(response, sid):
         except Exception as e:
             logger.warning(f'Could not load conversation history: {e}')
 
-    # Update eye state
     if _eyes and response.robot_mood:
         try:
             _eyes.set(response.robot_mood)
         except Exception as e:
             logger.warning(f'Could not set eye state: {e}')
 
-    # Encode TTS audio as base64 for the frontend
     audio_b64 = base64.b64encode(response.audio).decode('utf-8') if response.audio else None
 
-    # Build and emit robot_message
     message = {
         'text': response.text or '',
         'state': response.robot_mood or 'neutral',
@@ -349,7 +411,6 @@ def _handle_response(response, sid):
 # ── Emission helpers ──────────────────────────────────────────────────────────
 
 def _emit_robot_message(message: dict, sid=None):
-    """Emit robot_message to a specific client or broadcast to all."""
     if _socketio is None:
         return
     if sid:
@@ -359,7 +420,6 @@ def _emit_robot_message(message: dict, sid=None):
 
 
 def _emit_state_update():
-    """Broadcast current robot state to all connected clients."""
     if _socketio is None:
         return
     _socketio.emit(
@@ -370,7 +430,6 @@ def _emit_state_update():
 
 
 def _emit_error(sid=None):
-    """Emit error state and reset to idle_presence."""
     robot_context.state = 'idle_presence'
     _emit_state_update()
     if sid and _socketio:

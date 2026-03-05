@@ -1,25 +1,23 @@
 """
 services/cloud/google_api.py
 
-Google STT and TTS wrapper — adapted from the physical robot for cloud deployment.
+Google Cloud Speech-to-Text and Text-to-Speech wrappers.
 
-Changes from original:
-    - Credentials built from individual env vars (GOOGLE_CLIENT_EMAIL,
-      GOOGLE_PRIVATE_KEY, GOOGLE_PROJECT_ID) instead of a local JSON file.
-    - Falls back to GOOGLE_APPLICATION_CREDENTIALS file path if individual
-      vars are not set (preserves local development compatibility).
-    - Audio encoding updated to WEBM_OPUS to match browser MediaRecorder output.
+STT configurations:
+    stt_config          — batch recognition for WEBM_OPUS blobs (legacy fallback)
+    streaming_config    — streaming recognition for LINEAR16 PCM from AudioWorklet
+                          (same format as the physical robot's PyAudio stream)
 
-Original robot used LINEAR16 from PyAudio mic. Browser sends WEBM_OPUS (webm/opus).
+TTS configuration:
+    voice / tts_config  — Spanish female voice, LINEAR16 at 24kHz
 """
 
 import json
+import logging
 import os
 
 from google.cloud import speech, texttospeech
 from google.oauth2 import service_account
-
-import logging
 
 logger = logging.getLogger('GoogleAPI')
 
@@ -72,9 +70,6 @@ def _build_credentials():
                 scopes=['https://www.googleapis.com/auth/cloud-platform']
             )
 
-    logger.warning('No Google credentials found — clients will use ADC')
-    return None
-
 
 # Build credentials once at module load
 _credentials = _build_credentials()
@@ -101,8 +96,7 @@ clientSTT = speech.SpeechClient(
     credentials=_credentials
 ) if _credentials else speech.SpeechClient()
 
-# STT Config — WEBM_OPUS matches browser MediaRecorder output
-# (original robot used LINEAR16 from PyAudio physical mic)
+# Batch STT — WEBM_OPUS for legacy audio blob path
 stt_config = speech.RecognitionConfig(
     encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
     sample_rate_hertz=48000,
@@ -112,8 +106,23 @@ stt_config = speech.RecognitionConfig(
     audio_channel_count=1,
 )
 
+# Streaming STT — LINEAR16 PCM from AudioWorklet (same as robot's PyAudio stream)
+# AudioWorklet sends Int16 samples at 16000 Hz, mono.
+streaming_config = speech.StreamingRecognitionConfig(
+    config=speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=16000,
+        language_code='es-ES',
+        enable_automatic_punctuation=True,
+        model='latest_long',   # optimised for continuous speech
+        audio_channel_count=1,
+    ),
+    interim_results=False,  # we only want final results to keep it simple
+    single_utterance=True,  # stop streaming after first complete utterance
+)
 
-# ── Public API (unchanged from robot) ────────────────────────────────────────
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def speech_to_text(audio_bytes: bytes) -> str:
     """
@@ -130,6 +139,42 @@ def speech_to_text(audio_bytes: bytes) -> str:
     return ''.join(
         result.alternatives[0].transcript for result in response.results
     )
+
+
+def streaming_speech_to_text(pcm_generator) -> str:
+    """
+    Streaming STT for LINEAR16 PCM chunks from AudioWorklet.
+
+    Equivalent to compose_streaming_fallback_speech_to_text() on the robot.
+    Streams audio chunks to Google as they arrive, returns the final transcript
+    once the utterance is complete (single_utterance=True stops the stream).
+
+    Args:
+        pcm_generator: Generator that yields raw bytes (Int16 PCM at 16000 Hz)
+
+    Returns:
+        Transcribed text string, or empty string if no speech detected
+    """
+    def request_generator():
+        for chunk in pcm_generator:
+            if chunk:
+                yield speech.StreamingRecognizeRequest(audio_content=chunk)
+
+    transcript = ''
+    try:
+        responses = clientSTT.streaming_recognize(streaming_config, request_generator())
+        for response in responses:
+            for result in response.results:
+                if result.is_final and result.alternatives:
+                    transcript = result.alternatives[0].transcript
+                    logger.info(f'Streaming STT final result: "{transcript}"')
+                    return transcript
+    except Exception as e:
+        logger.error(f'Streaming STT error: {e}', exc_info=True)
+
+    if not transcript:
+        logger.warning('Streaming STT returned empty transcript')
+    return transcript
 
 
 def text_to_speech(text: str) -> bytes:

@@ -1,36 +1,7 @@
-/**
- * useAudioRecorder.jsx
- *
- * Audio recording hook using AudioWorklet to capture raw PCM LINEAR16
- * and stream it to the server via WebSocket — identical to the physical
- * robot's PyAudio → queue → Google streaming STT pipeline.
- *
- * Flow:
- *   getUserMedia (mono, 16kHz)
- *     → AudioContext (16000 Hz, mono)
- *       → PCMProcessor (AudioWorklet) — 100ms chunks of Int16 PCM
- *         → socket.emit('audio_chunk', base64_pcm)   [while recording]
- *   stopRecording()
- *     → socket.emit('audio_stream_end')
- *     → server runs Google streaming_recognize → emits 'transcription_result'
- *     → state_machine processes LLM + TTS
- *
- * Silence detection is kept from the previous implementation using
- * a separate AnalyserNode on the same stream, so the UX auto-stops
- * recording when the user stops speaking.
- */
-
 import axios from 'axios';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { SERVER_URL } from '../../../config';
+import { AUDIO_SETTINGS, SERVER_URL } from '../../../config';
 import { useWebSocketContext } from '../../../contexts/WebSocketContext';
-
-// ── Audio constants ────────────────────────────────────────────────────────
-// Match the robot's PyAudio configuration
-const SAMPLE_RATE = 16000;          // Hz — same as robot's mic
-const SILENCE_THRESHOLD = 15;      // RMS amplitude (0-255 scale)
-const SILENCE_DURATION_MS = 2000;  // ms of silence before auto-stop
-const MAX_RECORDING_MS = 50000;    // hard cap
 
 const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
     const [isRecording, setIsRecording] = useState(false);
@@ -38,216 +9,332 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [transcribedText, setTranscribedText] = useState(null);
 
-    // Refs — avoid stale closures in callbacks
+    const mediaRecorderRef = useRef(null);
+    const audioChunksRef = useRef([]);
     const audioContextRef = useRef(null);
-    const workletNodeRef = useRef(null);
     const analyserRef = useRef(null);
-    const streamRef = useRef(null);
     const silenceTimerRef = useRef(null);
     const silenceStartTimeRef = useRef(null);
-    const maxRecordingTimerRef = useRef(null);
+    const silenceThreshold = useRef(AUDIO_SETTINGS.silenceThreshold);
+    const silenceDurationRef = useRef(AUDIO_SETTINGS.silenceDuration);
     const isRecordingRef = useRef(false);
     const isWaitingResponseRef = useRef(isWaitingResponse);
+
+    const lastAverageRef = useRef(0);
     const consecutiveSilenceFramesRef = useRef(0);
+    const consecutiveAudioFramesRef = useRef(0);
+
+    const workletNodeRef = useRef(null);
 
     const { socket, emit } = useWebSocketContext();
 
-    // Keep isWaitingResponseRef in sync with prop
+    const initializeAudioContext = useCallback(() => {
+        if (!audioContextRef.current) {
+            try {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                audioContextRef.current = new AudioContext();
+
+                if (audioContextRef.current.state === 'suspended') {
+                    audioContextRef.current.resume();
+                }
+
+                analyserRef.current = audioContextRef.current.createAnalyser();
+                analyserRef.current.fftSize = 256;
+                console.log('AudioContext initialized successfully');
+                return true;
+            } catch (error) {
+                console.error('Error initializing audio context:', error);
+                return false;
+            }
+        }
+        return true;
+    }, []);
+
     useEffect(() => {
         isWaitingResponseRef.current = isWaitingResponse;
-    }, [isWaitingResponse]);
 
-    // ── Silence detection (runs on rAF while recording) ─────────────────────
-
-    const detectSilence = useCallback((stream) => {
-        if (!analyserRef.current) return;
-
-        const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-
-        const check = () => {
-            if (!isRecordingRef.current) return;
-
-            analyserRef.current.getByteFrequencyData(dataArray);
-            const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-
-            if (average < SILENCE_THRESHOLD) {
-                consecutiveSilenceFramesRef.current++;
-                if (!silenceStartTimeRef.current) {
-                    silenceStartTimeRef.current = Date.now();
-                }
-                const silenceDuration = Date.now() - silenceStartTimeRef.current;
-                if (silenceDuration >= SILENCE_DURATION_MS) {
-                    console.log(`🤫 Silence detected (${silenceDuration}ms) — stopping`);
-                    stopRecording();
-                    return;
-                }
-            } else {
-                consecutiveSilenceFramesRef.current = 0;
-                silenceStartTimeRef.current = null;
-            }
-
-            silenceTimerRef.current = requestAnimationFrame(check);
-        };
-
-        silenceTimerRef.current = requestAnimationFrame(check);
-    }, []);  // stopRecording added below via ref pattern
-
-    // ── Stop recording ───────────────────────────────────────────────────────
+        if (isWaitingResponseRef.current && isRecordingRef.current) {
+            console.log('Waiting for response, stopping recording...');
+            stopRecording();
+        }
+    }, [isWaitingResponse])
 
     const stopRecording = useCallback(() => {
-        if (!isRecordingRef.current) return;
+        if (mediaRecorderRef.current && isRecordingRef.current) {
+            console.log('🛑 Stopping recording...');
+            isRecordingRef.current = false;
+            mediaRecorderRef.current.stop()
+            setIsRecording(false);
 
-        console.log('⏹ Stopping PCM stream recording');
-        isRecordingRef.current = false;
-        setIsRecording(false);
+            if (silenceTimerRef.current) {
+                cancelAnimationFrame(silenceTimerRef.current);
+                silenceTimerRef.current = null;
+            }
 
-        // Cancel timers
-        if (silenceTimerRef.current) {
-            cancelAnimationFrame(silenceTimerRef.current);
-            silenceTimerRef.current = null;
-        }
-        if (maxRecordingTimerRef.current) {
-            clearTimeout(maxRecordingTimerRef.current);
-            maxRecordingTimerRef.current = null;
-        }
+            silenceStartTimeRef.current = null;
+            consecutiveSilenceFramesRef.current = 0;
+            consecutiveAudioFramesRef.current = 0;
 
-        // Disconnect worklet
-        if (workletNodeRef.current) {
-            workletNodeRef.current.port.onmessage = null;
-            workletNodeRef.current.disconnect();
-            workletNodeRef.current = null;
-        }
-
-        // Stop media tracks
-        if (streamRef.current) {
-            streamRef.current.getTracks().forEach(t => t.stop());
-            streamRef.current = null;
-        }
-
-        // Signal end of stream to server → triggers Google streaming_recognize
-        const sent = emit('audio_stream_end', {});
-        if (sent) {
-            console.log('audio_stream_end sent — server will run streaming STT');
-        } else {
-            console.error('❌ Could not send audio_stream_end — socket disconnected');
+            if (workletNodeRef.current) {
+                workletNodeRef.current.port.onmessage = null;
+                workletNodeRef.current.disconnect();
+                workletNodeRef.current = null;
+            }
+            emit('audio_stream_end', {});
+            console.log('📡 audio_stream_end sent');
         }
     }, [emit]);
 
-    // ── Start recording ──────────────────────────────────────────────────────
+    const detectSilence = useCallback((stream) => {
+
+        if (!initializeAudioContext()) {
+            console.error('Failed to initialize audio context');
+            return;
+        }
+
+        if (!audioContextRef.current || !analyserRef.current || isWaitingResponseRef.current) return;
+
+        const source = audioContextRef.current.createMediaStreamSource(stream);
+        source.connect(analyserRef.current);
+        const bufferLength = analyserRef.current.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+
+        const checkSilence = () => {
+            if (!isRecordingRef.current || isWaitingResponseRef.current) {
+                console.log('Recording stopped, stopping silence detection...');
+                cancelAnimationFrame(silenceTimerRef.current);
+                silenceTimerRef.current = null;
+                return;
+            }
+
+            analyserRef.current.getByteFrequencyData(dataArray);
+
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+            }
+            const average = sum / bufferLength;
+
+            if (average < silenceThreshold.current) {
+
+                consecutiveSilenceFramesRef.current++;
+                consecutiveAudioFramesRef.current = 0;
+
+                if (!silenceStartTimeRef.current) {
+                    silenceStartTimeRef.current = Date.now();
+                    console.log(`🔇 SILENCE DETECTED - Timer init (avg: ${average.toFixed(2)}, threshold: ${silenceThreshold.current})`);
+                } else {
+                    const silenceDuration = Date.now() - silenceStartTimeRef.current;
+                    const remainingTime = silenceDurationRef.current - silenceDuration;
+
+                    if (consecutiveSilenceFramesRef.current % 60 === 0) {
+                        console.log(`⏱️  Silence: ${(silenceDuration / 1000).toFixed(1)}s / ${(silenceDurationRef.current / 1000).toFixed(1)}s ( ${(remainingTime / 1000).toFixed(1)}s remaining)`);
+                    }
+
+                    if (silenceDuration >= silenceDurationRef.current) {
+                        console.log(`✅ SILENCE THRESHOLD REACHED - Stopping recording (${(silenceDuration / 1000).toFixed(1)}s of silence)`);
+                        stopRecording();
+                        return;
+                    }
+                }
+            } else {
+                consecutiveAudioFramesRef.current++;
+
+                if (silenceStartTimeRef.current !== null) {
+                    const interruptedAfter = Date.now() - silenceStartTimeRef.current;
+                    console.log(`🔊 AUDIO DETECTED - Silence timer RESET after ${(interruptedAfter / 1000).toFixed(1)}s (avg: ${average.toFixed(2)})`);
+                    silenceStartTimeRef.current = null;
+                    consecutiveSilenceFramesRef.current = 0;
+                }
+
+                if (consecutiveAudioFramesRef.current % 180 === 0) {
+                    console.log(`🎤 Audio detected, continuing recording... (avg: ${average.toFixed(2)})`);
+                }
+            }
+            silenceTimerRef.current = requestAnimationFrame(checkSilence);
+        };
+
+        console.log('Starting silence detection...');
+        silenceTimerRef.current = requestAnimationFrame(checkSilence);
+    }, [stopRecording, initializeAudioContext]);
 
     const startRecording = useCallback(async () => {
         if (isWaitingResponseRef.current || isRecordingRef.current || isSpeaking) {
-            console.log('❌ Recording blocked:', {
+            console.log('❌ Recording unable to start:', {
                 isWaiting: isWaitingResponseRef.current,
                 isRecording: isRecordingRef.current,
-                isSpeaking,
+                isSpeaking
             });
             return;
         }
 
         try {
-            console.log('Starting PCM stream recording (LINEAR16, 16kHz)...');
-
-            // Request mono microphone access
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    sampleRate: SAMPLE_RATE,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                },
-            });
-            streamRef.current = stream;
-
-            // Create AudioContext at exactly 16000 Hz to avoid resampling
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-                await audioContextRef.current.close();
-            }
-            audioContextRef.current = new AudioContext({ sampleRate: SAMPLE_RATE });
-
-            // Analyser for silence detection
-            analyserRef.current = audioContextRef.current.createAnalyser();
-            analyserRef.current.fftSize = 256;
-
-            // Load the PCM processor worklet (served from /public)
-            await audioContextRef.current.audioWorklet.addModule('/pcm-processor.js');
-
-            const source = audioContextRef.current.createMediaStreamSource(stream);
-            const workletNode = new AudioWorkletNode(audioContextRef.current, 'pcm-processor');
-            workletNodeRef.current = workletNode;
-
-            // Connect: source → analyser (for silence detection)
-            source.connect(analyserRef.current);
-            // Connect: source → worklet (for PCM capture)
-            source.connect(workletNode);
-            // worklet output not needed for audio playback
-            workletNode.connect(audioContextRef.current.destination);
-
-            // Signal start to server
-            emit('audio_stream_start', {});
-            console.log('audio_stream_start sent');
-
-            // Forward PCM chunks to server
-            workletNode.port.onmessage = (event) => {
-                if (!isRecordingRef.current) return;
-                const pcmBuffer = event.data.pcm; // ArrayBuffer with Int16 PCM
-                // Convert to base64 for socket transport
-                const uint8 = new Uint8Array(pcmBuffer);
-                let binary = '';
-                for (let i = 0; i < uint8.length; i++) {
-                    binary += String.fromCharCode(uint8[i]);
-                }
-                const base64Chunk = btoa(binary);
-                emit('audio_chunk', { data: base64Chunk });
-            };
-
-            isRecordingRef.current = true;
+            console.log('🎤 Starting recording...');
+            audioChunksRef.current = [];
             silenceStartTimeRef.current = null;
             consecutiveSilenceFramesRef.current = 0;
-            setIsRecording(true);
+            consecutiveAudioFramesRef.current = 0;
 
-            // Hard cap timer
-            maxRecordingTimerRef.current = setTimeout(() => {
+            if (!navigator.mediaDevices || !window.MediaRecorder) {
+                console.error('❌ MediaDevices or MediaRecorder not supported');
+                return;
+            }
+
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 48000 } });
+
+            mediaRecorderRef.current = new MediaRecorder(stream, {
+                mimeType: AUDIO_SETTINGS.mimeType,
+                audioBitsPerSecond: AUDIO_SETTINGS.audioBitsPerSecond
+            });
+            mediaRecorderRef.current.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    audioChunksRef.current.push(event.data);
+                }
+            };
+
+            const maxRecordingTime = setTimeout(() => {
                 if (isRecordingRef.current) {
-                    console.log('Max recording time reached');
+                    console.log(`Max recording time reached`);
                     stopRecording();
                 }
-            }, MAX_RECORDING_MS);
+            }, AUDIO_SETTINGS.maxRecordingTime);
 
-            // Start silence detection
+            mediaRecorderRef.current.onstop = async () => {
+                clearTimeout(maxRecordingTime);
+                const audioBlob = new Blob(audioChunksRef.current, { type: AUDIO_SETTINGS.mimeType });
+                console.log(`📦 Recording stopped - Size: ${(audioBlob.size / 1024).toFixed(2)} KB, Chunks: ${audioChunksRef.current.length}`);
+
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            try {
+                if (!audioContextRef.current) throw new Error('No AudioContext');
+                await audioContextRef.current.audioWorklet.addModule('/pcm-processor.js');
+
+                const workletSource = audioContextRef.current.createMediaStreamSource(stream);
+                const workletNode = new AudioWorkletNode(audioContextRef.current, 'pcm-processor');
+                workletNodeRef.current = workletNode;
+                workletSource.connect(workletNode);
+
+                emit('audio_stream_start', {});
+                console.log('audio_stream_start sent');
+
+                workletNode.port.onmessage = (event) => {
+                    if (!isRecordingRef.current) return;
+                    const uint8 = new Uint8Array(event.data.pcm);
+                    let binary = '';
+                    for (let i = 0; i < uint8.length; i++) {
+                        binary += String.fromCharCode(uint8[i]);
+                    }
+                    emit('audio_chunk', { data: btoa(binary) });
+                };
+            } catch (workletError) {
+                console.warn('⚠️ AudioWorklet unavailable, falling back to blob STT:', workletError);
+                // Fallback: restaurar onstop para enviar el blob como antes
+                mediaRecorderRef.current.onstop = async () => {
+                    clearTimeout(maxRecordingTime);
+                    const audioBlob = new Blob(audioChunksRef.current, { type: AUDIO_SETTINGS.mimeType });
+                    console.log(`Fallback blob - Size: ${(audioBlob.size / 1024).toFixed(2)} KB`);
+                    if (audioChunksRef.current.length > 0) {
+                        await handleTranscribe(audioBlob);
+                    }
+                    stream.getTracks().forEach(track => track.stop());
+                };
+            }
+
+            isRecordingRef.current = true;
+            mediaRecorderRef.current.start(100);
+            setIsRecording(true);
+
+            console.log('✅ Successfully started recording');
+
             detectSilence(stream);
-
-            console.log('✅ PCM stream recording active');
-
         } catch (error) {
-            console.error('❌ Error starting PCM recording:', error);
-            isRecordingRef.current = false;
-            setIsRecording(false);
+            console.error('❌ Error starting recording:', error);
+            return;
         }
-    }, [isSpeaking, emit, detectSilence, stopRecording]);
+    }, [detectSilence, stopRecording, isSpeaking, emit]);
 
-    // ── TTS playback ─────────────────────────────────────────────────────────
+    useEffect(() => {
+        return () => {
+            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+                audioContextRef.current.close();
+            }
+        };
+    }, []);
 
-    const handleSynthesize = useCallback(async (text) => {
+    const handleTranscribe = async (audioBlob) => {
+        if (isWaitingResponseRef.current) {
+            console.log('⏸️  Waiting for response, canceling transcription');
+            return;
+        }
+
+        if (!audioBlob || audioBlob.size === 0) {
+            console.log('⚠️ No audio blob to transcribe');
+            return;
+        }
+
+        isWaitingResponseRef.current = true;
+
+        const actualBlob = audioBlob.blob || audioBlob;
+        console.log(`🔄 Transcribing audio blob of size: ${(actualBlob.size / 1024).toFixed(2)} KB`);
+
+        try {
+            await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = reject;
+                reader.onloadend = () => {
+                    try {
+                        const base64Audio = reader.result.split(',')[1];
+                        const messageObject = {
+                            type: 'audio',
+                            data: base64Audio,
+                            socketId: socket?.id,
+                        };
+                        const sent = emit('client_message', messageObject);
+                        if (sent) {
+                            console.log('Audio sent via socket for transcription and processing');
+                            isWaitingResponseRef.current = false;
+                        } else {
+                            console.error('❌ Socket not connected, cannot send audio');
+                            isWaitingResponseRef.current = false;
+                        }
+                    } catch (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve();
+                };
+                reader.readAsDataURL(actualBlob);
+            });
+        } catch (error) {
+            console.error('Error transcribing audio:', error);
+            isWaitingResponseRef.current = false;
+        }
+    };
+
+    const handleSynthesize = async (text) => {
         if (!text) return;
 
         try {
             setIsSpeaking(true);
             console.log('🔊 Synthesizing speech...');
 
-            const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text });
+            const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text: text });
 
-            if (response.data?.audioContent) {
-                const audioSrc = `data:audio/wav;base64,${response.data.audioContent}`;
+            if (response.data && response.data.audioContent) {
+                const audioContent = response.data.audioContent;
+                const audioSrc = `data:audio/wav;base64,${audioContent}`;
                 setAudioSrc(audioSrc);
 
                 await new Promise((resolve, reject) => {
                     const audio = new Audio(audioSrc);
-                    audio.onerror = reject;
+                    audio.onerror = (e) => {
+                        console.error('Error playing audio:', e);
+                        reject(e);
+                    };
                     audio.onended = () => {
-                        console.log('✅ TTS playback finished');
+                        console.log('✅ Audio playback finished');
                         resolve();
                     };
                     audio.play().catch(reject);
@@ -259,25 +346,16 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
             setIsSpeaking(false);
             setAudioSrc(null);
         }
-    }, []);
+    };
 
-    // ── Cleanup on unmount ───────────────────────────────────────────────────
+    handleSynthesize.cancel = () => {
+        setIsSpeaking(false);
+        setAudioSrc(null);
+    };
 
-    useEffect(() => {
-        return () => {
-            isRecordingRef.current = false;
-            if (silenceTimerRef.current) cancelAnimationFrame(silenceTimerRef.current);
-            if (maxRecordingTimerRef.current) clearTimeout(maxRecordingTimerRef.current);
-            if (workletNodeRef.current) {
-                workletNodeRef.current.port.onmessage = null;
-                workletNodeRef.current.disconnect();
-            }
-            if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
-            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-                audioContextRef.current.close();
-            }
-        };
-    }, []);
+    const onStop = () => {
+        setIsSpeaking(false);
+    };
 
     return {
         isRecording,
@@ -286,7 +364,9 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
         isSpeaking,
         startRecording,
         stopRecording,
+        handleTranscribe,
         handleSynthesize,
+        onStop
     };
 };
 

@@ -74,8 +74,9 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
             setMessages((prev) => [...prev, { text: message.text, sender: 'robot' }]);
             await handleSynthesize(message.text);
         }
+        emit('tts_complete', {});
         setIsWaitingResponse(false);
-    }, [notifyRobotState, handleSynthesize]);
+    }, [notifyRobotState, handleSynthesize, emit]);
 
     const handleWizardMessage = useCallback(async (message) => {
         if (message.state) {
@@ -83,8 +84,9 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
         }
         setMessages((prev) => [...prev, { text: message.text, sender: 'wizard' }]);
         await handleSynthesize(message.text);
+        emit('tts_complete', {});
         setIsWaitingResponse(false);
-    }, [notifyRobotState, handleSynthesize]);
+    }, [notifyRobotState, handleSynthesize, emit]);
 
     const handleClientMessage = (message) => {
         if (message.text?.trim()) {

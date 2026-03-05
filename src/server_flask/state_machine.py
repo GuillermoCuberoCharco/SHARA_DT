@@ -219,8 +219,9 @@ def _process_audio_query(audio_b64: str, sid: str):
         response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
         if response is None:
-            logger.warning('Empty response from server.query')
-            _emit_error(sid)
+            logger.warning('Empty transcription or response — returning to listening silently')
+            robot_context.state = 'listening'
+            _emit_state_update()
             return
 
         _handle_response(response, sid)

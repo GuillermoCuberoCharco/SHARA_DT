@@ -295,29 +295,25 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
                 const audioSrc = `data:audio/wav;base64,${audioContent}`;
                 setAudioSrc(audioSrc);
 
-                const audio = new Audio(audioSrc);
-                audio.onerror = (e) => {
-                    console.error('Error playing audio:', e);
-                    setIsSpeaking(false);
-                    setAudioSrc(null);
-                }
-
-                audio.onended = () => {
-                    console.log('✅ Audio playback finished');
-                    setIsSpeaking(false);
-                    setAudioSrc(null);
-                }
-
-                await audio.play();
+                await new Promise((resolve, reject) => {
+                    const audio = new Audio(audioSrc);
+                    audio.onerror = (e) => {
+                        console.error('Error playing audio:', e);
+                        reject(e);
+                    };
+                    audio.onended = () => {
+                        console.log('✅ Audio playback finished');
+                        resolve();
+                    };
+                    audio.play().catch(reject);
+                });
             }
         } catch (error) {
             console.error('❌ Error synthesizing speech:', error);
-            setIsSpeaking(false);
-            setAudioSrc(null);
         } finally {
             setIsSpeaking(false);
+            setAudioSrc(null);
         }
-
     };
 
     handleSynthesize.cancel = () => {

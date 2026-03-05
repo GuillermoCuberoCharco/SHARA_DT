@@ -24,8 +24,6 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
     const consecutiveSilenceFramesRef = useRef(0);
     const consecutiveAudioFramesRef = useRef(0);
 
-    const workletNodeRef = useRef(null);
-
     const { socket, emit } = useWebSocketContext();
 
     const initializeAudioContext = useCallback(() => {
@@ -74,16 +72,8 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
             silenceStartTimeRef.current = null;
             consecutiveSilenceFramesRef.current = 0;
             consecutiveAudioFramesRef.current = 0;
-
-            if (workletNodeRef.current) {
-                workletNodeRef.current.port.onmessage = null;
-                workletNodeRef.current.disconnect();
-                workletNodeRef.current = null;
-            }
-            emit('audio_stream_end', {});
-            console.log('📡 audio_stream_end sent');
         }
-    }, [emit]);
+    }, []);
 
     const detectSilence = useCallback((stream) => {
 
@@ -148,7 +138,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
                 }
 
                 if (consecutiveAudioFramesRef.current % 180 === 0) {
-                    console.log(`🎤 Audio detected, continuing recording... (avg: ${average.toFixed(2)})`);
+                    console.log(`🎤 Audio detected, continuing recording... (avg: ${average.toFixed(2)})`)
                 }
             }
             silenceTimerRef.current = requestAnimationFrame(checkSilence);
@@ -202,46 +192,14 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
             mediaRecorderRef.current.onstop = async () => {
                 clearTimeout(maxRecordingTime);
                 const audioBlob = new Blob(audioChunksRef.current, { type: AUDIO_SETTINGS.mimeType });
-                console.log(`📦 Recording stopped - Size: ${(audioBlob.size / 1024).toFixed(2)} KB, Chunks: ${audioChunksRef.current.length}`);
 
+                console.log(`📦 Failed recording - Size: ${(audioBlob.size / 1024).toFixed(2)} KB, Chunks: ${audioChunksRef.current.length}`);
+
+                if (audioChunksRef.current.length > 0) {
+                    await handleTranscribe(audioBlob);
+                }
                 stream.getTracks().forEach(track => track.stop());
             };
-
-            try {
-                if (!audioContextRef.current) throw new Error('No AudioContext');
-                await audioContextRef.current.audioWorklet.addModule('/pcm-processor.js');
-
-                const workletSource = audioContextRef.current.createMediaStreamSource(stream);
-                const workletNode = new AudioWorkletNode(audioContextRef.current, 'pcm-processor');
-                workletNodeRef.current = workletNode;
-                workletSource.connect(workletNode);
-
-                emit('audio_stream_start', {});
-                console.log('audio_stream_start sent');
-
-                workletNode.port.onmessage = (event) => {
-                    if (!isRecordingRef.current) return;
-                    const uint8 = new Uint8Array(event.data.pcm);
-                    let binary = '';
-                    for (let i = 0; i < uint8.length; i++) {
-                        binary += String.fromCharCode(uint8[i]);
-                    }
-                    emit('audio_chunk', { data: btoa(binary) });
-                };
-            } catch (workletError) {
-                console.warn('⚠️ AudioWorklet unavailable, falling back to blob STT:', workletError);
-                // Fallback: restaurar onstop para enviar el blob como antes
-                mediaRecorderRef.current.onstop = async () => {
-                    clearTimeout(maxRecordingTime);
-                    const audioBlob = new Blob(audioChunksRef.current, { type: AUDIO_SETTINGS.mimeType });
-                    console.log(`Fallback blob - Size: ${(audioBlob.size / 1024).toFixed(2)} KB`);
-                    if (audioChunksRef.current.length > 0) {
-                        await handleTranscribe(audioBlob);
-                    }
-                    stream.getTracks().forEach(track => track.stop());
-                };
-            }
-
             isRecordingRef.current = true;
             mediaRecorderRef.current.start(100);
             setIsRecording(true);
@@ -253,7 +211,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
             console.error('❌ Error starting recording:', error);
             return;
         }
-    }, [detectSilence, stopRecording, isSpeaking, emit]);
+    }, [detectSilence, stopRecording, isSpeaking]);
 
     useEffect(() => {
         return () => {
@@ -280,6 +238,10 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
         console.log(`🔄 Transcribing audio blob of size: ${(actualBlob.size / 1024).toFixed(2)} KB`);
 
         try {
+            // Wrap FileReader in a Promise so the await below actually waits
+            // for onloadend before continuing — the old pattern used readAsDataURL
+            // (non-blocking) inside try/finally, so finally ran synchronously
+            // BEFORE onloadend fired, resetting isWaitingResponseRef too early.
             await new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onerror = reject;
@@ -291,9 +253,11 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
                             data: base64Audio,
                             socketId: socket?.id,
                         };
+                        // emit() uses socketRef.current internally — always fresh,
+                        // avoids the stale-closure problem with the `socket` value.
                         const sent = emit('client_message', messageObject);
                         if (sent) {
-                            console.log('Audio sent via socket for transcription and processing');
+                            console.log('📤 Audio sent via socket for transcription and processing');
                             isWaitingResponseRef.current = false;
                         } else {
                             console.error('❌ Socket not connected, cannot send audio');
@@ -311,6 +275,10 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
             console.error('Error transcribing audio:', error);
             isWaitingResponseRef.current = false;
         }
+        // On success, isWaitingResponseRef.current stays true.
+        // It is released when the server responds: robot_message →
+        // handleRobotMessage in UI.jsx → setIsWaitingResponse(false) →
+        // useEffect syncs isWaitingResponseRef.current = false.
     };
 
     const handleSynthesize = async (text) => {
@@ -356,6 +324,8 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
     const onStop = () => {
         setIsSpeaking(false);
     };
+
+
 
     return {
         isRecording,

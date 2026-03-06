@@ -140,8 +140,8 @@ def streaming_stt(audio_generator):
     Returns:
         str: Transcript from streaming STT, or empty string if no speech detected
     """
-    transcript = streaming_speech_to_text(audio_generator)
-    logger.info(f"Streaming STT result: '{transcript}'")
+    transcript, silence_time = streaming_speech_to_text(audio_generator)
+    logger.info(f"Streaming STT result: ({silence_time}s): '{transcript}'")
     return transcript
 
 

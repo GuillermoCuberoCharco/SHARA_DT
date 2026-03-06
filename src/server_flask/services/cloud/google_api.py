@@ -117,8 +117,7 @@ streaming_config = speech.StreamingRecognitionConfig(
         model='latest_long',   # optimised for continuous speech
         audio_channel_count=1,
     ),
-    interim_results=False,  # we only want final results to keep it simple
-    single_utterance=True,  # stop streaming after first complete utterance
+    interim_results=True
 )
 
 

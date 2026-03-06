@@ -87,7 +87,10 @@ class MessageNamespace(Namespace):
         # The generator blocks until chunks arrive or None sentinel is pushed.
         def pcm_generator():
             while True:
-                chunk = audio_q.get()
+                try:
+                    chunk = audio_q.get(timeout=30)  # timeout to prevent hanging if client disappears
+                except gevent.queue.Empty:
+                    break
                 if chunk is None:
                     break
                 yield chunk

@@ -122,7 +122,7 @@ def on_audio_stream_start(pcm_generator, sid: str):
     _emit_state_update()
 
     # Launch streaming pipeline in thread pool — same as robot's global_executor.submit()
-    gevent.spawn(_process_streaming_query, pcm_generator, sid)
+    _executor.submit(_process_streaming_query, pcm_generator, sid)
 
 
 def on_audio_message(audio_b64: str, sid: str):

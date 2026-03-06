@@ -24,6 +24,8 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
     const consecutiveSilenceFramesRef = useRef(0);
     const consecutiveAudioFramesRef = useRef(0);
 
+    const workletNodeRef = useRef(null);
+
     const { socket, emit } = useWebSocketContext();
 
     const initializeAudioContext = useCallback(() => {
@@ -72,6 +74,14 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
             silenceStartTimeRef.current = null;
             consecutiveSilenceFramesRef.current = 0;
             consecutiveAudioFramesRef.current = 0;
+
+            if (workletNodeRef.current) {
+                workletNodeRef.current.port.onmessage = null;
+                workletNodeRef.current.disconnect();
+                workletNodeRef.current = null;
+            }
+            emit('audio_stream_end', {});
+            console.log('audio_stream_end sent');
         }
     }, []);
 
@@ -193,13 +203,56 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
                 clearTimeout(maxRecordingTime);
                 const audioBlob = new Blob(audioChunksRef.current, { type: AUDIO_SETTINGS.mimeType });
 
-                console.log(`📦 Failed recording - Size: ${(audioBlob.size / 1024).toFixed(2)} KB, Chunks: ${audioChunksRef.current.length}`);
+                console.log(`📦 Recording stopped - Size: ${(audioBlob.size / 1024).toFixed(2)} KB, Chunks: ${audioChunksRef.current.length}`);
 
-                if (audioChunksRef.current.length > 0) {
-                    await handleTranscribe(audioBlob);
-                }
                 stream.getTracks().forEach(track => track.stop());
             };
+
+            try {
+                if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+                    const AudioContext = window.AudioContext || window.webkitAudioContext;
+                    audioContextRef.current = new AudioContext();
+                    analyserRef.current = audioContextRef.current.createAnalyser();
+                    analyserRef.current.fftSize = 256;
+                    console.log('AudioContext initialized successfully');
+                }
+                if (audioContextRef.current.state === 'suspended') {
+                    await audioContextRef.current.resume();
+                }
+
+                await audioContextRef.current.audioWorklet.addModule('/pcm-processor.js');
+
+                const workletSource = audioContextRef.current.createMediaStreamSource(stream);
+                const workletNode = new AudioWorkletNode(audioContextRef.current, 'pcm-processor');
+                workletNodeRef.current = workletNode;
+                workletSource.connect(workletNode);
+
+                emit('audio_stream_start', {});
+                console.log('audio_stream_start sent');
+
+                workletNode.port.onmessage = (event) => {
+                    if (!isRecordingRef.current) return;
+                    const uint8 = new Uint8Array(event.data.pcm);
+                    let binary = '';
+                    for (let i = 0; i < uint8.length; i++) {
+                        binary += String.fromCharCode(uint8[i]);
+                    }
+                    emit('audio_chunk', { data: btoa(binary) });
+                };
+            } catch (workletError) {
+                console.warn('⚠️ AudioWorklet unavailable, falling back to blob STT:', workletError);
+                // Fallback: on stop, send the entire recording as a blob for transcription
+                mediaRecorderRef.current.onstop = async () => {
+                    clearTimeout(maxRecordingTime);
+                    const audioBlob = new Blob(audioChunksRef.current, { type: AUDIO_SETTINGS.mimeType });
+                    console.log(`📦 FALLBACK Recording stopped - Size: ${(audioBlob.size / 1024).toFixed(2)} KB, Chunks: ${audioChunksRef.current.length}`);
+                    if (audioChunksRef.current.length > 0) {
+                        await handleTranscribe(audioBlob);
+                    }
+                    stream.getTracks().forEach(track => track.stop());
+                };
+            }
+
             isRecordingRef.current = true;
             mediaRecorderRef.current.start(100);
             setIsRecording(true);
@@ -211,7 +264,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
             console.error('❌ Error starting recording:', error);
             return;
         }
-    }, [detectSilence, stopRecording, isSpeaking]);
+    }, [detectSilence, stopRecording, isSpeaking, emit]);
 
     useEffect(() => {
         return () => {

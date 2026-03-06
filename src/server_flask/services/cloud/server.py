@@ -12,7 +12,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from .google_api import speech_to_text, text_to_speech
+from .google_api import speech_to_text, text_to_speech, streaming_speech_to_text
 from .openai_api import generate_response, load_conversation_history, save_conversation_history, clear_conversation_history
 
 logger = logging.getLogger('Server')
@@ -140,13 +140,8 @@ def streaming_stt(audio_generator):
     Returns:
         str: Transcript from streaming STT, or empty string if no speech detected
     """
-    transcript, silence_detection_time = compose_streaming_fallback_speech_to_text(audio_generator)
-    
-    if silence_detection_time is not None:
-        logger.info(f"Streaming STT result (silence detection: {silence_detection_time:.3f} seconds) :: '{transcript}'")
-    else:
-        logger.info(f"Streaming STT result (no final result) :: '{transcript}'")
-    
+    transcript = google_api.streaming_speech_to_text(audio_generator)
+    logger.info(f"Streaming STT result: '{transcript}'")
     return transcript
 
 

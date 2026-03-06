@@ -26,6 +26,7 @@ Streaming STT pipeline (matches robot's main.py exactly):
 import base64
 import concurrent.futures
 import logging
+import gevent
 
 from robot_context import robot_context
 from proactive_service import ProactiveService
@@ -59,13 +60,13 @@ def proactive_event_handler(event: str, params: dict = None):
     logger.info(f'Proactive event: {event} — {params}')
 
     if event == 'ask_how_are_you':
-        _executor.submit(
+        gevent.spawn(
             process_transition,
             'proactive2processingquery',
             {'question': 'how_are_you', **params}
         )
     elif event == 'ask_who_are_you':
-        _executor.submit(
+        gevent.spawn(
             process_transition,
             'proactive2processingquery',
             {'question': 'who_are_you'}
@@ -88,10 +89,10 @@ def on_user_detected(user_data: dict):
         _proactive.update('sensor', 'unknown_face')
 
     if robot_context.state == 'idle_presence':
-        _executor.submit(process_transition, 'idle_presence2listening', {})
+        gevent.spawn(process_transition, 'idle_presence2listening', {})
     elif robot_context.state == 'idle':
-        _executor.submit(process_transition, 'idle2idle_presence', {})
-        _executor.submit(process_transition, 'idle_presence2listening', {})
+        gevent.spawn(process_transition, 'idle2idle_presence', {})
+        gevent.spawn(process_transition, 'idle_presence2listening', {})
 
 
 def on_user_lost(user_data: dict):
@@ -101,7 +102,7 @@ def on_user_lost(user_data: dict):
     _proactive.cancel_timers()
 
     if robot_context.state == 'listening':
-        _executor.submit(process_transition, 'listening2idle_presence', {})
+        gevent.spawn(process_transition, 'listening2idle_presence', {})
 
 
 def on_audio_stream_start(pcm_generator, sid: str):
@@ -121,7 +122,7 @@ def on_audio_stream_start(pcm_generator, sid: str):
     _emit_state_update()
 
     # Launch streaming pipeline in thread pool — same as robot's global_executor.submit()
-    _executor.submit(_process_streaming_query, pcm_generator, sid)
+    gevent.spawn(_process_streaming_query, pcm_generator, sid)
 
 
 def on_audio_message(audio_b64: str, sid: str):
@@ -158,9 +159,9 @@ def on_tts_complete(sid: str):
     logger.info(f'TTS complete from {sid}, continue={robot_context.continue_conversation}')
 
     if robot_context.continue_conversation:
-        _executor.submit(process_transition, 'speaking2listening', {})
+        gevent.spawn(process_transition, 'speaking2listening', {})
     else:
-        _executor.submit(process_transition, 'speaking2idle_presence', {})
+        gevent.spawn(process_transition, 'speaking2idle_presence', {})
 
 
 # ── Core state transitions ────────────────────────────────────────────────────
@@ -226,26 +227,16 @@ def _process_streaming_query(pcm_generator, sid: str):
         if not transcript:
             logger.warning('Streaming STT returned empty transcript — silent or no speech')
             # Echo empty result so frontend knows we heard nothing
+            robot_context.state = 'listening'
+            _emit_state_update()
+
             if _socketio:
                 _socketio.emit(
                     'transcription_result',
-                    {'text': ''},
+                    {'text': transcript},
                     to=sid,
                     namespace='/message'
                 )
-            robot_context.state = 'listening'
-            _emit_state_update()
-            return
-
-        # Echo transcript to chat UI (same as robot's implicit display)
-        logger.info(f'Streaming STT transcript: "{transcript}"')
-        if _socketio:
-            _socketio.emit(
-                'transcription_result',
-                {'text': transcript},
-                to=sid,
-                namespace='/message'
-            )
 
         # Step 2: LLM + TTS
         request = _server.Request(
@@ -263,9 +254,6 @@ def _process_streaming_query(pcm_generator, sid: str):
 
         _handle_response(response, sid)
 
-    except concurrent.futures.TimeoutError:
-        logger.error('Timeout in streaming query processing')
-        _emit_error(sid)
     except Exception as e:
         logger.error(f'Error in streaming query: {e}', exc_info=True)
         _emit_error(sid)

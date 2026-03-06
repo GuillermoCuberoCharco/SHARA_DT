@@ -114,7 +114,7 @@ def on_audio_stream_start(pcm_generator, sid: str):
     """
     logger.info(f'Audio stream start from {sid}, state={robot_context.state}')
 
-    if robot_context.state not in ('recording', 'processing_query', 'speaking'):
+    if robot_context.state not in ('listening', 'idle_presence', 'idle'):
         logger.warning(f'audio_stream_start in unexpected state: {robot_context.state} — ignoring')
         return
 

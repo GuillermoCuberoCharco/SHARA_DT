@@ -114,7 +114,7 @@ def on_audio_stream_start(pcm_generator, sid: str):
     """
     logger.info(f'Audio stream start from {sid}, state={robot_context.state}')
 
-    if robot_context.state not in ('listening', 'idle_presence', 'idle'):
+    if robot_context.state not in ('recording', 'processing_query', 'speaking'):
         logger.warning(f'audio_stream_start in unexpected state: {robot_context.state} — ignoring')
         return
 
@@ -227,7 +227,7 @@ def _process_streaming_query(pcm_generator, sid: str):
         if not transcript:
             logger.warning('Streaming STT returned empty transcript — silent or no speech')
             # Echo empty result so frontend knows we heard nothing
-            robot_context.state = 'listening'
+            robot_context.state = 'idle_presence'
             _emit_state_update()
 
             if _socketio:

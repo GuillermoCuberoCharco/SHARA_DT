@@ -88,7 +88,7 @@ class MessageNamespace(Namespace):
         def pcm_generator():
             while True:
                 try:
-                    chunk = audio_q.get(timeout=30)  # timeout to prevent hanging if client disappears
+                    chunk = audio_q.get(timeout=10)  # timeout to prevent hanging if client disappears
                 except queue.Empty:
                     break
                 if chunk is None:

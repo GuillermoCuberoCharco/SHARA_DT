@@ -22,7 +22,7 @@ Events emitted to frontend:
 """
 
 import logging
-import gevent.queue
+import queue
 
 from flask import request
 from flask_socketio import Namespace, emit
@@ -35,7 +35,7 @@ logger = logging.getLogger('MessageHandler')
 _clients: dict = {}
 
 # Per-session audio queues for PCM streaming
-# sid → gevent.queue.Queue of bytes chunks
+# sid → queue.Queue of bytes chunks
 _audio_queues: dict = {}
 
 
@@ -80,7 +80,7 @@ class MessageNamespace(Namespace):
         _cleanup_audio_queue(sid)
 
         # Create fresh queue (maxsize=0 → unlimited)
-        audio_q = gevent.queue.Queue()
+        audio_q = queue.Queue()
         _audio_queues[sid] = audio_q
 
         # Pass a generator over the queue to the state machine.
@@ -89,7 +89,7 @@ class MessageNamespace(Namespace):
             while True:
                 try:
                     chunk = audio_q.get(timeout=30)  # timeout to prevent hanging if client disappears
-                except gevent.queue.Empty:
+                except queue.Empty:
                     break
                 if chunk is None:
                     break

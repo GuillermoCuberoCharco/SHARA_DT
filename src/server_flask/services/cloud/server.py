@@ -140,7 +140,7 @@ def streaming_stt(audio_generator):
     Returns:
         str: Transcript from streaming STT, or empty string if no speech detected
     """
-    transcript = google_api.streaming_speech_to_text(audio_generator)
+    transcript = streaming_speech_to_text(audio_generator)
     logger.info(f"Streaming STT result: '{transcript}'")
     return transcript
 

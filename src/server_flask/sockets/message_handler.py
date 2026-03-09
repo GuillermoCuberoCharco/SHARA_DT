@@ -23,8 +23,8 @@ Events emitted to frontend:
 
 import base64
 import logging
+import queue
 
-from gevent import queue
 from flask import request
 from flask_socketio import Namespace, emit
 
@@ -36,10 +36,9 @@ logger = logging.getLogger('MessageHandler')
 _clients: dict = {}
 
 # Per-session audio queues for PCM streaming.
-# gevent.queue.Queue allows greenlets (WebSocket events) to put() chunks
-# while the ThreadPoolExecutor thread running streaming STT does get().
-# This mirrors the robot's mic.streaming_queue (queue.Queue) pattern exactly:
-# PyAudio callback thread → put(); global_executor STT thread → get().
+# Uses stdlib queue.Queue — monkey-patched by gevent.monkey.patch_all() in app.py,
+# so put() from greenlets correctly wakes get() in ThreadPoolExecutor threads.
+# Mirrors mic.streaming_queue = queue.Queue(maxsize=100) in the physical robot.
 _audio_queues: dict = {}
 
 
@@ -124,7 +123,7 @@ class MessageNamespace(Namespace):
         try:
             raw_bytes = base64.b64decode(b64_data)
             try:
-                audio_q.put_nowait(raw_bytes)  # non-blocking, mirrors mic's put_nowait
+                audio_q.put_nowait(raw_bytes)  # mirrors mic's put_nowait
             except queue.Full:
                 logger.warning(f'[/message] Audio queue full, dropping chunk ({sid})')
         except Exception as e:
@@ -212,6 +211,5 @@ def _cleanup_audio_queue(sid: str):
     """
     audio_q = _audio_queues.pop(sid, None)
     if audio_q:
-        # Send sentinel so any blocked generator exits cleanly
         audio_q.put(None)
         logger.debug(f'Audio queue cleaned up for {sid}')

@@ -13,6 +13,13 @@ Architecture:
     /*                   — serves React SPA static build
 """
 
+# ── Gevent monkey-patch — MUST be first, before any other import ──────────────
+# This patches stdlib queue.Queue so it works correctly across greenlets and
+# native threads (ThreadPoolExecutor). Without this, put() from a greenlet
+# does not wake up a thread blocked in get(), breaking the PCM streaming pipeline.
+from gevent import monkey
+monkey.patch_all()
+
 import base64
 import logging
 import os

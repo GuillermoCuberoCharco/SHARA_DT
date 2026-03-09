@@ -21,9 +21,10 @@ Events emitted to frontend:
     transcription_result— {text} echo of what the user said (for chat display)
 """
 
+import base64
 import logging
-import queue
 
+from gevent import queue
 from flask import request
 from flask_socketio import Namespace, emit
 
@@ -34,8 +35,11 @@ logger = logging.getLogger('MessageHandler')
 # Track connected web clients: sid → {username, registered}
 _clients: dict = {}
 
-# Per-session audio queues for PCM streaming
-# sid → queue.Queue of bytes chunks
+# Per-session audio queues for PCM streaming.
+# gevent.queue.Queue allows greenlets (WebSocket events) to put() chunks
+# while the ThreadPoolExecutor thread running streaming STT does get().
+# This mirrors the robot's mic.streaming_queue (queue.Queue) pattern exactly:
+# PyAudio callback thread → put(); global_executor STT thread → get().
 _audio_queues: dict = {}
 
 
@@ -69,9 +73,11 @@ class MessageNamespace(Namespace):
     def on_audio_stream_start(self, data):
         """
         Browser signals start of a new PCM LINEAR16 audio stream.
-        Creates a queue that will receive PCM chunks, then passes the
-        generator to state_machine so it can launch Google streaming STT
-        in a background thread — identical to the robot's mic.enable_streaming().
+
+        Creates a gevent.queue.Queue (equivalent to mic.enable_streaming() on
+        the robot, which creates a queue.Queue(maxsize=100)).
+        Passes a generator over that queue to state_machine — identical to
+        mic.get_audio_generator() on the robot.
         """
         sid = request.sid
         logger.info(f'[/message] audio_stream_start from {sid}')
@@ -79,19 +85,20 @@ class MessageNamespace(Namespace):
         # Cancel any previous incomplete stream
         _cleanup_audio_queue(sid)
 
-        # Create fresh queue (maxsize=0 → unlimited)
-        audio_q = queue.Queue()
+        # Create fresh queue — mirrors mic.enable_streaming()'s queue.Queue(maxsize=100)
+        audio_q = queue.Queue(maxsize=100)
         _audio_queues[sid] = audio_q
 
-        # Pass a generator over the queue to the state machine.
-        # The generator blocks until chunks arrive or None sentinel is pushed.
+        # Generator equivalent to mic.get_audio_generator():
+        #   while True: chunk = streaming_queue.get(); if chunk is None: break; yield chunk
         def pcm_generator():
             while True:
                 try:
-                    chunk = audio_q.get(timeout=10)  # timeout to prevent hanging if client disappears
+                    chunk = audio_q.get(timeout=10)  # timeout guards against client disappearing
                 except queue.Empty:
+                    logger.warning(f'[/message] PCM generator timed out waiting for chunks ({sid})')
                     break
-                if chunk is None:
+                if chunk is None:  # None sentinel — mirrors mic's stop value
                     break
                 yield chunk
 
@@ -100,8 +107,9 @@ class MessageNamespace(Namespace):
     def on_audio_chunk(self, data):
         """
         PCM chunk (base64-encoded Int16 bytes) from AudioWorklet.
-        Puts decoded bytes into the session queue — the generator in
-        pcm_generator() will yield it to Google streaming STT.
+
+        Decodes and puts raw bytes into the session queue — equivalent to
+        mic's PyAudio callback doing streaming_queue.put_nowait(in_data).
         """
         sid = request.sid
         audio_q = _audio_queues.get(sid)
@@ -114,23 +122,26 @@ class MessageNamespace(Namespace):
             return
 
         try:
-            import base64
             raw_bytes = base64.b64decode(b64_data)
-            audio_q.put(raw_bytes)
+            try:
+                audio_q.put_nowait(raw_bytes)  # non-blocking, mirrors mic's put_nowait
+            except queue.Full:
+                logger.warning(f'[/message] Audio queue full, dropping chunk ({sid})')
         except Exception as e:
             logger.warning(f'[/message] Failed to decode audio_chunk: {e}')
 
     def on_audio_stream_end(self, data):
         """
         Browser signals end of stream.
-        Sends None sentinel to unblock the generator → Google STT finalizes.
+        Sends None sentinel to unblock the generator — mirrors mic's
+        streaming_queue.put_nowait(None) on silence detection.
         """
         sid = request.sid
         logger.info(f'[/message] audio_stream_end from {sid}')
 
         audio_q = _audio_queues.get(sid)
         if audio_q:
-            audio_q.put(None)  # sentinel → generator stops
+            audio_q.put(None)  # sentinel → generator stops → Google STT finalizes
         # Queue entry remains until STT thread finishes; cleaned on disconnect or next stream_start
 
     # ── Legacy audio blob handler (kept for backwards compatibility) ──────────
@@ -195,7 +206,10 @@ class MessageNamespace(Namespace):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _cleanup_audio_queue(sid: str):
-    """Drain and remove the audio queue for a session."""
+    """
+    Drain and remove the audio queue for a session.
+    Mirrors mic.disable_streaming(): sends sentinel so any blocked generator exits cleanly.
+    """
     audio_q = _audio_queues.pop(sid, None)
     if audio_q:
         # Send sentinel so any blocked generator exits cleanly

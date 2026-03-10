@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AUDIO_SETTINGS, SERVER_URL } from '../../../config';
 import { useWebSocketContext } from '../../../contexts/WebSocketContext';
 
-const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
+const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSubmitted) => {
     const [isRecording, setIsRecording] = useState(false);
     const [audioSrc, setAudioSrc] = useState(null);
     const [isSpeaking, setIsSpeaking] = useState(false);
@@ -81,9 +81,11 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
                 workletNodeRef.current = null;
             }
             emit('audio_stream_end', {});
+            isWaitingResponseRef.current = true;
+            if (onAudioSubmitted) onAudioSubmitted();
             console.log('audio_stream_end sent');
         }
-    }, []);
+    }, [onAudioSubmitted]);
 
     const detectSilence = useCallback((stream) => {
 
@@ -334,22 +336,30 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
         // useEffect syncs isWaitingResponseRef.current = false.
     };
 
-    const handleSynthesize = async (text) => {
-        if (!text) return;
+    const handleSynthesize = async (text, audioB64 = null) => {
+        if (!text && !audioB64) return;
 
         try {
             setIsSpeaking(true);
             console.log('🔊 Synthesizing speech...');
 
-            const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text: text });
+            let audioSrcUrl = null;
 
-            if (response.data && response.data.audioContent) {
-                const audioContent = response.data.audioContent;
-                const audioSrc = `data:audio/wav;base64,${audioContent}`;
-                setAudioSrc(audioSrc);
+            if (audioB64) {
+                audioSrcUrl = `data:audio/wav;base64,${audioB64}`;
+            } else if (text) {
+                // Fallback: request TTS synthesis via HTTP (only when no audio in message)
+                const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text });
+                if (response.data?.audioContent) {
+                    audioSrcUrl = `data:audio/wav;base64,${response.data.audioContent}`;
+                }
+            }
+
+            if (audioSrcUrl) {
+                setAudioSrc(audioSrcUrl);
 
                 await new Promise((resolve, reject) => {
-                    const audio = new Audio(audioSrc);
+                    const audio = new Audio(audioSrcUrl);
                     audio.onerror = (e) => {
                         console.error('Error playing audio:', e);
                         reject(e);

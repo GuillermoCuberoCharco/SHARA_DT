@@ -48,9 +48,11 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
         startRecording,
         stopRecording,
         handleSynthesize
-    } = useAudioRecorder(() => {
-        setIsWaitingResponse(false);
-    }, isWaitingResponse);
+    } = useAudioRecorder(
+        () => { setIsWaitingResponse(false); },
+        isWaitingResponse,
+        () => { setIsWaitingResponse(true); }
+    );
 
     /**
      * Extracts the state name from the message and notifies RobotView.
@@ -72,7 +74,7 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
         if (message.text?.trim()) {
             console.log("Received robot message:", message.text);
             setMessages((prev) => [...prev, { text: message.text, sender: 'robot' }]);
-            await handleSynthesize(message.text);
+            await handleSynthesize(message.text, message.audio || null);
         }
         emit('tts_complete', {});
         setIsWaitingResponse(false);
@@ -165,11 +167,14 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
         socket.on('wizard_message', handleWizardMessage);
         socket.on('client_message', handleClientMessage);
         socket.on('transcription_result', handleClientMessage);
+        socket.on('audio_empty', () => { setIsWaitingResponse(false); });
 
         return () => {
             socket.off('robot_message');
             socket.off('wizard_message');
+            socket.off('client_message');
             socket.off('transcription_result');
+            socket.off('audio_empty');
         };
     }, [socket, handleRobotMessage, handleWizardMessage]);
 

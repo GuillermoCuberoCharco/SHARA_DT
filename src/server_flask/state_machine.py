@@ -238,6 +238,8 @@ def _process_audio_stream_end(audio_bytes: bytes, sid: str):
             logger.warning('Empty audio buffer — nothing to transcribe')
             robot_context.state = 'idle_presence'
             _emit_state_update()
+            if _socketio and sid:
+                _socketio.emit('audio_empty', {}, to=sid, namespace='/message')
             return
 
         # Batch STT + LLM + TTS in one call
@@ -252,6 +254,8 @@ def _process_audio_stream_end(audio_bytes: bytes, sid: str):
             logger.warning('Empty transcription or response — returning to idle')
             robot_context.state = 'idle_presence'
             _emit_state_update()
+            if _socketio and sid:
+                _socketio.emit('audio_empty', {}, to=sid, namespace='/message')
             return
 
         # Echo transcription so front-end can display what was heard

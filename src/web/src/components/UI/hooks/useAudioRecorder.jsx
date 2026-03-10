@@ -32,7 +32,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
         if (!audioContextRef.current) {
             try {
                 const AudioContext = window.AudioContext || window.webkitAudioContext;
-                audioContextRef.current = new AudioContext();
+                audioContextRef.current = new AudioContext({ sampleRate: AUDIO_SETTINGS.sampleRate });
 
                 if (audioContextRef.current.state === 'suspended') {
                     audioContextRef.current.resume();
@@ -40,7 +40,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
 
                 analyserRef.current = audioContextRef.current.createAnalyser();
                 analyserRef.current.fftSize = 256;
-                console.log('AudioContext initialized successfully');
+                console.log(`AudioContext initialized successfully at ${audioContextRef.current.sampleRate} Hz`);
                 return true;
             } catch (error) {
                 console.error('Error initializing audio context:', error);
@@ -180,7 +180,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
                 return;
             }
 
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 48000 } });
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: AUDIO_SETTINGS.sampleRate } });
 
             mediaRecorderRef.current = new MediaRecorder(stream, {
                 mimeType: AUDIO_SETTINGS.mimeType,
@@ -211,10 +211,10 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse) => {
             try {
                 if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
                     const AudioContext = window.AudioContext || window.webkitAudioContext;
-                    audioContextRef.current = new AudioContext();
+                    audioContextRef.current = new AudioContext({ sampleRate: AUDIO_SETTINGS.sampleRate });
                     analyserRef.current = audioContextRef.current.createAnalyser();
                     analyserRef.current.fftSize = 256;
-                    console.log('AudioContext initialized successfully');
+                    console.log(`AudioContext initialized at ${audioContextRef.current.sampleRate} Hz`);
                 }
                 if (audioContextRef.current.state === 'suspended') {
                     await audioContextRef.current.resume();

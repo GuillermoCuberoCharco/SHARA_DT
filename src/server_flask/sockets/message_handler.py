@@ -23,7 +23,6 @@ Events emitted to frontend:
 
 import base64
 import logging
-import queue
 
 from flask import request
 from flask_socketio import Namespace, emit
@@ -35,11 +34,9 @@ logger = logging.getLogger('MessageHandler')
 # Track connected web clients: sid → {username, registered}
 _clients: dict = {}
 
-# Per-session audio queues for PCM streaming.
-# Uses stdlib queue.Queue — monkey-patched by gevent.monkey.patch_all() in app.py,
-# so put() from greenlets correctly wakes get() in ThreadPoolExecutor threads.
-# Mirrors mic.streaming_queue = queue.Queue(maxsize=100) in the physical robot.
-_audio_queues: dict = {}
+# Per-session PCM audio buffers.
+# Chunks are accumulated as they arrive and handed to batch STT on stream_end.
+_audio_buffers: dict = {}  # sid → bytearray
 
 
 class MessageNamespace(Namespace):
@@ -51,8 +48,8 @@ class MessageNamespace(Namespace):
     def on_disconnect(self):
         logger.info(f'[/message] Client disconnected: {request.sid}')
         _clients.pop(request.sid, None)
-        # Clean up any active audio queue for this session
-        _cleanup_audio_queue(request.sid)
+        # Clean up any active audio buffer for this session
+        _cleanup_audio_buffer(request.sid)
 
     def on_register_client(self, data):
         """
@@ -72,48 +69,29 @@ class MessageNamespace(Namespace):
     def on_audio_stream_start(self, data):
         """
         Browser signals start of a new PCM LINEAR16 audio stream.
-
-        Creates a gevent.queue.Queue (equivalent to mic.enable_streaming() on
-        the robot, which creates a queue.Queue(maxsize=100)).
-        Passes a generator over that queue to state_machine — identical to
-        mic.get_audio_generator() on the robot.
+        Creates a byte buffer to accumulate chunks until stream_end.
         """
         sid = request.sid
         logger.info(f'[/message] audio_stream_start from {sid}')
 
-        # Cancel any previous incomplete stream
-        _cleanup_audio_queue(sid)
+        # Cancel any previous incomplete buffer
+        _cleanup_audio_buffer(sid)
 
-        # Create fresh queue — mirrors mic.enable_streaming()'s queue.Queue(maxsize=100)
-        audio_q = queue.Queue(maxsize=100)
-        _audio_queues[sid] = audio_q
+        # Fresh buffer for this stream
+        _audio_buffers[sid] = bytearray()
 
-        # Generator equivalent to mic.get_audio_generator():
-        #   while True: chunk = streaming_queue.get(); if chunk is None: break; yield chunk
-        def pcm_generator():
-            while True:
-                try:
-                    chunk = audio_q.get(timeout=10)  # timeout guards against client disappearing
-                except queue.Empty:
-                    logger.warning(f'[/message] PCM generator timed out waiting for chunks ({sid})')
-                    break
-                if chunk is None:  # None sentinel — mirrors mic's stop value
-                    break
-                yield chunk
-
-        state_machine.on_audio_stream_start(pcm_generator(), sid)
+        # Notify state machine to update state to 'recording'
+        state_machine.on_audio_stream_start(sid)
 
     def on_audio_chunk(self, data):
         """
         PCM chunk (base64-encoded Int16 bytes) from AudioWorklet.
-
-        Decodes and puts raw bytes into the session queue — equivalent to
-        mic's PyAudio callback doing streaming_queue.put_nowait(in_data).
+        Appends raw bytes to the session buffer.
         """
         sid = request.sid
-        audio_q = _audio_queues.get(sid)
-        if audio_q is None:
-            logger.warning(f'[/message] audio_chunk from {sid} with no active queue — ignoring')
+        buf = _audio_buffers.get(sid)
+        if buf is None:
+            logger.warning(f'[/message] audio_chunk from {sid} with no active buffer — ignoring')
             return
 
         b64_data = data.get('data', '') if isinstance(data, dict) else ''
@@ -122,26 +100,26 @@ class MessageNamespace(Namespace):
 
         try:
             raw_bytes = base64.b64decode(b64_data)
-            try:
-                audio_q.put_nowait(raw_bytes)  # mirrors mic's put_nowait
-            except queue.Full:
-                logger.warning(f'[/message] Audio queue full, dropping chunk ({sid})')
+            buf.extend(raw_bytes)
         except Exception as e:
             logger.warning(f'[/message] Failed to decode audio_chunk: {e}')
 
     def on_audio_stream_end(self, data):
         """
         Browser signals end of stream.
-        Sends None sentinel to unblock the generator — mirrors mic's
-        streaming_queue.put_nowait(None) on silence detection.
+        Collects the buffered PCM bytes and hands them to the state machine
+        for batch STT processing.
         """
         sid = request.sid
         logger.info(f'[/message] audio_stream_end from {sid}')
 
-        audio_q = _audio_queues.get(sid)
-        if audio_q:
-            audio_q.put(None)  # sentinel → generator stops → Google STT finalizes
-        # Queue entry remains until STT thread finishes; cleaned on disconnect or next stream_start
+        buf = _audio_buffers.pop(sid, None)
+        if buf:
+            audio_bytes = bytes(buf)
+            logger.info(f'[/message] Collected {len(audio_bytes)} PCM bytes, submitting to state machine')
+            state_machine.on_audio_stream_end(audio_bytes, sid)
+        else:
+            logger.warning(f'[/message] audio_stream_end with no buffer for {sid}')
 
     # ── Legacy audio blob handler (kept for backwards compatibility) ──────────
 
@@ -204,12 +182,8 @@ class MessageNamespace(Namespace):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _cleanup_audio_queue(sid: str):
-    """
-    Drain and remove the audio queue for a session.
-    Mirrors mic.disable_streaming(): sends sentinel so any blocked generator exits cleanly.
-    """
-    audio_q = _audio_queues.pop(sid, None)
-    if audio_q:
-        audio_q.put(None)
-        logger.debug(f'Audio queue cleaned up for {sid}')
+def _cleanup_audio_buffer(sid: str):
+    """Discard any in-progress audio buffer for a session."""
+    buf = _audio_buffers.pop(sid, None)
+    if buf:
+        logger.debug(f'Audio buffer cleaned up for {sid}')

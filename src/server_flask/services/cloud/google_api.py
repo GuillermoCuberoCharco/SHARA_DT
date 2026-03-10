@@ -99,7 +99,7 @@ clientSTT = speech.SpeechClient(
 # Batch STT
 stt_config = speech.RecognitionConfig(
     encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-    sample_rate_hertz=48000,
+    sample_rate_hertz=16000,
     language_code='es-ES',
     enable_automatic_punctuation=True,
     model='latest_short',

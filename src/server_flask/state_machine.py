@@ -11,16 +11,20 @@ Hardware events → WebSocket events mapping:
     wakeface face_listen      → user_detected       (from FaceDetection.jsx)
     wakeface face_not_listen  → user_lost
 
-Streaming STT pipeline (matches robot's main.py exactly):
-    1. audio_stream_start → on_audio_stream_start(generator, sid)
+Batch STT pipeline:
+    1. audio_stream_start → on_audio_stream_start(sid)
        → state = 'recording'
-       → _executor.submit(_process_streaming_query, generator, sid)
-    2. audio_chunk events → message_handler puts bytes into queue → generator yields
-    3. audio_stream_end  → message_handler puts None sentinel → generator stops
-    4. _process_streaming_query:
-       a. streaming_stt(generator) → transcript  [Google streaming_recognize]
-       b. query_with_text(transcript) → LLM + TTS
-       c. _handle_response → emit robot_message
+    2. audio_chunk events → message_handler appends bytes to buffer
+    3. audio_stream_end  → message_handler collects buffer → on_audio_stream_end(audio_bytes, sid)
+       → _executor.submit(_process_audio_stream_end, audio_bytes, sid)
+    4. _process_audio_stream_end:
+       a. server.query(audio_bytes) → STT [Google recognize, unary] + LLM + TTS
+       b. _handle_response → emit robot_message
+
+Note: batch STT (unary gRPC) is used instead of streaming_recognize to avoid
+gevent hub starvation. After monkey.patch_all(), ThreadPoolExecutor workers run
+as greenlets; gRPC's streaming C-threads calling back into a gevent queue can
+block the hub. A unary gRPC call releases the GIL cleanly during I/O.
 """
 
 import base64
@@ -105,12 +109,10 @@ def on_user_lost(user_data: dict):
         gevent.spawn(process_transition, 'listening2idle_presence', {})
 
 
-def on_audio_stream_start(pcm_generator, sid: str):
+def on_audio_stream_start(sid: str):
     """
     PCM LINEAR16 stream started from AudioWorklet.
-
-    Equivalent to the robot's mic.enable_streaming() + executor.submit(server.streaming_stt).
-    Transitions to 'recording' and launches the streaming STT pipeline in background.
+    Just transitions to 'recording' state; actual STT runs on stream_end.
     """
     logger.info(f'Audio stream start from {sid}, state={robot_context.state}')
 
@@ -121,8 +123,19 @@ def on_audio_stream_start(pcm_generator, sid: str):
     robot_context.state = 'recording'
     _emit_state_update()
 
-    # Launch streaming pipeline in thread pool — same as robot's global_executor.submit()
-    _executor.submit(_process_streaming_query, pcm_generator, sid)
+
+def on_audio_stream_end(audio_bytes: bytes, sid: str):
+    """
+    PCM stream ended with all collected audio.
+    Submits batch STT → LLM → TTS pipeline.
+
+    Batch STT (clientSTT.recognize) is a unary gRPC call: releases the GIL
+    during its single network round-trip, so the gevent hub stays responsive.
+    This avoids the gRPC-streaming / gevent incompatibility that caused
+    transport close errors with the previous streaming pipeline.
+    """
+    logger.info(f'Audio stream end from {sid}, received {len(audio_bytes)} bytes')
+    _executor.submit(_process_audio_stream_end, audio_bytes, sid)
 
 
 def on_audio_message(audio_b64: str, sid: str):
@@ -208,54 +221,52 @@ def process_transition(transition: str, params: dict = None):
 
 # ── Query pipelines ───────────────────────────────────────────────────────────
 
-def _process_streaming_query(pcm_generator, sid: str):
+def _process_audio_stream_end(audio_bytes: bytes, sid: str):
     """
-    Streaming STT → LLM → TTS pipeline.
+    Batch STT → LLM → TTS pipeline for collected PCM audio.
 
-    Mirrors the robot's recording2processingquery transition:
-        1. streaming_future.result() → transcript
-        2. server.query_with_text(transcript) → response
-        3. _handle_response(response, sid)
+    Replaces the old _process_streaming_query. Uses clientSTT.recognize()
+    (unary gRPC) instead of streaming_recognize() (long-lived gRPC stream).
+    A unary call releases the GIL during I/O and does not require gRPC C-threads
+    to call back into the Python generator, avoiding gevent hub starvation.
     """
     try:
         robot_context.state = 'processing_query'
         _emit_state_update()
 
-        # Step 1: Streaming STT (blocks until audio_stream_end sentinel received)
-        transcript = _server.streaming_stt(pcm_generator)
-
-        if not transcript:
-            logger.warning('Streaming STT returned empty transcript — silent or no speech')
-            # Echo empty result so frontend knows we heard nothing
+        if not audio_bytes:
+            logger.warning('Empty audio buffer — nothing to transcribe')
             robot_context.state = 'idle_presence'
             _emit_state_update()
+            return
 
-            if _socketio:
-                _socketio.emit(
-                    'transcription_result',
-                    {'text': transcript},
-                    to=sid,
-                    namespace='/message'
-                )
-
-        # Step 2: LLM + TTS
+        # Batch STT + LLM + TTS in one call
         request = _server.Request(
-            text=transcript,
+            audio=audio_bytes,
             username=robot_context.username,
             proactive_question=robot_context.proactive_question,
         )
-        future = _executor.submit(_server.query_with_text, request)
-        response = future.result(timeout=SERVER_QUERY_TIMEOUT)
+        response = _server.query(request)
 
         if response is None:
-            logger.warning('Empty LLM response')
-            _emit_error(sid)
+            logger.warning('Empty transcription or response — returning to idle')
+            robot_context.state = 'idle_presence'
+            _emit_state_update()
             return
+
+        # Echo transcription so front-end can display what was heard
+        if _socketio and response.request.text:
+            _socketio.emit(
+                'transcription_result',
+                {'text': response.request.text},
+                to=sid,
+                namespace='/message'
+            )
 
         _handle_response(response, sid)
 
     except Exception as e:
-        logger.error(f'Error in streaming query: {e}', exc_info=True)
+        logger.error(f'Error in audio stream end processing: {e}', exc_info=True)
         _emit_error(sid)
 
 

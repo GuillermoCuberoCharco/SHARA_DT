@@ -25,6 +25,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
     const consecutiveAudioFramesRef = useRef(0);
 
     const workletNodeRef = useRef(null);
+    const startInProgressRef = useRef(false);
 
     const { socket, emit } = useWebSocketContext();
 
@@ -60,10 +61,13 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
     }, [isWaitingResponse])
 
     const stopRecording = useCallback(() => {
-        if (mediaRecorderRef.current && isRecordingRef.current) {
+        const recorder = mediaRecorderRef.current;
+        if (recorder && (isRecordingRef.current || recorder.state === 'recording')) {
             console.log('🛑 Stopping recording...');
             isRecordingRef.current = false;
-            mediaRecorderRef.current.stop()
+            if (recorder.state !== 'inactive') {
+                recorder.stop();
+            }
             setIsRecording(false);
 
             if (silenceTimerRef.current) {
@@ -85,7 +89,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
             if (onAudioSubmitted) onAudioSubmitted();
             console.log('audio_stream_end sent');
         }
-    }, [onAudioSubmitted]);
+    }, [emit, onAudioSubmitted]);
 
     const detectSilence = useCallback((stream) => {
 
@@ -161,8 +165,9 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
     }, [stopRecording, initializeAudioContext]);
 
     const startRecording = useCallback(async () => {
-        if (isWaitingResponseRef.current || isRecordingRef.current || isSpeaking) {
+        if (startInProgressRef.current || isWaitingResponseRef.current || isRecordingRef.current || isSpeaking) {
             console.log('❌ Recording unable to start:', {
+                startInProgress: startInProgressRef.current,
                 isWaiting: isWaitingResponseRef.current,
                 isRecording: isRecordingRef.current,
                 isSpeaking
@@ -171,6 +176,15 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
         }
 
         try {
+            startInProgressRef.current = true;
+
+            if (mediaRecorderRef.current?.state === 'recording') {
+                console.log('⚠️ MediaRecorder is already recording, skipping duplicate start');
+                isRecordingRef.current = true;
+                setIsRecording(true);
+                return;
+            }
+
             console.log('🎤 Starting recording...');
             audioChunksRef.current = [];
             silenceStartTimeRef.current = null;
@@ -208,6 +222,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                 console.log(`📦 Recording stopped - Size: ${(audioBlob.size / 1024).toFixed(2)} KB, Chunks: ${audioChunksRef.current.length}`);
 
                 stream.getTracks().forEach(track => track.stop());
+                mediaRecorderRef.current = null;
             };
 
             try {
@@ -265,6 +280,8 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
         } catch (error) {
             console.error('❌ Error starting recording:', error);
             return;
+        } finally {
+            startInProgressRef.current = false;
         }
     }, [detectSilence, stopRecording, isSpeaking, emit]);
 

@@ -6,6 +6,8 @@ import { useEffect, useRef, useState } from 'react';
 import { SERVER_URL } from '../../src/config';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
 
+const ENABLE_FACE_API_DESCRIPTORS = import.meta.env.VITE_ENABLE_FACE_API_DESCRIPTORS === 'true';
+
 const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     // FACE DETECTION REFERENCES
     const videoRef = useRef(null);
@@ -66,11 +68,15 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     };
 
     const loadFaceApiModels = async () => {
+        if (!ENABLE_FACE_API_DESCRIPTORS) {
+            faceApiLoadedRef.current = false;
+            return;
+        }
         try {
             console.log('Loading face-api models...');
-            await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
-            await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
-            await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
+            await faceapi.nets.ssdMobilenetv1.loadFromUri('/face-models');
+            await faceapi.nets.faceLandmark68Net.loadFromUri('/face-models');
+            await faceapi.nets.faceRecognitionNet.loadFromUri('/face-models');
             faceApiLoadedRef.current = true;
             console.log('face-api models loaded successfully');
         } catch (error) {
@@ -80,7 +86,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     };
 
     const extractDescriptorFromCanvas = async (canvas) => {
-        if (!faceApiLoadedRef.current) return null;
+        if (!ENABLE_FACE_API_DESCRIPTORS || !faceApiLoadedRef.current) return null;
         try {
             const detection = await faceapi
                 .detectSingleFace(canvas)

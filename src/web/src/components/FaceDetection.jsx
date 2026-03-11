@@ -1,6 +1,7 @@
 import * as blazeface from '@tensorflow-models/blazeface';
 import * as tf from '@tensorflow/tfjs';
 import axios from 'axios';
+import * as faceapi from 'face-api.js';
 import { useEffect, useRef, useState } from 'react';
 import { SERVER_URL } from '../../src/config';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
@@ -17,6 +18,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     // FACE RECOGNITION REFFERENCES WITH BATCH COLLECTION
     const batchCollectionRef = useRef({
         frames: [],
+        descriptors: [],
         isCollecting: false,
         sessionId: null,
         currentUserId: null
@@ -36,6 +38,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     const consecutiveLossesRef = useRef(0);
     const lastDetectionTimeRef = useRef(null);
     const recognitionCountRef = useRef(0);
+    const faceApiLoadedRef = useRef(false);
 
     const { emit } = useWebSocketContext();
 
@@ -59,6 +62,36 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
             setIsModelLoaded(true);
         } catch (error) {
             console.error('Error loading BlaceFace models:', error);
+        }
+    };
+
+    const loadFaceApiModels = async () => {
+        try {
+            console.log('Loading face-api models...');
+            await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
+            await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
+            await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
+            faceApiLoadedRef.current = true;
+            console.log('face-api models loaded successfully');
+        } catch (error) {
+            faceApiLoadedRef.current = false;
+            console.warn('face-api models unavailable, backend fallback descriptor path will be used:', error);
+        }
+    };
+
+    const extractDescriptorFromCanvas = async (canvas) => {
+        if (!faceApiLoadedRef.current) return null;
+        try {
+            const detection = await faceapi
+                .detectSingleFace(canvas)
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+
+            if (!detection?.descriptor) return null;
+            return Array.from(detection.descriptor);
+        } catch (error) {
+            console.warn('Failed to extract face descriptor from canvas:', error);
+            return null;
         }
     };
 
@@ -90,6 +123,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         console.log('Starting batch collection for face recognition');
         batch.isCollecting = true;
         batch.frames = [];
+        batch.descriptors = [];
         batch.sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
         setDetectionStatus('collecting');
@@ -127,6 +161,11 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
 
             canvas.toBlob(async (blob) => {
                 if (blob && batch.isCollecting) {
+                    const descriptor = await extractDescriptorFromCanvas(canvas);
+                    if (descriptor) {
+                        batch.descriptors.push(descriptor);
+                    }
+
                     const arrayBuffer = await blob.arrayBuffer();
                     batch.frames.push(new Uint8Array(arrayBuffer));
                     const currentCount = batch.frames.length;
@@ -161,6 +200,9 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
             formData.append('sessionId', batch.sessionId);
 
             if (currentUserIdRef.current) formData.append('userId', currentUserIdRef.current);
+            if (batch.descriptors.length > 0) {
+                formData.append('descriptors', JSON.stringify(batch.descriptors));
+            }
 
             const response = await axios.post(`${SERVER_URL}/api/recognize-face`, formData, {
                 headers: {
@@ -237,6 +279,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         const batch = batchCollectionRef.current;
         batch.isCollecting = false;
         batch.frames = [];
+        batch.descriptors = [];
         batch.sessionId = null;
     };
 
@@ -252,6 +295,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
 
     useEffect(() => {
         loadBlazeFaceModels();
+        loadFaceApiModels();
 
         return () => {
             if (detectionRef.current) {
@@ -306,15 +350,14 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
                         setIsFaceDetected(true);
                         onFaceDetected();
                     }
-                    // TODO: re-enable when /api/recognize-face is implemented
-                    // if (isFaceDetected) {
-                    //     const batch = batchCollectionRef.current;
-                    //     if (!batch.isCollecting && detectionStatus === 'idle') {
-                    //         startBatchCollection(predictions);
-                    //     } else if (batch.isCollecting && batch.frames.length < 5) {
-                    //         addFrameToBatch(predictions[0]);
-                    //     }
-                    // }
+                    if (isFaceDetected) {
+                        const batch = batchCollectionRef.current;
+                        if (!batch.isCollecting && detectionStatus === 'idle') {
+                            startBatchCollection(predictions);
+                        } else if (batch.isCollecting && batch.frames.length < 5) {
+                            addFrameToBatch(predictions[0]);
+                        }
+                    }
                 } else {
                     consecutiveDetectionsRef.current = 0;
                     consecutiveLossesRef.current++;
@@ -322,15 +365,16 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
 
                     if (isFaceDetected && consecutiveLossesRef.current >= 3 && timeSinceLastDetection > 10000) {
                         console.log('Face confirmed lost after', consecutiveLossesRef.current, 'losses and ', timeSinceLastDetection, 'ms')
+                        const lostUserId = currentUserIdRef.current;
                         setIsFaceDetected(false);
                         resetDetectionState();
                         onFaceLost();
 
                         setTimeout(() => {
                             if (!isFaceDetected) {
-                                if (currentUserIdRef.current) {
+                                if (lostUserId) {
                                     emit('user_lost', {
-                                        userId: currentUserIdRef.current
+                                        userId: lostUserId
                                     });
                                 }
                                 resetDetectionState();

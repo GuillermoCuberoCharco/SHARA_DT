@@ -21,6 +21,7 @@ from gevent import monkey
 monkey.patch_all()
 
 import base64
+import json
 import logging
 import os
 
@@ -60,6 +61,7 @@ from eyes.service import Eyes
 eyes = Eyes(socketio_instance=socketio)
 
 from services.cloud import server as cloud_server
+from services.camera_service import recognize_face_with_batch
 from proactive_service import ProactiveService
 import state_machine
 
@@ -102,6 +104,79 @@ def synthesize():
         return jsonify({'audioContent': audio_b64})
     except Exception as e:
         logger.error(f'TTS synthesis error: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/recognize-face', methods=['POST'])
+def recognize_face():
+    """
+    Batch face recognition endpoint.
+    Receives multipart images in field 'faces'.
+    """
+    try:
+        files = request.files.getlist('faces')
+        if not files:
+            return jsonify({'error': 'No face images provided in batch.'}), 400
+
+        face_buffers = []
+        for file in files[:10]:
+            data = file.read()
+            if data:
+                face_buffers.append(data)
+
+        if not face_buffers:
+            return jsonify({'error': 'Invalid or empty image files.'}), 400
+
+        known_user_id = request.form.get('userId') or None
+        client_id = request.form.get('clientId') or request.headers.get('X-Client-Id') or 'client_web'
+        session_id = request.form.get('sessionId') or f'session_{client_id}'
+        descriptors_raw = request.form.get('descriptors')
+        descriptors = None
+        if descriptors_raw:
+            try:
+                parsed = json.loads(descriptors_raw)
+                if isinstance(parsed, list):
+                    descriptors = parsed
+            except (json.JSONDecodeError, TypeError, ValueError):
+                logger.warning('Invalid descriptors payload, falling back to image-based extraction')
+
+        result = recognize_face_with_batch(
+            face_buffers,
+            session_id,
+            known_user_id,
+            descriptors=descriptors,
+        )
+        if result.get('error'):
+            return jsonify({'error': result['error']}), 500
+
+        user_status = 'existing'
+        if result.get('isUncertain'):
+            user_status = 'uncertain'
+        elif result.get('isNewUser'):
+            user_status = 'new_unknown'
+        elif result.get('needsIdentification'):
+            user_status = 'existing_unknown'
+
+        response = {
+            'userId': result.get('userId', 'unknown'),
+            'userName': result.get('userName', 'unknown'),
+            'isNewUser': bool(result.get('isNewUser', False)),
+            'needsIdentification': bool(result.get('needsIdentification', True)),
+            'userStatus': user_status,
+            'sessionId': session_id,
+            'clientId': client_id,
+            'batchSize': len(face_buffers),
+            'isUncertain': bool(result.get('isUncertain', False)),
+            'isConfirmed': bool(result.get('isConfirmed', False)),
+            'consensusRatio': result.get('consensusRatio'),
+            'confidence': result.get('confidence'),
+            'avgDistance': result.get('distance'),
+            'detectionProgress': result.get('detectionProgress'),
+            'totalRequired': result.get('totalRequired'),
+        }
+        return jsonify(response)
+    except Exception as e:
+        logger.error(f'Face recognition error: {e}', exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

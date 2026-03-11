@@ -171,6 +171,8 @@ def recognize_face():
             'consensusRatio': result.get('consensusRatio'),
             'confidence': result.get('confidence'),
             'avgDistance': result.get('distance'),
+            'pendingRecognition': bool(result.get('pendingRecognition', False)),
+            'historyCount': result.get('historyCount'),
             'detectionProgress': result.get('detectionProgress'),
             'totalRequired': result.get('totalRequired'),
         }

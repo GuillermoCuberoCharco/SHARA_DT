@@ -32,7 +32,9 @@ class RobotContext:
         self._lock = threading.Lock()
         self._state = {
             'state': 'idle',
+            'user_id': None,
             'username': None,
+            'needs_identification': False,
             'continue_conversation': False,
             'proactive_question': '',
             'unknown_user_interactions': 0,
@@ -72,6 +74,22 @@ class RobotContext:
     @username.setter
     def username(self, value):
         self.set('username', value)
+
+    @property
+    def user_id(self):
+        return self.get('user_id')
+
+    @user_id.setter
+    def user_id(self, value):
+        self.set('user_id', value)
+
+    @property
+    def needs_identification(self) -> bool:
+        return self.get('needs_identification', False)
+
+    @needs_identification.setter
+    def needs_identification(self, value: bool):
+        self.set('needs_identification', bool(value))
 
     @property
     def continue_conversation(self) -> bool:

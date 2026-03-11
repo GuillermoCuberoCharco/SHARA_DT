@@ -34,6 +34,7 @@ import gevent
 
 from robot_context import robot_context
 from proactive_service import ProactiveService
+from services.camera_service import update_user_name
 
 logger = logging.getLogger('StateMachine')
 
@@ -81,15 +82,26 @@ def proactive_event_handler(event: str, params: dict = None):
 
 def on_user_detected(user_data: dict):
     """Face detected by FaceDetection.jsx — replaces wf_event_handler 'face_listen'."""
+    user_id = user_data.get('userId')
     username = user_data.get('userName')
+    needs_identification = bool(user_data.get('needsIdentification', False))
     is_new_user = user_data.get('isNewUser', True)
 
-    logger.info(f'User detected: {username} (new={is_new_user}), state={robot_context.state}')
+    logger.info(
+        f'User detected: id={user_id}, username={username}, '
+        f'needs_identification={needs_identification}, new={is_new_user}, state={robot_context.state}'
+    )
 
-    if username:
+    robot_context.user_id = user_id
+    robot_context.needs_identification = needs_identification
+
+    is_known_user = bool(user_id) and not needs_identification and username not in (None, '', 'unknown')
+
+    if is_known_user:
         robot_context.username = username
         _proactive.update('sensor', 'close_face_recognized', {'username': username})
     else:
+        robot_context.username = None
         _proactive.update('sensor', 'unknown_face')
 
     if robot_context.state == 'idle_presence':
@@ -102,7 +114,9 @@ def on_user_detected(user_data: dict):
 def on_user_lost(user_data: dict):
     """Face lost — replaces wf_event_handler 'face_not_listen'."""
     logger.info(f'User lost, state={robot_context.state}')
+    robot_context.user_id = None
     robot_context.username = None
+    robot_context.needs_identification = False
     _proactive.cancel_timers()
 
     if robot_context.state == 'listening':
@@ -358,10 +372,9 @@ def _handle_proactive_query(params: dict):
             _emit_state_update()
             return
 
-        if question == 'who_are_you':
-            robot_context.proactive_question = 'who_are_you_response'
-        
-        _handle_response(response, sid=None)
+        next_proactive_question = 'who_are_you_response' if question == 'who_are_you' else ''
+
+        _handle_response(response, sid=None, next_proactive_question=next_proactive_question)
         _proactive.update('confirm', question, {'username': username})
 
     except concurrent.futures.TimeoutError:
@@ -374,16 +387,43 @@ def _handle_proactive_query(params: dict):
         _emit_state_update()
 
 
-def _handle_response(response, sid):
+def _handle_response(response, sid, next_proactive_question: str = ''):
     """
     Common response handler — updates context, sets eye state,
     emits robot_message to frontend.
     """
     robot_context.state = 'speaking'
     robot_context.continue_conversation = response.continue_conversation
-    robot_context.proactive_question = ''
+    robot_context.proactive_question = next_proactive_question or ''
 
-    if response.username:
+    if response.action == 'record_face':
+        if robot_context.user_id:
+            try:
+                update_result = update_user_name(robot_context.user_id, response.username)
+                if not update_result.get('success'):
+                    logger.warning(f"Could not persist recorded face username: {update_result.get('error')}")
+            except Exception as e:
+                logger.warning(f'Could not update face database for recorded user: {e}')
+        else:
+            logger.warning('record_face action received without current user_id')
+
+        robot_context.username = response.username
+        robot_context.needs_identification = False
+
+        try:
+            _server.load_conversation_db(response.username)
+        except Exception as e:
+            logger.warning(f'Could not load conversation history: {e}')
+
+    elif response.action == 'set_username':
+        robot_context.username = response.username
+
+        try:
+            _server.load_conversation_db(response.username)
+        except Exception as e:
+            logger.warning(f'Could not load conversation history: {e}')
+
+    elif response.username:
         robot_context.username = response.username
         try:
             _server.load_conversation_db(response.username)

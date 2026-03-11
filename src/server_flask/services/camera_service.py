@@ -30,7 +30,9 @@ logger = logging.getLogger("FaceRecognition")
 EUCLIDEAN_DISTANCE_THRESHOLD = 0.45
 MAX_DESCRIPTOR_HISTORY = 5
 CONFIRMATION_WINDOW_SIZE = 5
-MIN_CONSENSUS_THRESHOLD = 0.6  # 3/5
+KNOWN_RECOGNITION_THRESHOLD = 3
+UNKNOWN_RECOGNITION_THRESHOLD = 8
+RECOGNITION_SESSION_TTL_SECONDS = 20
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -39,6 +41,7 @@ DB_FILE = os.path.join(BASE_DIR, "files", "face_database.json")
 
 _db_lock = threading.Lock()
 _face_db: Dict = {"nextId": 1, "users": []}
+_recognition_sessions: Dict[str, Dict] = {}
 
 
 def _ensure_db_loaded():
@@ -125,6 +128,42 @@ def _average_descriptors(descriptors: List[List[float]]) -> List[float]:
     return avg.astype(np.float32).tolist()
 
 
+def _cleanup_expired_sessions_locked(now: Optional[datetime] = None):
+    now = now or datetime.utcnow()
+    expired_ids = []
+
+    for session_id, session_data in _recognition_sessions.items():
+        last_seen = session_data.get("lastSeenAt")
+        if not isinstance(last_seen, datetime):
+            expired_ids.append(session_id)
+            continue
+
+        elapsed = (now - last_seen).total_seconds()
+        if elapsed > RECOGNITION_SESSION_TTL_SECONDS:
+            expired_ids.append(session_id)
+
+    for session_id in expired_ids:
+        _recognition_sessions.pop(session_id, None)
+
+
+def _get_session_state_locked(session_id: str) -> Dict:
+    now = datetime.utcnow()
+    _cleanup_expired_sessions_locked(now)
+
+    session_state = _recognition_sessions.setdefault(
+        session_id,
+        {
+            "history": {},
+            "descriptors": {},
+            "lastSeenAt": now,
+        },
+    )
+    session_state["lastSeenAt"] = now
+    session_state.setdefault("history", {})
+    session_state.setdefault("descriptors", {})
+    return session_state
+
+
 def _find_user_by_id(user_id: str) -> Optional[Dict]:
     for user in _face_db["users"]:
         if user.get("userId") == user_id:
@@ -180,56 +219,123 @@ def _find_best_match_for_descriptor(descriptor: List[float], known_user_id: Opti
     }
 
 
-def _analyze_descriptor_batch(descriptors: List[List[float]], known_user_id: Optional[str]) -> Dict:
+def _classify_descriptor_batch(descriptors: List[List[float]], known_user_id: Optional[str]) -> List[Dict]:
     detections = []
-    votes: Dict[str, Dict] = {}
 
     for descriptor in descriptors:
         result = _find_best_match_for_descriptor(descriptor, known_user_id)
         detections.append({"descriptor": descriptor, "result": result})
 
+    return detections
+
+
+def _accumulate_session_detections_locked(session_id: str, detections: List[Dict]) -> Dict:
+    session_state = _get_session_state_locked(session_id)
+    history = session_state["history"]
+    descriptor_history = session_state["descriptors"]
+    latest_results: Dict[str, Dict] = {}
+
+    for detection in detections:
+        descriptor = detection["descriptor"]
+        result = detection["result"]
         user_id = result["userId"]
-        if user_id not in votes:
-            votes[user_id] = {"count": 0, "detections": []}
-        votes[user_id]["count"] += 1
-        votes[user_id]["detections"].append({"descriptor": descriptor, "result": result})
 
-    winner_user_id = max(votes.keys(), key=lambda uid: votes[uid]["count"])
-    winner_count = votes[winner_user_id]["count"]
-    consensus_ratio = winner_count / max(1, len(descriptors))
+        history[user_id] = history.get(user_id, 0) + 1
+        latest_results[user_id] = result
 
-    if consensus_ratio < MIN_CONSENSUS_THRESHOLD:
-        return {
-            "isUncertain": True,
-            "consensusRatio": consensus_ratio,
-            "userId": "uncertain",
-            "userName": "unknown",
-            "needsIdentification": True,
-        }
-
-    winner_detections = votes[winner_user_id]["detections"]
-    winner_result = winner_detections[0]["result"]
-    winner_descriptors = [d["descriptor"] for d in winner_detections]
-
-    avg_distance_values = [
-        d["result"]["distance"] for d in winner_detections if d["result"]["distance"] is not None
-    ]
-    avg_distance = (
-        sum(avg_distance_values) / len(avg_distance_values) if avg_distance_values else None
-    )
+        user_descriptors = descriptor_history.setdefault(user_id, [])
+        user_descriptors.append(descriptor)
+        descriptor_history[user_id] = user_descriptors[-UNKNOWN_RECOGNITION_THRESHOLD:]
 
     return {
-        "isConfirmed": True,
-        "consensusRatio": consensus_ratio,
-        "userId": winner_user_id,
-        "userName": winner_result.get("userName", "unknown"),
-        "needsIdentification": winner_result.get("needsIdentification", True),
-        "distance": avg_distance,
-        "confidence": winner_result.get("confidence", 0.0),
-        "isNewUser": winner_user_id == "unknown",
-        "descriptorsForUpdate": winner_descriptors,
-        "totalVisits": winner_result.get("totalVisits"),
+        "session": session_state,
+        "history": history,
+        "descriptorHistory": descriptor_history,
+        "latestResults": latest_results,
     }
+
+
+def _build_pending_result(history: Dict[str, int], latest_results: Dict[str, Dict]) -> Dict:
+    known_candidates = {
+        user_id: count for user_id, count in history.items() if user_id not in ("unknown", "uncertain")
+    }
+    unknown_count = history.get("unknown", 0)
+
+    if known_candidates:
+        lead_user_id = max(known_candidates, key=known_candidates.get)
+        lead_count = known_candidates[lead_user_id]
+        lead_result = latest_results.get(lead_user_id, {})
+
+        return {
+            "pendingRecognition": True,
+            "userId": lead_user_id,
+            "userName": lead_result.get("userName", "unknown"),
+            "needsIdentification": bool(lead_result.get("needsIdentification", False)),
+            "isNewUser": False,
+            "historyCount": lead_count,
+            "detectionProgress": lead_count,
+            "totalRequired": KNOWN_RECOGNITION_THRESHOLD,
+        }
+
+    return {
+        "pendingRecognition": True,
+        "userId": "unknown",
+        "userName": "unknown",
+        "needsIdentification": True,
+        "isNewUser": True,
+        "historyCount": unknown_count,
+        "detectionProgress": unknown_count,
+        "totalRequired": UNKNOWN_RECOGNITION_THRESHOLD,
+    }
+
+
+def _resolve_session_recognition_locked(session_id: str, detections: List[Dict]) -> Dict:
+    accumulated = _accumulate_session_detections_locked(session_id, detections)
+    history = accumulated["history"]
+    descriptor_history = accumulated["descriptorHistory"]
+    latest_results = accumulated["latestResults"]
+
+    known_candidates = {
+        user_id: count for user_id, count in history.items() if user_id not in ("unknown", "uncertain")
+    }
+
+    if known_candidates:
+        winner_user_id = max(known_candidates, key=known_candidates.get)
+        winner_count = known_candidates[winner_user_id]
+        if winner_count >= KNOWN_RECOGNITION_THRESHOLD:
+            latest_result = latest_results.get(winner_user_id, {})
+            confirmed = _confirm_user_identity_with_descriptors(
+                winner_user_id,
+                descriptor_history.get(winner_user_id, []),
+                latest_result,
+            )
+            _recognition_sessions.pop(session_id, None)
+            return {
+                **confirmed,
+                "isConfirmed": True,
+                "historyCount": winner_count,
+                "detectionProgress": winner_count,
+                "totalRequired": KNOWN_RECOGNITION_THRESHOLD,
+            }
+
+    unknown_count = history.get("unknown", 0)
+    if unknown_count >= UNKNOWN_RECOGNITION_THRESHOLD:
+        latest_result = latest_results.get("unknown", {})
+        confirmed = _confirm_user_identity_with_descriptors(
+            "unknown",
+            descriptor_history.get("unknown", []),
+            latest_result,
+        )
+        _recognition_sessions.pop(session_id, None)
+        return {
+            **confirmed,
+            "isConfirmed": True,
+            "historyCount": unknown_count,
+            "detectionProgress": unknown_count,
+            "totalRequired": UNKNOWN_RECOGNITION_THRESHOLD,
+        }
+
+    return _build_pending_result(history, latest_results)
 
 
 def _confirm_user_identity_with_descriptors(user_id: str, descriptors: List[List[float]], result_data: Dict) -> Dict:
@@ -293,6 +399,8 @@ def _confirm_user_identity_with_descriptors(user_id: str, descriptors: List[List
 
 def update_user_name(user_id: str, user_name: str) -> Dict:
     """Allows state machine/tool layer to set username for a known userId."""
+    _ensure_db_loaded()
+
     with _db_lock:
         user = _find_user_by_id(user_id)
         if not user:
@@ -343,30 +451,14 @@ def recognize_face_with_batch(
         return {"error": "No valid face descriptors extracted."}
 
     with _db_lock:
-        result = _analyze_descriptor_batch(batch_descriptors, known_user_id)
+        detections = _classify_descriptor_batch(batch_descriptors, known_user_id)
+        if not detections:
+            return {"error": "No recognition detections generated."}
 
-        if result.get("isUncertain"):
-            return {
-                **result,
-                "detectionProgress": len(batch_descriptors),
-                "totalRequired": CONFIRMATION_WINDOW_SIZE,
-            }
+        result = _resolve_session_recognition_locked(session_id, detections)
+        if result.get("error"):
+            return result
 
-        if result.get("isConfirmed"):
-            confirmed = _confirm_user_identity_with_descriptors(
-                result["userId"],
-                result.get("descriptorsForUpdate", []),
-                result,
-            )
-            if confirmed.get("error"):
-                return confirmed
-
-            return {
-                **confirmed,
-                "isConfirmed": True,
-                "consensusRatio": result.get("consensusRatio", 0.0),
-                "detectionProgress": len(batch_descriptors),
-                "totalRequired": CONFIRMATION_WINDOW_SIZE,
-            }
+        return result
 
     return {"error": "Unexpected recognition state."}

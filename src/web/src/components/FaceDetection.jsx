@@ -30,6 +30,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     const lastRecognizedUserRef = useRef(null);
     const currentUserDataRef = useRef(null);
     const clientIdRef = useRef(`client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+    const recognitionSessionIdRef = useRef(null);
 
     // CONFIRMATION WINDOW STATE
     const [detectionStatus, setDetectionStatus] = useState('idle'); // idle, collecting, uncertain, confirmed
@@ -43,6 +44,13 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     const faceApiLoadedRef = useRef(false);
 
     const { emit } = useWebSocketContext();
+
+    const getRecognitionSessionId = () => {
+        if (!recognitionSessionIdRef.current) {
+            recognitionSessionIdRef.current = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        }
+        return recognitionSessionIdRef.current;
+    };
 
     const loadBlazeFaceModels = async () => {
         try {
@@ -130,7 +138,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         batch.isCollecting = true;
         batch.frames = [];
         batch.descriptors = [];
-        batch.sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        batch.sessionId = getRecognitionSessionId();
 
         setDetectionStatus('collecting');
         setDetectionProgress({ current: 0, total: 5 });
@@ -236,12 +244,21 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
             });
             console.log('Uncertain recognition result:', data);
 
+        } else if (data.pendingRecognition) {
+            setDetectionStatus('idle');
+            setDetectionProgress({
+                current: data.historyCount || data.detectionProgress || 0,
+                total: data.totalRequired || 8
+            });
+            setConsensusInfo({
+                message: `Recognition progress: ${data.historyCount || data.detectionProgress || 0}/${data.totalRequired || 8}`,
+                ratio: null
+            });
+            console.log('Recognition pending:', data);
+
         } else if (data.isConfirmed) {
             setDetectionStatus('confirmed');
-            setConsensusInfo({
-                message: `Confirmed with ${(data.consensusRatio * 100).toFixed(1)}% consensus`,
-                ratio: data.consensusRatio
-            });
+            setConsensusInfo(null);
 
             const previousUserId = currentUserIdRef.current;
             currentUserIdRef.current = data.userId;
@@ -293,6 +310,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         setDetectionStatus('idle');
         setDetectionProgress({ current: 0, total: 5 });
         setConsensusInfo(null);
+        recognitionSessionIdRef.current = null;
         currentUserIdRef.current = null;
         lastRecognizedUserRef.current = null;
         currentUserDataRef.current = null;

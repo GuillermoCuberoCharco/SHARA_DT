@@ -93,8 +93,29 @@ class ResponseFormat(BaseModel):
     robot_mood: str
     response: str
 
-# OpenAI completion arguments configuration
-completion_args = {
+# OpenAI completion arguments configuration.
+#
+# IMPORTANT:
+# This base config must stay immutable per request. The previous implementation
+# reused a single mutable dict and appended SDK response objects from
+# `responses.parse()` back into `input`.
+#
+# That pattern is also present in the physical robot repo, but the bug has
+# manifested in SHARA_DT first because this deployment is actively exercising
+# the tool-calling flow (`who_are_you_response` / `record_face`).
+#
+# This tool-calling bug is also present in the physical robot code path.
+# SHARA_DT fixes it here because it has already manifested in this deployment.
+# The behavioral flow is kept identical; only the SDK/API re-serialization bug is corrected.
+#
+# Why the fix is necessary:
+# - SDK output items may contain parsed-only fields such as `parsed_arguments`.
+# - Those fields are valid in Python objects returned by the SDK, but they are
+#   NOT valid request parameters for the next `/responses` call.
+# - Re-sending them causes OpenAI to reject the request with:
+#   `Unknown parameter: input[n].parsed_arguments`.
+# - Keeping request args local also avoids cross-request state leakage.
+BASE_COMPLETION_ARGS = {
     "model": "gpt-4o-mini",
     "text_format": ResponseFormat,
     "temperature": 1,
@@ -102,6 +123,26 @@ completion_args = {
     "instructions": shara_prompt,
     "truncation": "auto" # Truncate messages automatically if they exceed the model's context length
 }
+
+
+def _serialize_function_call_for_reinput(tool_call):
+    """
+    Convert a parsed SDK function_call object into a clean Responses API input item.
+
+    This is required because SDK objects may include internal parsed-only fields
+    like `parsed_arguments`. Reinjecting the raw object works until a tool call
+    happens, and then the next `/responses` request fails.
+
+    Note: the same latent bug exists in the physical robot implementation. We do
+    not modify that repository here; we fix it only in SHARA_DT, where it has
+    already surfaced in production usage.
+    """
+    return {
+        "type": "function_call",
+        "call_id": tool_call.call_id,
+        "name": tool_call.name,
+        "arguments": tool_call.arguments,
+    }
 
 
 
@@ -171,8 +212,12 @@ def generate_response(input_text, context_data={}):
     messages = build_messages(input_text, context_data)
     tools_to_use, requireness_tool = get_tools_for_context(context_data)
 
-    # Create OpenAI completion arguments
-    completion_args["input"] = messages
+    # Create request-local completion args.
+    # Do not mutate a shared global dict across requests.
+    completion_args = {
+        **BASE_COMPLETION_ARGS,
+        "input": messages,
+    }
     if tools_to_use:  # Only add 'tools' if there are tools available
         completion_args["tools"] = tools_to_use
         completion_args["tool_choice"] = requireness_tool
@@ -185,7 +230,11 @@ def generate_response(input_text, context_data={}):
         tool_call = next(item for item in response.output if item.type == "function_call")
         result, robot_action = handle_tool_call(tool_call, context_data)
 
-        messages.append(tool_call) # append model's function call message
+        # IMPORTANT:
+        # Never append the raw SDK object returned by `responses.parse()`.
+        # It may contain parsed-only fields such as `parsed_arguments`, which
+        # are rejected if sent back to the API in the next request.
+        messages.append(_serialize_function_call_for_reinput(tool_call))
         messages.append({                   # append function result message
             "type": "function_call_output",
             "call_id": tool_call.call_id,

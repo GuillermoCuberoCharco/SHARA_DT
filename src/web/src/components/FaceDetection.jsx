@@ -42,8 +42,31 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     const lastDetectionTimeRef = useRef(null);
     const recognitionCountRef = useRef(0);
     const faceApiLoadedRef = useRef(false);
+    const faceApiDisabledReasonRef = useRef(null);
 
     const { emit } = useWebSocketContext();
+
+    const disableFaceApiDescriptors = (reason, error = null) => {
+        if (!faceApiDisabledReasonRef.current) {
+            faceApiDisabledReasonRef.current = reason;
+            if (error) {
+                console.warn(`Disabling face-api descriptors: ${reason}`, error);
+            } else {
+                console.warn(`Disabling face-api descriptors: ${reason}`);
+            }
+        }
+        faceApiLoadedRef.current = false;
+    };
+
+    const isFaceApiRuntimeCompatible = () => {
+        const tfjsVersion = tf?.version?.tfjs;
+        const majorVersion = Number.parseInt(tfjsVersion?.split('.')[0] ?? '', 10);
+
+        if (Number.isNaN(majorVersion)) return false;
+
+        // The current face-api.js stack in this project is only stable with TFJS 1.x.
+        return majorVersion === 1;
+    };
 
     const getRecognitionSessionId = () => {
         if (!recognitionSessionIdRef.current) {
@@ -80,6 +103,14 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
             faceApiLoadedRef.current = false;
             return;
         }
+
+        if (!isFaceApiRuntimeCompatible()) {
+            disableFaceApiDescriptors(
+                `incompatible TensorFlow.js runtime (${tf?.version?.tfjs || 'unknown'}). Falling back to backend descriptors.`
+            );
+            return;
+        }
+
         try {
             console.log('Loading face-api models...');
             await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
@@ -88,8 +119,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
             faceApiLoadedRef.current = true;
             console.log('face-api models loaded successfully');
         } catch (error) {
-            faceApiLoadedRef.current = false;
-            console.warn('face-api models unavailable, backend fallback descriptor path will be used:', error);
+            disableFaceApiDescriptors('model loading failed, backend fallback descriptor path will be used.', error);
         }
     };
 
@@ -104,7 +134,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
             if (!detection?.descriptor) return null;
             return Array.from(detection.descriptor);
         } catch (error) {
-            console.warn('Failed to extract face descriptor from canvas:', error);
+            disableFaceApiDescriptors('descriptor extraction failed at runtime, backend fallback descriptor path will be used.', error);
             return null;
         }
     };
@@ -173,22 +203,24 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(video, cropStartX, cropStartY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
 
-            canvas.toBlob(async (blob) => {
-                if (blob && batch.isCollecting) {
-                    const descriptor = await extractDescriptorFromCanvas(canvas);
-                    if (descriptor) {
-                        batch.descriptors.push(descriptor);
-                    }
+            const blob = await new Promise((resolve) => {
+                canvas.toBlob(resolve, 'image/jpeg', 0.98);
+            });
 
-                    const arrayBuffer = await blob.arrayBuffer();
-                    batch.frames.push(new Uint8Array(arrayBuffer));
-                    const currentCount = batch.frames.length;
-                    console.log(`Frame added to batch: ${currentCount}/5`);
-                    setDetectionProgress({ current: currentCount, total: 5 });
+            if (!blob || !batch.isCollecting) return;
 
-                    if (currentCount >= 5) await processBatch();
-                }
-            }, 'image/jpeg', 0.98);
+            const descriptor = await extractDescriptorFromCanvas(canvas);
+            if (descriptor) {
+                batch.descriptors.push(descriptor);
+            }
+
+            const arrayBuffer = await blob.arrayBuffer();
+            batch.frames.push(new Uint8Array(arrayBuffer));
+            const currentCount = batch.frames.length;
+            console.log(`Frame added to batch: ${currentCount}/5`);
+            setDetectionProgress({ current: currentCount, total: 5 });
+
+            if (currentCount >= 5) await processBatch();
         } catch (error) {
             console.error('Error adding frame to batch:', error);
         }

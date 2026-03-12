@@ -82,9 +82,9 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         }
         try {
             console.log('Loading face-api models...');
-            await faceapi.nets.ssdMobilenetv1.loadFromUri('/face-models');
-            await faceapi.nets.faceLandmark68Net.loadFromUri('/face-models');
-            await faceapi.nets.faceRecognitionNet.loadFromUri('/face-models');
+            await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
+            await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
+            await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
             faceApiLoadedRef.current = true;
             console.log('face-api models loaded successfully');
         } catch (error) {

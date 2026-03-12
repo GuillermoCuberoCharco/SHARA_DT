@@ -3,7 +3,7 @@ FROM node:20-bullseye AS frontend-builder
 WORKDIR /app/src/web
 
 COPY src/web/package.json src/web/yarn.lock src/web/.yarnrc.yml ./
-RUN npm install -g yarn@1.22.22 && yarn install --frozen-lockfile
+RUN yarn install --frozen-lockfile
 
 COPY src/web/ ./
 RUN yarn build

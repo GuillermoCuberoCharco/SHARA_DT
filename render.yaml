@@ -1,14 +1,9 @@
 services:
   - type: web
     name: shara-dt
-    runtime: python
-    rootDir: src/server_flask
-
-    buildCommand: |
-      cd ../web && yarn install && yarn build && cp -r dist ../server_flask/static
-      pip install -r requirements.txt
-
-    startCommand: python app.py
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
 
     envVars:
       - key: FLASK_SECRET_KEY
@@ -27,5 +22,3 @@ services:
         value: 600
       - key: EYES_HEIGHT
         value: 1024
-      - key: PYTHON_VERSION
-        value: 3.11.0

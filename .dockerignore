@@ -1,0 +1,12 @@
+.git
+.vscode
+.claude
+.env
+
+**/__pycache__
+**/*.pyc
+**/*.pyo
+
+src/web/node_modules
+src/web/dist
+src/server_flask/static

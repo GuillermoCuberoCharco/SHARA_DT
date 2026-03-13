@@ -1,13 +1,11 @@
 """
 services/camera_service.py
 
-Addaptation of file camera_service.py from real robot SHARA
-Lightweight face recognition service for SHARA_DT.
+Face recognition service for SHARA_DT using the same recognition stack as the
+physical robot: `face_recognition` encodings plus tolerance-based matching.
 
-Design goals:
-- Keep the same API contract used by the previous batch recognition flow.
-- Avoid heavy native dependencies that are difficult to build on Render.
-- Preserve the robot-like decision semantics (window consensus + user memory).
+The browser is responsible only for face detection and sending cropped face
+frames. Recognition and identity updates happen entirely in the backend.
 """
 
 from __future__ import annotations
@@ -20,28 +18,20 @@ import threading
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import face_recognition
 import numpy as np
 from PIL import Image
-
-try:
-    import face_recognition
-except ImportError:  # pragma: no cover - optional dependency in current deployment
-    face_recognition = None
 
 logger = logging.getLogger("FaceRecognition")
 
 
-# Keep parity with previous batch logic
-LIGHTWEIGHT_DISTANCE_THRESHOLD = 0.45
-FACE_RECOGNITION_DISTANCE_THRESHOLD = 0.55
+FACE_RECOGNITION_TOLERANCE = 0.55
 MAX_DESCRIPTOR_HISTORY = 5
 CONFIRMATION_WINDOW_SIZE = 5
 KNOWN_RECOGNITION_THRESHOLD = 3
 UNKNOWN_RECOGNITION_THRESHOLD = 8
 RECOGNITION_SESSION_TTL_SECONDS = 20
-
-DESCRIPTOR_MODEL_LIGHTWEIGHT = "lightweight_v1"
-DESCRIPTOR_MODEL_FACE_RECOGNITION = "face_recognition_v1"
+RECOGNITION_BACKEND_NAME = "face_recognition_v1"
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -51,30 +41,6 @@ DB_FILE = os.path.join(BASE_DIR, "files", "face_database.json")
 _db_lock = threading.Lock()
 _face_db: Dict = {"nextId": 1, "users": []}
 _recognition_sessions: Dict[str, Dict] = {}
-
-
-def _resolve_active_descriptor_model() -> str:
-    requested_backend = os.getenv("FACE_DESCRIPTOR_BACKEND", "lightweight").strip().lower()
-
-    if requested_backend == "face_recognition":
-        if face_recognition is None:
-            logger.warning(
-                "FACE_DESCRIPTOR_BACKEND=face_recognition requested but face_recognition is not installed. "
-                "Falling back to lightweight descriptors."
-            )
-            return DESCRIPTOR_MODEL_LIGHTWEIGHT
-        return DESCRIPTOR_MODEL_FACE_RECOGNITION
-
-    if requested_backend not in ("", "lightweight"):
-        logger.warning(
-            "Unknown FACE_DESCRIPTOR_BACKEND=%s. Falling back to lightweight descriptors.",
-            requested_backend,
-        )
-
-    return DESCRIPTOR_MODEL_LIGHTWEIGHT
-
-
-ACTIVE_DESCRIPTOR_MODEL = _resolve_active_descriptor_model()
 
 
 def _ensure_db_loaded():
@@ -100,68 +66,25 @@ def _save_db_locked():
         json.dump(_face_db, f, ensure_ascii=False, indent=2)
 
 
-def _normalize_descriptor(descriptor: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(descriptor)
-    if norm == 0:
-        return descriptor
-    return descriptor / norm
+def _is_valid_encoding(encoding) -> bool:
+    if not isinstance(encoding, list):
+        return False
+    if len(encoding) != 128:
+        return False
+    for value in encoding:
+        if not isinstance(value, (int, float)):
+            return False
+    return True
 
 
-def _get_user_descriptor_model(user: Dict) -> str:
-    model = user.get("descriptorModel")
-    if isinstance(model, str) and model.strip():
-        return model
-    return DESCRIPTOR_MODEL_LIGHTWEIGHT
+def _average_encodings(encodings: List[List[float]]) -> List[float]:
+    mat = np.asarray(encodings, dtype=np.float32)
+    avg = np.mean(mat, axis=0)
+    return avg.astype(np.float32).tolist()
 
 
-def _is_descriptor_model_compatible(user: Dict) -> bool:
-    return _get_user_descriptor_model(user) == ACTIVE_DESCRIPTOR_MODEL
-
-
-def _descriptor_distance_threshold(descriptor_model: Optional[str] = None) -> float:
-    model = descriptor_model or ACTIVE_DESCRIPTOR_MODEL
-    if model == DESCRIPTOR_MODEL_FACE_RECOGNITION:
-        return FACE_RECOGNITION_DISTANCE_THRESHOLD
-    return LIGHTWEIGHT_DISTANCE_THRESHOLD
-
-
-def _prepare_descriptor(descriptor, descriptor_model: Optional[str] = None) -> List[float]:
-    model = descriptor_model or ACTIVE_DESCRIPTOR_MODEL
-    arr = np.asarray(descriptor, dtype=np.float32)
-    if model == DESCRIPTOR_MODEL_LIGHTWEIGHT:
-        arr = _normalize_descriptor(arr)
-    return arr.astype(np.float32).tolist()
-
-
-def _extract_lightweight_descriptor(image_bytes: bytes) -> Optional[List[float]]:
-    """
-    Converts an image into a stable 128-d descriptor.
-    Descriptor shape is kept compatible with previous face DB format.
-    """
+def _extract_face_encoding(image_bytes: bytes) -> Optional[List[float]]:
     if not image_bytes:
-        return None
-
-    try:
-        img = Image.open(io.BytesIO(image_bytes)).convert("L")
-
-        # Center-crop to square to reduce framing variance
-        w, h = img.size
-        side = min(w, h)
-        left = (w - side) // 2
-        top = (h - side) // 2
-        img = img.crop((left, top, left + side, top + side))
-
-        # 16 x 8 = 128 dimensions
-        img = img.resize((16, 8), Image.Resampling.BILINEAR)
-        arr = np.asarray(img, dtype=np.float32).flatten() / 255.0
-        return _prepare_descriptor(arr, DESCRIPTOR_MODEL_LIGHTWEIGHT)
-    except Exception as e:
-        logger.warning(f"Descriptor extraction failed: {e}")
-        return None
-
-
-def _extract_face_recognition_descriptor(image_bytes: bytes) -> Optional[List[float]]:
-    if not image_bytes or face_recognition is None:
         return None
 
     try:
@@ -171,55 +94,16 @@ def _extract_face_recognition_descriptor(image_bytes: bytes) -> Optional[List[fl
         encodings = face_recognition.face_encodings(arr)
         if not encodings:
             h, w = arr.shape[:2]
-            fallback_box = [(0, max(w - 1, 0), max(h - 1, 0), 0)]
-            encodings = face_recognition.face_encodings(arr, known_face_locations=fallback_box)
+            full_crop_box = [(0, max(w - 1, 0), max(h - 1, 0), 0)]
+            encodings = face_recognition.face_encodings(arr, known_face_locations=full_crop_box)
 
         if not encodings:
             return None
 
-        return _prepare_descriptor(encodings[0], DESCRIPTOR_MODEL_FACE_RECOGNITION)
+        return encodings[0].astype(np.float32).tolist()
     except Exception as e:
-        logger.warning(f"face_recognition descriptor extraction failed: {e}")
+        logger.warning(f"Face encoding extraction failed: {e}")
         return None
-
-
-def _extract_backend_descriptor(image_bytes: bytes) -> Optional[List[float]]:
-    if ACTIVE_DESCRIPTOR_MODEL == DESCRIPTOR_MODEL_FACE_RECOGNITION:
-        descriptor = _extract_face_recognition_descriptor(image_bytes)
-        if descriptor is not None:
-            return descriptor
-
-        logger.warning(
-            "face_recognition backend could not extract a descriptor for one frame. "
-            "Falling back to lightweight descriptor extraction for availability."
-        )
-
-    return _extract_lightweight_descriptor(image_bytes)
-
-
-def _is_valid_descriptor(descriptor) -> bool:
-    if not isinstance(descriptor, list):
-        return False
-    if len(descriptor) != 128:
-        return False
-    for value in descriptor:
-        if not isinstance(value, (int, float)):
-            return False
-    return True
-
-
-def _euclidean_distance(a: List[float], b: List[float]) -> float:
-    va = np.asarray(a, dtype=np.float32)
-    vb = np.asarray(b, dtype=np.float32)
-    if va.shape != vb.shape:
-        return float("inf")
-    return float(np.linalg.norm(va - vb))
-
-
-def _average_descriptors(descriptors: List[List[float]], descriptor_model: Optional[str] = None) -> List[float]:
-    mat = np.asarray(descriptors, dtype=np.float32)
-    avg = np.mean(mat, axis=0)
-    return _prepare_descriptor(avg, descriptor_model)
 
 
 def _cleanup_expired_sessions_locked(now: Optional[datetime] = None):
@@ -248,13 +132,13 @@ def _get_session_state_locked(session_id: str) -> Dict:
         session_id,
         {
             "history": {},
-            "descriptors": {},
+            "encodings": {},
             "lastSeenAt": now,
         },
     )
     session_state["lastSeenAt"] = now
     session_state.setdefault("history", {})
-    session_state.setdefault("descriptors", {})
+    session_state.setdefault("encodings", {})
     return session_state
 
 
@@ -265,49 +149,69 @@ def _find_user_by_id(user_id: str) -> Optional[Dict]:
     return None
 
 
-def _find_best_match_for_descriptor(descriptor: List[float], known_user_id: Optional[str] = None) -> Dict:
-    threshold = _descriptor_distance_threshold()
+def _get_user_encodings(user: Dict) -> List[List[float]]:
+    history = user.get("descriptorHistory") or []
+    valid_history = [encoding for encoding in history if _is_valid_encoding(encoding)]
+    if valid_history:
+        return valid_history
 
-    # Fast path: previously known user
+    descriptor = user.get("descriptor")
+    if _is_valid_encoding(descriptor):
+        return [descriptor]
+
+    return []
+
+
+def _build_match_result(user: Dict, distance: float, user_id: Optional[str] = None) -> Dict:
+    resolved_user_id = user_id or user.get("userId") or "unknown"
+    return {
+        "userId": resolved_user_id,
+        "userName": user.get("userName") or "unknown",
+        "distance": distance,
+        "confidence": max(0.0, 1.0 - min(distance, 1.0)),
+        "needsIdentification": not bool(user.get("userName")),
+        "totalVisits": user.get("metadata", {}).get("visits", 0),
+    }
+
+
+def _find_best_match_for_encoding(encoding: List[float], known_user_id: Optional[str] = None) -> Dict:
+    query = np.asarray(encoding, dtype=np.float32)
+
     if known_user_id and known_user_id != "unknown":
         known = _find_user_by_id(known_user_id)
-        if known and known.get("descriptor") and _is_descriptor_model_compatible(known):
-            distance = _euclidean_distance(descriptor, known["descriptor"])
-            if distance < threshold:
-                return {
-                    "userId": known_user_id,
-                    "userName": known.get("userName") or "unknown",
-                    "distance": distance,
-                    "confidence": max(0.0, 1.0 - min(distance, 1.0)),
-                    "needsIdentification": not bool(known.get("userName")),
-                    "totalVisits": known.get("metadata", {}).get("visits", 0),
-                }
+        if known:
+            known_encodings = _get_user_encodings(known)
+            if known_encodings:
+                matches = face_recognition.compare_faces(known_encodings, query, tolerance=FACE_RECOGNITION_TOLERANCE)
+                if any(matches):
+                    distances = face_recognition.face_distance(known_encodings, query)
+                    matched_distances = [distance for matched, distance in zip(matches, distances) if matched]
+                    return _build_match_result(known, float(min(matched_distances)), known_user_id)
 
-    best = None
+    best_user = None
+    best_match_count = 0
     best_distance = float("inf")
 
     for user in _face_db["users"]:
-        if not _is_descriptor_model_compatible(user):
+        user_encodings = _get_user_encodings(user)
+        if not user_encodings:
             continue
 
-        user_desc = user.get("descriptor")
-        if not isinstance(user_desc, list) or len(user_desc) != 128:
+        matches = face_recognition.compare_faces(user_encodings, query, tolerance=FACE_RECOGNITION_TOLERANCE)
+        if not any(matches):
             continue
 
-        distance = _euclidean_distance(descriptor, user_desc)
-        if distance < threshold and distance < best_distance:
-            best = user
-            best_distance = distance
+        distances = face_recognition.face_distance(user_encodings, query)
+        matched_count = sum(1 for matched in matches if matched)
+        matched_best_distance = min(float(distance) for matched, distance in zip(matches, distances) if matched)
 
-    if best:
-        return {
-            "userId": best.get("userId"),
-            "userName": best.get("userName") or "unknown",
-            "distance": best_distance,
-            "confidence": max(0.0, 1.0 - min(best_distance, 1.0)),
-            "needsIdentification": not bool(best.get("userName")),
-            "totalVisits": best.get("metadata", {}).get("visits", 0),
-        }
+        if matched_count > best_match_count or (matched_count == best_match_count and matched_best_distance < best_distance):
+            best_user = user
+            best_match_count = matched_count
+            best_distance = matched_best_distance
+
+    if best_user:
+        return _build_match_result(best_user, best_distance)
 
     return {
         "userId": "unknown",
@@ -318,12 +222,12 @@ def _find_best_match_for_descriptor(descriptor: List[float], known_user_id: Opti
     }
 
 
-def _classify_descriptor_batch(descriptors: List[List[float]], known_user_id: Optional[str]) -> List[Dict]:
+def _classify_encoding_batch(encodings: List[List[float]], known_user_id: Optional[str]) -> List[Dict]:
     detections = []
 
-    for descriptor in descriptors:
-        result = _find_best_match_for_descriptor(descriptor, known_user_id)
-        detections.append({"descriptor": descriptor, "result": result})
+    for encoding in encodings:
+        result = _find_best_match_for_encoding(encoding, known_user_id)
+        detections.append({"encoding": encoding, "result": result})
 
     return detections
 
@@ -331,25 +235,25 @@ def _classify_descriptor_batch(descriptors: List[List[float]], known_user_id: Op
 def _accumulate_session_detections_locked(session_id: str, detections: List[Dict]) -> Dict:
     session_state = _get_session_state_locked(session_id)
     history = session_state["history"]
-    descriptor_history = session_state["descriptors"]
+    encoding_history = session_state["encodings"]
     latest_results: Dict[str, Dict] = {}
 
     for detection in detections:
-        descriptor = detection["descriptor"]
+        encoding = detection["encoding"]
         result = detection["result"]
         user_id = result["userId"]
 
         history[user_id] = history.get(user_id, 0) + 1
         latest_results[user_id] = result
 
-        user_descriptors = descriptor_history.setdefault(user_id, [])
-        user_descriptors.append(descriptor)
-        descriptor_history[user_id] = user_descriptors[-UNKNOWN_RECOGNITION_THRESHOLD:]
+        user_encodings = encoding_history.setdefault(user_id, [])
+        user_encodings.append(encoding)
+        encoding_history[user_id] = user_encodings[-UNKNOWN_RECOGNITION_THRESHOLD:]
 
     return {
         "session": session_state,
         "history": history,
-        "descriptorHistory": descriptor_history,
+        "encodingHistory": encoding_history,
         "latestResults": latest_results,
     }
 
@@ -391,7 +295,7 @@ def _build_pending_result(history: Dict[str, int], latest_results: Dict[str, Dic
 def _resolve_session_recognition_locked(session_id: str, detections: List[Dict]) -> Dict:
     accumulated = _accumulate_session_detections_locked(session_id, detections)
     history = accumulated["history"]
-    descriptor_history = accumulated["descriptorHistory"]
+    encoding_history = accumulated["encodingHistory"]
     latest_results = accumulated["latestResults"]
 
     known_candidates = {
@@ -403,9 +307,9 @@ def _resolve_session_recognition_locked(session_id: str, detections: List[Dict])
         winner_count = known_candidates[winner_user_id]
         if winner_count >= KNOWN_RECOGNITION_THRESHOLD:
             latest_result = latest_results.get(winner_user_id, {})
-            confirmed = _confirm_user_identity_with_descriptors(
+            confirmed = _confirm_user_identity_with_encodings(
                 winner_user_id,
-                descriptor_history.get(winner_user_id, []),
+                encoding_history.get(winner_user_id, []),
                 latest_result,
             )
             _recognition_sessions.pop(session_id, None)
@@ -420,9 +324,9 @@ def _resolve_session_recognition_locked(session_id: str, detections: List[Dict])
     unknown_count = history.get("unknown", 0)
     if unknown_count >= UNKNOWN_RECOGNITION_THRESHOLD:
         latest_result = latest_results.get("unknown", {})
-        confirmed = _confirm_user_identity_with_descriptors(
+        confirmed = _confirm_user_identity_with_encodings(
             "unknown",
-            descriptor_history.get("unknown", []),
+            encoding_history.get("unknown", []),
             latest_result,
         )
         _recognition_sessions.pop(session_id, None)
@@ -437,12 +341,10 @@ def _resolve_session_recognition_locked(session_id: str, detections: List[Dict])
     return _build_pending_result(history, latest_results)
 
 
-def _confirm_user_identity_with_descriptors(user_id: str, descriptors: List[List[float]], result_data: Dict) -> Dict:
-    valid = [d for d in descriptors if isinstance(d, list) and len(d) == 128]
+def _confirm_user_identity_with_encodings(user_id: str, encodings: List[List[float]], result_data: Dict) -> Dict:
+    valid = [encoding for encoding in encodings if _is_valid_encoding(encoding)]
     if not valid:
-        return {"error": "No valid descriptors provided."}
-
-    descriptor_model = ACTIVE_DESCRIPTOR_MODEL
+        return {"error": "No valid face encodings provided."}
 
     if user_id == "unknown":
         new_user_id = f"user{_face_db['nextId']}"
@@ -451,8 +353,7 @@ def _confirm_user_identity_with_descriptors(user_id: str, descriptors: List[List
         new_user = {
             "userId": new_user_id,
             "userName": None,
-            "descriptorModel": descriptor_model,
-            "descriptor": _average_descriptors(valid, descriptor_model),
+            "descriptor": _average_encodings(valid),
             "descriptorHistory": valid[-MAX_DESCRIPTOR_HISTORY:],
             "metadata": {
                 "createdAt": datetime.utcnow().isoformat(),
@@ -476,19 +377,11 @@ def _confirm_user_identity_with_descriptors(user_id: str, descriptors: List[List
     user = _find_user_by_id(user_id)
     if not user:
         return {"error": "User not found in database."}
-    if _get_user_descriptor_model(user) != descriptor_model:
-        return {
-            "error": (
-                f"User {user_id} was enrolled with descriptor model "
-                f"{_get_user_descriptor_model(user)} and is incompatible with active backend {descriptor_model}."
-            )
-        }
 
-    history = user.get("descriptorHistory") or []
+    history = _get_user_encodings(user)
     history.extend(valid)
     user["descriptorHistory"] = history[-MAX_DESCRIPTOR_HISTORY:]
-    user["descriptorModel"] = descriptor_model
-    user["descriptor"] = _average_descriptors(user["descriptorHistory"], descriptor_model)
+    user["descriptor"] = _average_encodings(user["descriptorHistory"])
 
     metadata = user.setdefault("metadata", {})
     metadata["lastSeen"] = datetime.utcnow().isoformat()
@@ -508,7 +401,6 @@ def _confirm_user_identity_with_descriptors(user_id: str, descriptors: List[List
 
 
 def update_user_name(user_id: str, user_name: str) -> Dict:
-    """Allows state machine/tool layer to set username for a known userId."""
     _ensure_db_loaded()
 
     with _db_lock:
@@ -528,11 +420,11 @@ def recognize_face_with_batch(
     face_buffers: List[bytes],
     session_id: str,
     known_user_id: Optional[str] = None,
-    descriptors: Optional[List[List[float]]] = None,
 ) -> Dict:
     """
     Main batch recognition entrypoint.
-    Returns a payload compatible with existing frontend handling.
+    The frontend sends cropped face images; the backend extracts encodings and
+    applies the same face_recognition-based matching technique as the robot.
     """
     if not session_id:
         return {"error": "Session ID is required."}
@@ -541,27 +433,17 @@ def recognize_face_with_batch(
 
     _ensure_db_loaded()
 
-    batch_descriptors: List[List[float]] = []
+    batch_encodings: List[List[float]] = []
+    for image_bytes in face_buffers[:CONFIRMATION_WINDOW_SIZE]:
+        encoding = _extract_face_encoding(image_bytes)
+        if encoding is not None:
+            batch_encodings.append(encoding)
 
-    # Legacy path: descriptors extracted in frontend (face-api.js 128D).
-    # When using the robot-like backend, the server must compute descriptors from images.
-    if descriptors and ACTIVE_DESCRIPTOR_MODEL == DESCRIPTOR_MODEL_LIGHTWEIGHT:
-        for descriptor in descriptors[:CONFIRMATION_WINDOW_SIZE]:
-            if _is_valid_descriptor(descriptor):
-                batch_descriptors.append(_prepare_descriptor(descriptor, DESCRIPTOR_MODEL_LIGHTWEIGHT))
-
-    # Primary backend path: compute descriptors from image bytes using the active backend.
-    if not batch_descriptors:
-        for image_bytes in face_buffers[:CONFIRMATION_WINDOW_SIZE]:
-            descriptor = _extract_backend_descriptor(image_bytes)
-            if descriptor is not None:
-                batch_descriptors.append(descriptor)
-
-    if not batch_descriptors:
-        return {"error": "No valid face descriptors extracted."}
+    if not batch_encodings:
+        return {"error": "No valid face encodings extracted."}
 
     with _db_lock:
-        detections = _classify_descriptor_batch(batch_descriptors, known_user_id)
+        detections = _classify_encoding_batch(batch_encodings, known_user_id)
         if not detections:
             return {"error": "No recognition detections generated."}
 
@@ -575,4 +457,4 @@ def recognize_face_with_batch(
 
 
 def get_active_descriptor_model() -> str:
-    return ACTIVE_DESCRIPTOR_MODEL
+    return RECOGNITION_BACKEND_NAME

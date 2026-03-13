@@ -21,7 +21,6 @@ from gevent import monkey
 monkey.patch_all()
 
 import base64
-import json
 import logging
 import os
 
@@ -130,21 +129,11 @@ def recognize_face():
         known_user_id = request.form.get('userId') or None
         client_id = request.form.get('clientId') or request.headers.get('X-Client-Id') or 'client_web'
         session_id = request.form.get('sessionId') or f'session_{client_id}'
-        descriptors_raw = request.form.get('descriptors')
-        descriptors = None
-        if descriptors_raw:
-            try:
-                parsed = json.loads(descriptors_raw)
-                if isinstance(parsed, list):
-                    descriptors = parsed
-            except (json.JSONDecodeError, TypeError, ValueError):
-                logger.warning('Invalid descriptors payload, falling back to image-based extraction')
 
         result = recognize_face_with_batch(
             face_buffers,
             session_id,
             known_user_id,
-            descriptors=descriptors,
         )
         if result.get('error'):
             return jsonify({'error': result['error']}), 500

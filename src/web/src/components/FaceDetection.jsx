@@ -1,12 +1,9 @@
 import * as blazeface from '@tensorflow-models/blazeface';
 import * as tf from '@tensorflow/tfjs';
 import axios from 'axios';
-import * as faceapi from 'face-api.js';
 import { useEffect, useRef, useState } from 'react';
 import { SERVER_URL } from '../../src/config';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
-
-const ENABLE_FACE_API_DESCRIPTORS = import.meta.env.VITE_ENABLE_FACE_API_DESCRIPTORS === 'true';
 
 const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     // FACE DETECTION REFERENCES
@@ -20,7 +17,6 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     // FACE RECOGNITION REFFERENCES WITH BATCH COLLECTION
     const batchCollectionRef = useRef({
         frames: [],
-        descriptors: [],
         isCollecting: false,
         sessionId: null,
         currentUserId: null
@@ -41,32 +37,8 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     const consecutiveLossesRef = useRef(0);
     const lastDetectionTimeRef = useRef(null);
     const recognitionCountRef = useRef(0);
-    const faceApiLoadedRef = useRef(false);
-    const faceApiDisabledReasonRef = useRef(null);
 
     const { emit } = useWebSocketContext();
-
-    const disableFaceApiDescriptors = (reason, error = null) => {
-        if (!faceApiDisabledReasonRef.current) {
-            faceApiDisabledReasonRef.current = reason;
-            if (error) {
-                console.warn(`Disabling face-api descriptors: ${reason}`, error);
-            } else {
-                console.warn(`Disabling face-api descriptors: ${reason}`);
-            }
-        }
-        faceApiLoadedRef.current = false;
-    };
-
-    const isFaceApiRuntimeCompatible = () => {
-        const tfjsVersion = tf?.version?.tfjs;
-        const majorVersion = Number.parseInt(tfjsVersion?.split('.')[0] ?? '', 10);
-
-        if (Number.isNaN(majorVersion)) return false;
-
-        // The current face-api.js stack in this project is only stable with TFJS 1.x.
-        return majorVersion === 1;
-    };
 
     const getRecognitionSessionId = () => {
         if (!recognitionSessionIdRef.current) {
@@ -98,47 +70,6 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         }
     };
 
-    const loadFaceApiModels = async () => {
-        if (!ENABLE_FACE_API_DESCRIPTORS) {
-            faceApiLoadedRef.current = false;
-            return;
-        }
-
-        if (!isFaceApiRuntimeCompatible()) {
-            disableFaceApiDescriptors(
-                `incompatible TensorFlow.js runtime (${tf?.version?.tfjs || 'unknown'}). Falling back to backend descriptors.`
-            );
-            return;
-        }
-
-        try {
-            console.log('Loading face-api models...');
-            await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
-            await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
-            await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
-            faceApiLoadedRef.current = true;
-            console.log('face-api models loaded successfully');
-        } catch (error) {
-            disableFaceApiDescriptors('model loading failed, backend fallback descriptor path will be used.', error);
-        }
-    };
-
-    const extractDescriptorFromCanvas = async (canvas) => {
-        if (!ENABLE_FACE_API_DESCRIPTORS || !faceApiLoadedRef.current) return null;
-        try {
-            const detection = await faceapi
-                .detectSingleFace(canvas)
-                .withFaceLandmarks()
-                .withFaceDescriptor();
-
-            if (!detection?.descriptor) return null;
-            return Array.from(detection.descriptor);
-        } catch (error) {
-            disableFaceApiDescriptors('descriptor extraction failed at runtime, backend fallback descriptor path will be used.', error);
-            return null;
-        }
-    };
-
     const isGoodQuality = (face, video) => {
         const startX = face.topLeft[0];
         const startY = face.topLeft[1];
@@ -167,7 +98,6 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         console.log('Starting batch collection for face recognition');
         batch.isCollecting = true;
         batch.frames = [];
-        batch.descriptors = [];
         batch.sessionId = getRecognitionSessionId();
 
         setDetectionStatus('collecting');
@@ -209,11 +139,6 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
 
             if (!blob || !batch.isCollecting) return;
 
-            const descriptor = await extractDescriptorFromCanvas(canvas);
-            if (descriptor) {
-                batch.descriptors.push(descriptor);
-            }
-
             const arrayBuffer = await blob.arrayBuffer();
             batch.frames.push(new Uint8Array(arrayBuffer));
             const currentCount = batch.frames.length;
@@ -246,9 +171,6 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
             formData.append('sessionId', batch.sessionId);
 
             if (currentUserIdRef.current) formData.append('userId', currentUserIdRef.current);
-            if (batch.descriptors.length > 0) {
-                formData.append('descriptors', JSON.stringify(batch.descriptors));
-            }
 
             const response = await axios.post(`${SERVER_URL}/api/recognize-face`, formData, {
                 headers: {
@@ -334,7 +256,6 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         const batch = batchCollectionRef.current;
         batch.isCollecting = false;
         batch.frames = [];
-        batch.descriptors = [];
         batch.sessionId = null;
     };
 
@@ -351,7 +272,6 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
 
     useEffect(() => {
         loadBlazeFaceModels();
-        loadFaceApiModels();
 
         return () => {
             if (detectionRef.current) {

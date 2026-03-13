@@ -18,8 +18,6 @@ services:
         sync: false
       - key: GOOGLE_APPLICATION_CREDENTIALS
         sync: false
-      - key: FACE_DESCRIPTOR_BACKEND
-        value: lightweight
       - key: EYES_WIDTH
         value: 600
       - key: EYES_HEIGHT

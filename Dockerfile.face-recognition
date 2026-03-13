@@ -8,11 +8,10 @@ RUN yarn install --non-interactive
 COPY src/web/ ./
 RUN yarn build
 
-FROM python:3.10-bullseye AS runtime
+FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV FACE_DESCRIPTOR_BACKEND=face_recognition
 ENV CMAKE_BUILD_PARALLEL_LEVEL=1
 
 WORKDIR /app/src/server_flask

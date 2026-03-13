@@ -8,11 +8,12 @@ RUN yarn install --non-interactive
 COPY src/web/ ./
 RUN yarn build
 
-FROM python:3.11-bullseye AS runtime
+FROM python:3.10-bullseye AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV FACE_DESCRIPTOR_BACKEND=face_recognition
+ENV CMAKE_BUILD_PARALLEL_LEVEL=1
 
 WORKDIR /app/src/server_flask
 
@@ -21,12 +22,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     g++ \
+    pkg-config \
+    python3-dev \
     libopenblas-dev \
     liblapack-dev \
+    libjpeg-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY src/server_flask/requirements.face-recognition.txt ./
 RUN pip install --no-cache-dir -r requirements.face-recognition.txt
+RUN python -c "import face_recognition; print('face_recognition ok')"
 
 COPY src/server_flask/ ./
 COPY --from=frontend-builder /app/src/web/dist ./static

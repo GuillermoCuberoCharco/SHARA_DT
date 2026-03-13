@@ -61,7 +61,7 @@ from eyes.service import Eyes
 eyes = Eyes(socketio_instance=socketio)
 
 from services.cloud import server as cloud_server
-from services.camera_service import recognize_face_with_batch
+from services.camera_service import get_active_descriptor_model, recognize_face_with_batch
 from proactive_service import ProactiveService
 import state_machine
 
@@ -160,6 +160,7 @@ def recognize_face():
         response = {
             'userId': result.get('userId', 'unknown'),
             'userName': result.get('userName', 'unknown'),
+            'recognitionBackend': get_active_descriptor_model(),
             'isNewUser': bool(result.get('isNewUser', False)),
             'needsIdentification': bool(result.get('needsIdentification', True)),
             'userStatus': user_status,

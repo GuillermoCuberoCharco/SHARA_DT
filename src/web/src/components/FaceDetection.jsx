@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { SERVER_URL } from '../../src/config';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
 
-const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
+const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnabled = true }) => {
     // FACE DETECTION REFERENCES
     const videoRef = useRef(null);
     const modelRef = useRef(null);
@@ -155,6 +155,12 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
         const batch = batchCollectionRef.current;
 
         if (!batch.isCollecting || batch.frames.length < 5) return;
+        if (!isRecognitionEnabled) {
+            console.log('Skipping face recognition batch while audio pipeline is active');
+            resetBatchCollection();
+            setDetectionStatus('idle');
+            return;
+        }
 
         try {
             console.log('Processing batch of 5 frames...');
@@ -174,9 +180,9 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
 
             const response = await axios.post(`${SERVER_URL}/api/recognize-face`, formData, {
                 headers: {
-                    'Content-Type': 'multipart/form-data',
                     'X-Client-Id': clientIdRef.current
-                }
+                },
+                timeout: 15000
             });
 
             if (response.data) handleBatchRecognitionResponse(response.data);
@@ -304,6 +310,17 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
     }, [stream]);
 
     useEffect(() => {
+        if (isRecognitionEnabled) return;
+
+        const batch = batchCollectionRef.current;
+        if (batch.isCollecting || detectionStatus === 'processing') {
+            console.log('Pausing face recognition while recording or waiting for response');
+            resetBatchCollection();
+            setDetectionStatus('idle');
+        }
+    }, [isRecognitionEnabled, detectionStatus]);
+
+    useEffect(() => {
         if (!isModelLoaded || !isStreamReady || !videoRef.current) return;
 
         const detectFace = async () => {
@@ -326,7 +343,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
                         setIsFaceDetected(true);
                         onFaceDetected();
                     }
-                    if (isFaceDetected) {
+                    if (isFaceDetected && isRecognitionEnabled) {
                         const batch = batchCollectionRef.current;
                         if (!batch.isCollecting && detectionStatus === 'idle') {
                             startBatchCollection(predictions);
@@ -373,7 +390,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream }) => {
                 clearInterval(detectionRef.current);
             }
         };
-    }, [isModelLoaded, stream, onFaceDetected, onFaceLost, isStreamReady, isFaceDetected, emit, detectionStatus]);
+    }, [isModelLoaded, stream, onFaceDetected, onFaceLost, isStreamReady, isFaceDetected, emit, detectionStatus, isRecognitionEnabled]);
 
     return (
         <div style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}>

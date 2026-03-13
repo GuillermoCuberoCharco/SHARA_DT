@@ -23,6 +23,7 @@ monkey.patch_all()
 import base64
 import logging
 import os
+import time
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
@@ -129,6 +130,17 @@ def recognize_face():
         known_user_id = request.form.get('userId') or None
         client_id = request.form.get('clientId') or request.headers.get('X-Client-Id') or 'client_web'
         session_id = request.form.get('sessionId') or f'session_{client_id}'
+        total_bytes = sum(len(buffer) for buffer in face_buffers)
+        started_at = time.perf_counter()
+
+        logger.info(
+            'Face recognition batch received: client_id=%s session_id=%s files=%s bytes=%s known_user_id=%s',
+            client_id,
+            session_id,
+            len(face_buffers),
+            total_bytes,
+            known_user_id,
+        )
 
         result = recognize_face_with_batch(
             face_buffers,
@@ -166,6 +178,14 @@ def recognize_face():
             'detectionProgress': result.get('detectionProgress'),
             'totalRequired': result.get('totalRequired'),
         }
+        logger.info(
+            'Face recognition batch completed: client_id=%s session_id=%s confirmed=%s pending=%s elapsed_ms=%.1f',
+            client_id,
+            session_id,
+            response['isConfirmed'],
+            response['pendingRecognition'],
+            (time.perf_counter() - started_at) * 1000,
+        )
         return jsonify(response)
     except Exception as e:
         logger.error(f'Face recognition error: {e}', exc_info=True)

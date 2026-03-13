@@ -225,6 +225,7 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
                             onFaceDetected={handleFaceDetected}
                             onFaceLost={handleFaceLost}
                             stream={sharedStream}
+                            isRecognitionEnabled={!isRecording && !isWaitingResponse && !isSpeaking}
                         />
                     )}
                 </div>

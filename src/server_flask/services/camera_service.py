@@ -31,7 +31,7 @@ MAX_DESCRIPTOR_HISTORY = 5
 CONFIRMATION_WINDOW_SIZE = 5
 KNOWN_RECOGNITION_THRESHOLD = 3
 UNKNOWN_RECOGNITION_THRESHOLD = 8
-RECOGNITION_SESSION_TTL_SECONDS = 20
+RECOGNITION_SESSION_TTL_SECONDS = 120
 RECOGNITION_BACKEND_NAME = "face_recognition_v1"
 
 
@@ -433,6 +433,11 @@ def recognize_face_with_batch(
         return {"error": "No images provided."}
 
     _ensure_db_loaded()
+
+    # Refresh/create the session as soon as the request arrives so a slow
+    # embedding extraction does not expire the accumulated history mid-batch.
+    with _db_lock:
+        _get_session_state_locked(session_id)
 
     extraction_started_at = time.perf_counter()
     batch_encodings: List[List[float]] = []

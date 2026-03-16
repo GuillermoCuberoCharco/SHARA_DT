@@ -5,6 +5,10 @@ import { useEffect, useRef, useState } from 'react';
 import { DETECTION_INTERVAL_MS, RECOGNITION_REQUEST_TIMEOUT_MS, SERVER_URL } from '../../src/config';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
 
+const FACE_BATCH_SIZE = 5;
+const FACE_CROP_SIZE = 224;
+const FACE_CROP_JPEG_QUALITY = 0.85;
+
 const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnabled = true }) => {
     // FACE DETECTION REFERENCES
     const videoRef = useRef(null);
@@ -18,6 +22,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
     const batchCollectionRef = useRef({
         frames: [],
         isCollecting: false,
+        isCapturingFrame: false,
         sessionId: null,
         currentUserId: null
     });
@@ -30,7 +35,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
 
     // CONFIRMATION WINDOW STATE
     const [detectionStatus, setDetectionStatus] = useState('idle'); // idle, collecting, uncertain, confirmed
-    const [detectionProgress, setDetectionProgress] = useState({ current: 0, total: 5 });
+    const [detectionProgress, setDetectionProgress] = useState({ current: 0, total: FACE_BATCH_SIZE });
     const [consensusInfo, setConsensusInfo] = useState(null);
 
     const consecutiveDetectionsRef = useRef(0);
@@ -97,20 +102,22 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
 
         console.log('Starting batch collection for face recognition');
         batch.isCollecting = true;
+        batch.isCapturingFrame = false;
         batch.frames = [];
         batch.sessionId = getRecognitionSessionId();
 
         setDetectionStatus('collecting');
-        setDetectionProgress({ current: 0, total: 5 });
+        setDetectionProgress({ current: 0, total: FACE_BATCH_SIZE });
 
         addFrameToBatch(predictions[0]);
     };
 
     const addFrameToBatch = async (face) => {
         const batch = batchCollectionRef.current;
-        if (!batch.isCollecting || batch.frames.length >= 5) return;
+        if (!batch.isCollecting || batch.isCapturingFrame || batch.frames.length >= FACE_BATCH_SIZE) return;
 
         try {
+            batch.isCapturingFrame = true;
             const video = videoRef.current;
             const canvas = canvasRef.current;
             const ctx = canvas.getContext('2d');
@@ -127,34 +134,37 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
             const cropWidth = Math.min(width + (padding * 2), video.videoWidth - cropStartX);
             const cropHeight = Math.min(height + (padding * 2), video.videoHeight - cropStartY);
 
-            canvas.width = 400;
-            canvas.height = 400;
+            canvas.width = FACE_CROP_SIZE;
+            canvas.height = FACE_CROP_SIZE;
             ctx.fillStyle = '#FFFFFF';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(video, cropStartX, cropStartY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
 
             const blob = await new Promise((resolve) => {
-                canvas.toBlob(resolve, 'image/jpeg', 0.98);
+                canvas.toBlob(resolve, 'image/jpeg', FACE_CROP_JPEG_QUALITY);
             });
 
             if (!blob || !batch.isCollecting) return;
+            if (batch.frames.length >= FACE_BATCH_SIZE) return;
 
             const arrayBuffer = await blob.arrayBuffer();
             batch.frames.push(new Uint8Array(arrayBuffer));
             const currentCount = batch.frames.length;
-            console.log(`Frame added to batch: ${currentCount}/5`);
-            setDetectionProgress({ current: currentCount, total: 5 });
+            console.log(`Frame added to batch: ${currentCount}/${FACE_BATCH_SIZE}`);
+            setDetectionProgress({ current: currentCount, total: FACE_BATCH_SIZE });
 
-            if (currentCount >= 5) await processBatch();
+            if (currentCount >= FACE_BATCH_SIZE) await processBatch();
         } catch (error) {
             console.error('Error adding frame to batch:', error);
+        } finally {
+            batch.isCapturingFrame = false;
         }
     };
 
     const processBatch = async () => {
         const batch = batchCollectionRef.current;
 
-        if (!batch.isCollecting || batch.frames.length < 5) return;
+        if (!batch.isCollecting || batch.frames.length < FACE_BATCH_SIZE) return;
         if (!isRecognitionEnabled) {
             console.log('Skipping face recognition batch while waiting for server response or TTS playback');
             resetBatchCollection();
@@ -163,7 +173,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
         }
 
         try {
-            console.log('Processing batch of 5 frames...');
+            console.log(`Processing batch of ${FACE_BATCH_SIZE} frames...`);
             setDetectionStatus('processing');
 
             const formData = new FormData();
@@ -266,13 +276,14 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
     const resetBatchCollection = () => {
         const batch = batchCollectionRef.current;
         batch.isCollecting = false;
+        batch.isCapturingFrame = false;
         batch.frames = [];
         batch.sessionId = null;
     };
 
     const resetDetectionState = () => {
         setDetectionStatus('idle');
-        setDetectionProgress({ current: 0, total: 5 });
+        setDetectionProgress({ current: 0, total: FACE_BATCH_SIZE });
         setConsensusInfo(null);
         recognitionSessionIdRef.current = null;
         currentUserIdRef.current = null;
@@ -352,7 +363,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
                         const batch = batchCollectionRef.current;
                         if (!batch.isCollecting && detectionStatus === 'idle') {
                             startBatchCollection(predictions);
-                        } else if (batch.isCollecting && batch.frames.length < 5) {
+                        } else if (batch.isCollecting && !batch.isCapturingFrame && batch.frames.length < FACE_BATCH_SIZE) {
                             addFrameToBatch(predictions[0]);
                         }
                     }

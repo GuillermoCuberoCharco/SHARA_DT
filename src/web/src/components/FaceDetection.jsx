@@ -2,10 +2,8 @@ import * as blazeface from '@tensorflow-models/blazeface';
 import * as tf from '@tensorflow/tfjs';
 import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
-import { SERVER_URL } from '../../src/config';
+import { DETECTION_INTERVAL_MS, RECOGNITION_REQUEST_TIMEOUT_MS, SERVER_URL } from '../../src/config';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
-
-const DETECTION_INTERVAL_MS = 500;
 
 const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnabled = true }) => {
     // FACE DETECTION REFERENCES
@@ -184,13 +182,17 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
                 headers: {
                     'X-Client-Id': clientIdRef.current
                 },
-                timeout: 15000
+                timeout: RECOGNITION_REQUEST_TIMEOUT_MS
             });
 
             if (response.data) handleBatchRecognitionResponse(response.data);
         } catch (error) {
             const backendError = error.response?.data?.error;
-            console.error('Error processing batch:', backendError || error.message, error);
+            const isTimeout = error.code === 'ECONNABORTED';
+            const errorMessage = isTimeout
+                ? `Recognition request timed out after ${RECOGNITION_REQUEST_TIMEOUT_MS} ms`
+                : (backendError || error.message);
+            console.error('Error processing batch:', errorMessage, error);
             resetBatchCollection();
             setDetectionStatus('idle');
         }

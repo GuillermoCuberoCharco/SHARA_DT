@@ -8,6 +8,9 @@
  */
 export const SERVER_URL = (import.meta.env.PROD ? '' : 'http://localhost:8081');
 
+export const DETECTION_INTERVAL_MS = 500;
+export const RECOGNITION_REQUEST_TIMEOUT_MS = 30000;
+
 export const AUDIO_SETTINGS = {
     // PCM LINEAR16 via AudioWorklet — matches the physical robot's PyAudio config
     sampleRate: 16000,          // Hz — same as robot mic

@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -433,23 +434,47 @@ def recognize_face_with_batch(
 
     _ensure_db_loaded()
 
+    extraction_started_at = time.perf_counter()
     batch_encodings: List[List[float]] = []
     for image_bytes in face_buffers[:CONFIRMATION_WINDOW_SIZE]:
         encoding = _extract_face_encoding(image_bytes)
         if encoding is not None:
             batch_encodings.append(encoding)
+    extraction_elapsed_ms = (time.perf_counter() - extraction_started_at) * 1000
+
+    logger.info(
+        "Face batch encoding extraction: session_id=%s requested=%s valid=%s elapsed_ms=%.1f",
+        session_id,
+        min(len(face_buffers), CONFIRMATION_WINDOW_SIZE),
+        len(batch_encodings),
+        extraction_elapsed_ms,
+    )
 
     if not batch_encodings:
         return {"error": "No valid face encodings extracted."}
 
     with _db_lock:
+        classification_started_at = time.perf_counter()
         detections = _classify_encoding_batch(batch_encodings, known_user_id)
+        classification_elapsed_ms = (time.perf_counter() - classification_started_at) * 1000
         if not detections:
             return {"error": "No recognition detections generated."}
 
+        resolution_started_at = time.perf_counter()
         result = _resolve_session_recognition_locked(session_id, detections)
+        resolution_elapsed_ms = (time.perf_counter() - resolution_started_at) * 1000
         if result.get("error"):
             return result
+
+        logger.info(
+            "Face batch recognition resolved: session_id=%s detections=%s classification_ms=%.1f resolution_ms=%.1f confirmed=%s pending=%s",
+            session_id,
+            len(detections),
+            classification_elapsed_ms,
+            resolution_elapsed_ms,
+            bool(result.get("isConfirmed", False)),
+            bool(result.get("pendingRecognition", False)),
+        )
 
         return result
 

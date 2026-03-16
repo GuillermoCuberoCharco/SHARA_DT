@@ -5,6 +5,8 @@ import { useEffect, useRef, useState } from 'react';
 import { SERVER_URL } from '../../src/config';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
 
+const DETECTION_INTERVAL_MS = 500;
+
 const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnabled = true }) => {
     // FACE DETECTION REFERENCES
     const videoRef = useRef(null);
@@ -156,7 +158,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
 
         if (!batch.isCollecting || batch.frames.length < 5) return;
         if (!isRecognitionEnabled) {
-            console.log('Skipping face recognition batch while audio pipeline is active');
+            console.log('Skipping face recognition batch while waiting for server response or TTS playback');
             resetBatchCollection();
             setDetectionStatus('idle');
             return;
@@ -187,7 +189,8 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
 
             if (response.data) handleBatchRecognitionResponse(response.data);
         } catch (error) {
-            console.error('Error processing batch:', error);
+            const backendError = error.response?.data?.error;
+            console.error('Error processing batch:', backendError || error.message, error);
             resetBatchCollection();
             setDetectionStatus('idle');
         }
@@ -383,7 +386,9 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
             }
         };
 
-        detectionRef.current = setInterval(detectFace, 2000);
+        // Sample far more frequently than every 2s so the 3/8-frame confirmation
+        // thresholds feel close to the physical robot instead of taking >15s.
+        detectionRef.current = setInterval(detectFace, DETECTION_INTERVAL_MS);
 
         return () => {
             if (detectionRef.current) {

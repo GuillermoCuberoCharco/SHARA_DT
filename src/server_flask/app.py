@@ -148,6 +148,12 @@ def recognize_face():
             known_user_id,
         )
         if result.get('error'):
+            logger.warning(
+                'Face recognition batch failed: client_id=%s session_id=%s error=%s',
+                client_id,
+                session_id,
+                result['error'],
+            )
             return jsonify({'error': result['error']}), 500
 
         user_status = 'existing'

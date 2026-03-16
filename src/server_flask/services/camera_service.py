@@ -91,12 +91,17 @@ def _extract_face_encoding(image_bytes: bytes) -> Optional[List[float]]:
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         arr = np.asarray(img, dtype=np.uint8)
+        h, w = arr.shape[:2]
+        if h == 0 or w == 0:
+            return None
 
-        encodings = face_recognition.face_encodings(arr)
+        # Match the physical robot: face detection already happened upstream,
+        # so encode directly from the known crop instead of redetecting a face.
+        full_crop_box = [(0, max(w - 1, 0), max(h - 1, 0), 0)]
+        encodings = face_recognition.face_encodings(arr, known_face_locations=full_crop_box)
         if not encodings:
-            h, w = arr.shape[:2]
-            full_crop_box = [(0, max(w - 1, 0), max(h - 1, 0), 0)]
-            encodings = face_recognition.face_encodings(arr, known_face_locations=full_crop_box)
+            # Fallback for crops where the full-frame box is not usable.
+            encodings = face_recognition.face_encodings(arr)
 
         if not encodings:
             return None

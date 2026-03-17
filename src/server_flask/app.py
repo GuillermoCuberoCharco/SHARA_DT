@@ -125,7 +125,6 @@ def recognize_face():
         if not face_buffers:
             return jsonify({'error': 'Invalid or empty image files.'}), 400
 
-        known_user_id = request.form.get('userId') or None
         client_id = request.form.get('clientId') or request.headers.get('X-Client-Id') or 'client_web'
         session_id = request.form.get('sessionId') or f'session_{client_id}'
         raw_face_boxes = request.form.get('faceBoxes')
@@ -143,19 +142,17 @@ def recognize_face():
         started_at = time.perf_counter()
 
         logger.info(
-            'Face recognition batch received: client_id=%s session_id=%s files=%s bytes=%s known_user_id=%s face_boxes=%s',
+            'Face recognition batch received: client_id=%s session_id=%s files=%s bytes=%s face_boxes=%s',
             client_id,
             session_id,
             len(face_buffers),
             total_bytes,
-            known_user_id,
             len(face_boxes) if face_boxes else 0,
         )
 
         result = recognize_face_with_batch(
             face_buffers,
             session_id,
-            known_user_id,
             face_boxes=face_boxes,
         )
         if result.get('error'):
@@ -176,7 +173,6 @@ def recognize_face():
             user_status = 'existing_unknown'
 
         response = {
-            'userId': result.get('userId', 'unknown'),
             'userName': result.get('userName', 'unknown'),
             'recognitionBackend': get_active_descriptor_model(),
             'isNewUser': bool(result.get('isNewUser', False)),

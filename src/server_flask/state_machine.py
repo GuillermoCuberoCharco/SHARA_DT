@@ -34,7 +34,7 @@ import gevent
 
 from robot_context import robot_context
 from proactive_service import ProactiveService
-from services.camera_service import update_user_name
+from services.camera_service import record_face_for_session
 
 logger = logging.getLogger('StateMachine')
 
@@ -56,6 +56,26 @@ def init(socketio_instance, server_module, eyes_instance, proactive_instance):
     _eyes = eyes_instance
     _proactive = proactive_instance
     logger.info('StateMachine initialized')
+
+
+def _load_conversation_history_for(username):
+    if _server is None:
+        return
+
+    try:
+        _server.load_conversation_db(username)
+    except Exception as e:
+        logger.warning(f'Could not load conversation history: {e}')
+
+
+def _persist_current_conversation(username):
+    if _server is None:
+        return
+
+    try:
+        _server.dump_conversation_db(username)
+    except Exception as e:
+        logger.warning(f'Could not persist conversation history: {e}')
 
 
 # ── Proactive callback ────────────────────────────────────────────────────────
@@ -82,25 +102,32 @@ def proactive_event_handler(event: str, params: dict = None):
 
 def on_user_detected(user_data: dict):
     """Face detected by FaceDetection.jsx — replaces wf_event_handler 'face_listen'."""
-    user_id = user_data.get('userId')
     username = user_data.get('userName')
+    face_session_id = user_data.get('sessionId')
     needs_identification = bool(user_data.get('needsIdentification', False))
     is_new_user = user_data.get('isNewUser', True)
+    previous_username = robot_context.username
 
     logger.info(
-        f'User detected: id={user_id}, username={username}, '
+        f'User detected: session_id={face_session_id}, username={username}, '
         f'needs_identification={needs_identification}, new={is_new_user}, state={robot_context.state}'
     )
 
-    robot_context.user_id = user_id
+    robot_context.face_session_id = face_session_id
     robot_context.needs_identification = needs_identification
 
-    is_known_user = bool(user_id) and not needs_identification and username not in (None, '', 'unknown')
+    is_known_user = not needs_identification and username not in (None, '', 'unknown')
 
     if is_known_user:
+        if previous_username and previous_username != username:
+            _persist_current_conversation(previous_username)
+        if previous_username != username:
+            _load_conversation_history_for(username)
         robot_context.username = username
         _proactive.update('sensor', 'close_face_recognized', {'username': username})
     else:
+        if previous_username:
+            _persist_current_conversation(previous_username)
         robot_context.username = None
         _proactive.update('sensor', 'unknown_face')
 
@@ -114,7 +141,8 @@ def on_user_detected(user_data: dict):
 def on_user_lost(user_data: dict):
     """Face lost — replaces wf_event_handler 'face_not_listen'."""
     logger.info(f'User lost, state={robot_context.state}')
-    robot_context.user_id = None
+    _persist_current_conversation(robot_context.username)
+    robot_context.face_session_id = None
     robot_context.username = None
     robot_context.needs_identification = False
     _proactive.cancel_timers()
@@ -397,38 +425,38 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
     robot_context.proactive_question = next_proactive_question or ''
 
     if response.action == 'record_face':
-        if robot_context.user_id:
+        previous_username = robot_context.username
+        if robot_context.face_session_id:
             try:
-                update_result = update_user_name(robot_context.user_id, response.username)
+                update_result = record_face_for_session(robot_context.face_session_id, response.username)
                 if not update_result.get('success'):
-                    logger.warning(f"Could not persist recorded face username: {update_result.get('error')}")
+                    logger.warning(f"Could not persist recorded face: {update_result.get('error')}")
             except Exception as e:
-                logger.warning(f'Could not update face database for recorded user: {e}')
+                logger.warning(f'Could not record face in embedding database: {e}')
         else:
-            logger.warning('record_face action received without current user_id')
+            logger.warning('record_face action received without current face_session_id')
 
+        robot_context.username = response.username
+        robot_context.face_session_id = None
+        robot_context.needs_identification = False
+
+        if previous_username != response.username:
+            _load_conversation_history_for(response.username)
+
+    elif response.action == 'set_username':
+        previous_username = robot_context.username
         robot_context.username = response.username
         robot_context.needs_identification = False
 
-        try:
-            _server.load_conversation_db(response.username)
-        except Exception as e:
-            logger.warning(f'Could not load conversation history: {e}')
-
-    elif response.action == 'set_username':
-        robot_context.username = response.username
-
-        try:
-            _server.load_conversation_db(response.username)
-        except Exception as e:
-            logger.warning(f'Could not load conversation history: {e}')
+        if previous_username != response.username:
+            _load_conversation_history_for(response.username)
 
     elif response.username:
+        previous_username = robot_context.username
         robot_context.username = response.username
-        try:
-            _server.load_conversation_db(response.username)
-        except Exception as e:
-            logger.warning(f'Could not load conversation history: {e}')
+        robot_context.needs_identification = False
+        if previous_username != response.username:
+            _load_conversation_history_for(response.username)
 
     if _eyes and response.robot_mood:
         try:

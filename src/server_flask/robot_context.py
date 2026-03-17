@@ -32,8 +32,8 @@ class RobotContext:
         self._lock = threading.Lock()
         self._state = {
             'state': 'idle',
-            'user_id': None,
             'username': None,
+            'face_session_id': None,
             'needs_identification': False,
             'continue_conversation': False,
             'proactive_question': '',
@@ -76,14 +76,6 @@ class RobotContext:
         self.set('username', value)
 
     @property
-    def user_id(self):
-        return self.get('user_id')
-
-    @user_id.setter
-    def user_id(self, value):
-        self.set('user_id', value)
-
-    @property
     def needs_identification(self) -> bool:
         return self.get('needs_identification', False)
 
@@ -106,6 +98,14 @@ class RobotContext:
     @proactive_question.setter
     def proactive_question(self, value: str):
         self.set('proactive_question', value)
+
+    @property
+    def face_session_id(self):
+        return self.get('face_session_id')
+
+    @face_session_id.setter
+    def face_session_id(self, value):
+        self.set('face_session_id', value)
 
 
 # Singleton instance shared across the application

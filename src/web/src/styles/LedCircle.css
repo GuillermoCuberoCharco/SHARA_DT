@@ -1,0 +1,33 @@
+/*
+ * LedCircle.css
+ *
+ * Keyframe animations for the LED circle overlay in RobotView.
+ * Mirrors the physical robot's LED effects from leds.py:
+ *   breath → led-breath  (fx=2)
+ *   loop   → led-loop    (fx=41, conic-gradient spinning arc)
+ *   static → no animation, inline style only
+ */
+
+@keyframes led-breath {
+    0%, 100% {
+        opacity: 0.25;
+        box-shadow: 0 0 6px 3px var(--led-glow);
+    }
+    50% {
+        opacity: 1;
+        box-shadow: 0 0 24px 10px var(--led-glow);
+    }
+}
+
+@keyframes led-spin {
+    from { transform: translate(-50%, -50%) rotate(0deg); }
+    to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+.led-breath {
+    animation: led-breath 2s ease-in-out infinite;
+}
+
+.led-loop {
+    animation: led-spin 1.2s linear infinite;
+}

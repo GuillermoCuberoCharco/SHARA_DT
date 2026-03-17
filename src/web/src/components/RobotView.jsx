@@ -7,11 +7,16 @@
  */
 
 import PropTypes from 'prop-types';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
 import { useEyeRenderer } from '../eyes/useEyeRenderer';
+import LedCircle from './LedCircle';
 
 const SCREEN = { top: 0.195, left: 0.275, width: 0.40, height: 0.17 };
+
+// Position of the LED ring relative to the robot image bounds.
+// Adjust top/left to match the physical LED ring location on shara.png.
+const LED_RING = { top: 0.62, left: 0.5 };
 
 const RobotView = ({ robotState }) => {
     const imgRef = useRef(null);
@@ -19,6 +24,9 @@ const RobotView = ({ robotState }) => {
 
     const { socket } = useWebSocketContext();
     const { setFace } = useEyeRenderer(canvasRef);
+
+    const [operationalState, setOperationalState] = useState('idle');
+    const [ledPos, setLedPos] = useState(null);
 
     // ── Sync canvas position + pixel dimensions ───────────────────────────────
 
@@ -45,6 +53,13 @@ const RobotView = ({ robotState }) => {
             canvas.width = w;
             canvas.height = h;
         }
+
+        // LED circle position — derived from the same image bounds
+        setLedPos({
+            top:  rt + rh * LED_RING.top,
+            left: rl + rw * LED_RING.left,
+            size: Math.round(rw * 0.08),
+        });
     }, []);
 
     useEffect(() => {
@@ -66,6 +81,15 @@ const RobotView = ({ robotState }) => {
         return () => socket.off('set_face', handler);
     }, [socket, setFace]);
 
+    // ── LED state via state_update socket event ────────────────────────────────
+
+    useEffect(() => {
+        if (!socket) return;
+        const handler = ({ state }) => setOperationalState(state);
+        socket.on('state_update', handler);
+        return () => socket.off('state_update', handler);
+    }, [socket]);
+
     // ── robotState prop (from UI state machine) ───────────────────────────────
 
     useEffect(() => {
@@ -86,6 +110,14 @@ const RobotView = ({ robotState }) => {
                 onError={(e) => { e.target.style.display = 'none'; }}
             />
             <canvas ref={canvasRef} style={styles.canvas} />
+            {ledPos && (
+                <LedCircle
+                    top={ledPos.top}
+                    left={ledPos.left}
+                    size={ledPos.size}
+                    robotState={operationalState}
+                />
+            )}
         </div>
     );
 };

@@ -29,11 +29,16 @@ export const WebSocketProvider = ({ children, handlers }) => {
     const [isConnected, setIsConnected] = useState(false);
     const [isRegistered, setIsRegistered] = useState(false);
     const socketRef = useRef(null);
+    const handlersRef = useRef(handlers);
+
+    useEffect(() => {
+        handlersRef.current = handlers;
+    }, [handlers]);
 
     useEffect(() => {
         console.log('[WebSocket] Connecting to:', SERVER_URL + '/message');
 
-        if (!socketRef.current || !socketRef.current.connected) {
+        if (!socketRef.current) {
             // Flask-SocketIO namespace: SERVER_URL + '/message'
             const newSocket = io(`${SERVER_URL}/message`, {
                 transports: ['websocket', 'polling'],
@@ -46,15 +51,14 @@ export const WebSocketProvider = ({ children, handlers }) => {
         }
 
         const socket = socketRef.current;
-        socket.removeAllListeners();
 
-        socket.on('connect', () => {
+        const handleConnect = () => {
             console.log('[WebSocket] Connected:', socket.id);
             setIsConnected(true);
             socket.emit('register_client', { client: 'web' });
-        });
+        };
 
-        socket.on('disconnect', (reason) => {
+        const handleDisconnect = (reason) => {
             console.log('[WebSocket] Disconnected:', reason);
             setIsConnected(false);
             setIsRegistered(false);
@@ -64,36 +68,50 @@ export const WebSocketProvider = ({ children, handlers }) => {
                     socket.connect();
                 }
             }, 1000);
-        });
+        };
 
-        socket.on('registration_success', () => {
+        const handleRegistrationSuccess = () => {
             console.log('[WebSocket] Registered successfully');
             setIsRegistered(true);
-            handlers?.handleRegistrationSuccess?.();
-        });
+            handlersRef.current?.handleRegistrationSuccess?.();
+        };
 
-        socket.on('connect_error', (error) => {
+        const handleConnectError = (error) => {
             console.error('[WebSocket] Connection error:', error);
-            handlers?.handleConnectError?.(error);
-        });
+            handlersRef.current?.handleConnectError?.(error);
+        };
 
-        socket.on('reconnect_attempt', (attempt) => {
+        const handleReconnectAttempt = (attempt) => {
             console.log(`[WebSocket] Reconnecting... attempt ${attempt}`);
-        });
+        };
 
-        socket.on('reconnect', () => {
+        const handleReconnect = () => {
             console.log('[WebSocket] Reconnected');
             socket.emit('register_client', { client: 'web' });
-        });
+        };
 
-        socket.on('error', (error) => {
+        const handleError = (error) => {
             console.error('[WebSocket] Error:', error);
-        });
+        };
+
+        socket.on('connect', handleConnect);
+        socket.on('disconnect', handleDisconnect);
+        socket.on('registration_success', handleRegistrationSuccess);
+        socket.on('connect_error', handleConnectError);
+        socket.on('reconnect_attempt', handleReconnectAttempt);
+        socket.on('reconnect', handleReconnect);
+        socket.on('error', handleError);
 
         return () => {
-            socket.removeAllListeners();
+            socket.off('connect', handleConnect);
+            socket.off('disconnect', handleDisconnect);
+            socket.off('registration_success', handleRegistrationSuccess);
+            socket.off('connect_error', handleConnectError);
+            socket.off('reconnect_attempt', handleReconnectAttempt);
+            socket.off('reconnect', handleReconnect);
+            socket.off('error', handleError);
         };
-    }, [handlers]);
+    }, []);
 
     const emit = (event, data) => {
         if (socketRef.current?.connected) {

@@ -21,6 +21,7 @@ from gevent import monkey
 monkey.patch_all()
 
 import base64
+import json
 import logging
 import os
 import time
@@ -130,22 +131,35 @@ def recognize_face():
         known_user_id = request.form.get('userId') or None
         client_id = request.form.get('clientId') or request.headers.get('X-Client-Id') or 'client_web'
         session_id = request.form.get('sessionId') or f'session_{client_id}'
+        raw_face_boxes = request.form.get('faceBoxes')
+        face_boxes = None
+        if raw_face_boxes:
+            try:
+                parsed_face_boxes = json.loads(raw_face_boxes)
+                if isinstance(parsed_face_boxes, list):
+                    face_boxes = parsed_face_boxes
+                else:
+                    logger.warning('Ignoring non-list faceBoxes payload for session_id=%s', session_id)
+            except (TypeError, ValueError) as exc:
+                logger.warning('Ignoring invalid faceBoxes payload for session_id=%s: %s', session_id, exc)
         total_bytes = sum(len(buffer) for buffer in face_buffers)
         started_at = time.perf_counter()
 
         logger.info(
-            'Face recognition batch received: client_id=%s session_id=%s files=%s bytes=%s known_user_id=%s',
+            'Face recognition batch received: client_id=%s session_id=%s files=%s bytes=%s known_user_id=%s face_boxes=%s',
             client_id,
             session_id,
             len(face_buffers),
             total_bytes,
             known_user_id,
+            len(face_boxes) if face_boxes else 0,
         )
 
         result = recognize_face_with_batch(
             face_buffers,
             session_id,
             known_user_id,
+            face_boxes=face_boxes,
         )
         if result.get('error'):
             logger.warning(

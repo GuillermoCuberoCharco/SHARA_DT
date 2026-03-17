@@ -17,7 +17,7 @@ import os
 import threading
 import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import face_recognition
 import numpy as np
@@ -84,32 +84,60 @@ def _average_encodings(encodings: List[List[float]]) -> List[float]:
     return avg.astype(np.float32).tolist()
 
 
-def _extract_face_encoding(image_bytes: bytes) -> Optional[List[float]]:
-    if not image_bytes:
+def _normalize_face_box(face_box, image_shape) -> Optional[Tuple[int, int, int, int]]:
+    if not isinstance(face_box, (list, tuple)) or len(face_box) != 4:
         return None
+
+    try:
+        top, right, bottom, left = [int(round(float(value))) for value in face_box]
+    except (TypeError, ValueError):
+        return None
+
+    height, width = image_shape[:2]
+    top = max(0, min(top, max(height - 1, 0)))
+    right = max(0, min(right, max(width - 1, 0)))
+    bottom = max(0, min(bottom, max(height - 1, 0)))
+    left = max(0, min(left, max(width - 1, 0)))
+
+    if bottom <= top or right <= left:
+        return None
+
+    return (top, right, bottom, left)
+
+
+def _extract_face_encoding(
+    image_bytes: bytes,
+    face_box: Optional[List[int]] = None,
+) -> Tuple[Optional[List[float]], bool]:
+    if not image_bytes:
+        return None, False
 
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         arr = np.asarray(img, dtype=np.uint8)
         h, w = arr.shape[:2]
         if h == 0 or w == 0:
-            return None
+            return None, False
 
-        # Match the physical robot: face detection already happened upstream,
-        # so encode directly from the known crop instead of redetecting a face.
-        full_crop_box = [(0, max(w - 1, 0), max(h - 1, 0), 0)]
-        encodings = face_recognition.face_encodings(arr, known_face_locations=full_crop_box)
+        known_face_box = _normalize_face_box(face_box, arr.shape)
+        if known_face_box is None:
+            # Backward-compatible fallback for older clients that only send the
+            # crop. Newer clients send the detector box to avoid slow re-detects.
+            known_face_box = (0, max(w - 1, 0), max(h - 1, 0), 0)
+
+        encodings = face_recognition.face_encodings(arr, known_face_locations=[known_face_box])
+        used_fallback = False
         if not encodings:
-            # Fallback for crops where the full-frame box is not usable.
+            used_fallback = True
             encodings = face_recognition.face_encodings(arr)
 
         if not encodings:
-            return None
+            return None, used_fallback
 
-        return encodings[0].astype(np.float32).tolist()
+        return encodings[0].astype(np.float32).tolist(), used_fallback
     except Exception as e:
         logger.warning(f"Face encoding extraction failed: {e}")
-        return None
+        return None, False
 
 
 def _cleanup_expired_sessions_locked(now: Optional[datetime] = None):
@@ -426,6 +454,7 @@ def recognize_face_with_batch(
     face_buffers: List[bytes],
     session_id: str,
     known_user_id: Optional[str] = None,
+    face_boxes: Optional[List[List[int]]] = None,
 ) -> Dict:
     """
     Main batch recognition entrypoint.
@@ -444,51 +473,72 @@ def recognize_face_with_batch(
     with _db_lock:
         _get_session_state_locked(session_id)
 
-    extraction_started_at = time.perf_counter()
-    batch_encodings: List[List[float]] = []
-    for image_bytes in face_buffers[:CONFIRMATION_WINDOW_SIZE]:
-        encoding = _extract_face_encoding(image_bytes)
-        if encoding is not None:
-            batch_encodings.append(encoding)
-    extraction_elapsed_ms = (time.perf_counter() - extraction_started_at) * 1000
+    requested_count = min(len(face_buffers), CONFIRMATION_WINDOW_SIZE)
+    extraction_elapsed_ms = 0.0
+    classification_elapsed_ms = 0.0
+    resolution_elapsed_ms = 0.0
+    fallback_count = 0
+    valid_encoding_count = 0
+    detections_processed = 0
+    result: Optional[Dict] = None
+
+    for index, image_bytes in enumerate(face_buffers[:requested_count]):
+        image_extraction_started_at = time.perf_counter()
+        face_box = face_boxes[index] if face_boxes and index < len(face_boxes) else None
+        encoding, used_fallback = _extract_face_encoding(image_bytes, face_box=face_box)
+        extraction_elapsed_ms += (time.perf_counter() - image_extraction_started_at) * 1000
+
+        if used_fallback:
+            fallback_count += 1
+        if encoding is None:
+            continue
+
+        valid_encoding_count += 1
+
+        with _db_lock:
+            classification_started_at = time.perf_counter()
+            detection = {
+                "encoding": encoding,
+                "result": _find_best_match_for_encoding(encoding, known_user_id),
+            }
+            classification_elapsed_ms += (time.perf_counter() - classification_started_at) * 1000
+
+            resolution_started_at = time.perf_counter()
+            result = _resolve_session_recognition_locked(session_id, [detection])
+            resolution_elapsed_ms += (time.perf_counter() - resolution_started_at) * 1000
+
+        detections_processed += 1
+        if result.get("error") or result.get("isConfirmed"):
+            break
 
     logger.info(
-        "Face batch encoding extraction: session_id=%s requested=%s valid=%s elapsed_ms=%.1f",
+        "Face batch encoding extraction: session_id=%s requested=%s valid=%s processed=%s fallback=%s elapsed_ms=%.1f",
         session_id,
-        min(len(face_buffers), CONFIRMATION_WINDOW_SIZE),
-        len(batch_encodings),
+        requested_count,
+        valid_encoding_count,
+        detections_processed,
+        fallback_count,
         extraction_elapsed_ms,
     )
 
-    if not batch_encodings:
+    if valid_encoding_count == 0:
         return {"error": "No valid face encodings extracted."}
-
-    with _db_lock:
-        classification_started_at = time.perf_counter()
-        detections = _classify_encoding_batch(batch_encodings, known_user_id)
-        classification_elapsed_ms = (time.perf_counter() - classification_started_at) * 1000
-        if not detections:
-            return {"error": "No recognition detections generated."}
-
-        resolution_started_at = time.perf_counter()
-        result = _resolve_session_recognition_locked(session_id, detections)
-        resolution_elapsed_ms = (time.perf_counter() - resolution_started_at) * 1000
-        if result.get("error"):
-            return result
-
-        logger.info(
-            "Face batch recognition resolved: session_id=%s detections=%s classification_ms=%.1f resolution_ms=%.1f confirmed=%s pending=%s",
-            session_id,
-            len(detections),
-            classification_elapsed_ms,
-            resolution_elapsed_ms,
-            bool(result.get("isConfirmed", False)),
-            bool(result.get("pendingRecognition", False)),
-        )
-
+    if not result:
+        return {"error": "No recognition detections generated."}
+    if result.get("error"):
         return result
 
-    return {"error": "Unexpected recognition state."}
+    logger.info(
+        "Face batch recognition resolved: session_id=%s detections=%s classification_ms=%.1f resolution_ms=%.1f confirmed=%s pending=%s",
+        session_id,
+        detections_processed,
+        classification_elapsed_ms,
+        resolution_elapsed_ms,
+        bool(result.get("isConfirmed", False)),
+        bool(result.get("pendingRecognition", False)),
+    )
+
+    return result
 
 
 def get_active_descriptor_model() -> str:

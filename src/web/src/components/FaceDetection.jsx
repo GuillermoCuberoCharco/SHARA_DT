@@ -133,6 +133,14 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
             const cropStartY = Math.max(0, startY - padding);
             const cropWidth = Math.min(width + (padding * 2), video.videoWidth - cropStartX);
             const cropHeight = Math.min(height + (padding * 2), video.videoHeight - cropStartY);
+            const scaleX = FACE_CROP_SIZE / cropWidth;
+            const scaleY = FACE_CROP_SIZE / cropHeight;
+            const faceBox = [
+                Math.max(0, Math.min(FACE_CROP_SIZE - 1, Math.round((startY - cropStartY) * scaleY))),
+                Math.max(0, Math.min(FACE_CROP_SIZE - 1, Math.round((startX + width - cropStartX) * scaleX))),
+                Math.max(0, Math.min(FACE_CROP_SIZE - 1, Math.round((startY + height - cropStartY) * scaleY))),
+                Math.max(0, Math.min(FACE_CROP_SIZE - 1, Math.round((startX - cropStartX) * scaleX)))
+            ];
 
             canvas.width = FACE_CROP_SIZE;
             canvas.height = FACE_CROP_SIZE;
@@ -146,9 +154,13 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
 
             if (!blob || !batch.isCollecting) return;
             if (batch.frames.length >= FACE_BATCH_SIZE) return;
+            if (faceBox[2] <= faceBox[0] || faceBox[1] <= faceBox[3]) return;
 
             const arrayBuffer = await blob.arrayBuffer();
-            batch.frames.push(new Uint8Array(arrayBuffer));
+            batch.frames.push({
+                buffer: new Uint8Array(arrayBuffer),
+                faceBox
+            });
             const currentCount = batch.frames.length;
             console.log(`Frame added to batch: ${currentCount}/${FACE_BATCH_SIZE}`);
             setDetectionProgress({ current: currentCount, total: FACE_BATCH_SIZE });
@@ -177,14 +189,17 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
             setDetectionStatus('processing');
 
             const formData = new FormData();
+            const faceBoxes = [];
 
-            batch.frames.forEach((frameBuffer, index) => {
-                const blob = new Blob([frameBuffer], { type: 'image/jpeg' });
+            batch.frames.forEach((frameEntry, index) => {
+                const blob = new Blob([frameEntry.buffer], { type: 'image/jpeg' });
                 formData.append('faces', blob, `face_${index}.jpg`);
+                faceBoxes.push(frameEntry.faceBox);
             });
 
             formData.append('clientId', clientIdRef.current);
             formData.append('sessionId', batch.sessionId);
+            formData.append('faceBoxes', JSON.stringify(faceBoxes));
 
             if (currentUserIdRef.current) formData.append('userId', currentUserIdRef.current);
 

@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from 'react';
 import { DETECTION_INTERVAL_MS, RECOGNITION_REQUEST_TIMEOUT_MS, SERVER_URL } from '../../src/config';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
 
-const FACE_BATCH_SIZE = 5;
+const FACE_BATCH_SIZE = 3;
+const UNKNOWN_RECOGNITION_THRESHOLD = 6;
 const FACE_CROP_SIZE = 224;
 const FACE_CROP_JPEG_QUALITY = 0.85;
 
@@ -238,10 +239,10 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
             setDetectionStatus('idle');
             setDetectionProgress({
                 current: data.historyCount || data.detectionProgress || 0,
-                total: data.totalRequired || 8
+                total: data.totalRequired || UNKNOWN_RECOGNITION_THRESHOLD
             });
             setConsensusInfo({
-                message: `Recognition progress: ${data.historyCount || data.detectionProgress || 0}/${data.totalRequired || 8}`,
+                message: `Recognition progress: ${data.historyCount || data.detectionProgress || 0}/${data.totalRequired || UNKNOWN_RECOGNITION_THRESHOLD}`,
                 ratio: null
             });
             console.log('Recognition pending:', data);
@@ -414,8 +415,8 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, isRecognitionEnable
             }
         };
 
-        // Sample far more frequently than every 2s so the 3/8-frame confirmation
-        // thresholds feel close to the physical robot instead of taking >15s.
+        // Sample fast enough that 3/6 confirmation can complete in roughly
+        // one or two short batches instead of several seconds of waiting.
         detectionRef.current = setInterval(detectFace, DETECTION_INTERVAL_MS);
 
         return () => {

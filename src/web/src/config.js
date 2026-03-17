@@ -8,7 +8,7 @@
  */
 export const SERVER_URL = (import.meta.env.PROD ? '' : 'http://localhost:8081');
 
-export const DETECTION_INTERVAL_MS = 500;
+export const DETECTION_INTERVAL_MS = 250;
 export const RECOGNITION_REQUEST_TIMEOUT_MS = 60000;
 
 export const AUDIO_SETTINGS = {

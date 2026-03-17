@@ -1,16 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import RobotView from "./components/RobotView";
 import UI from "./components/UI/UI";
-import WebSocketVideoComponent from "./components/WebSocketVideo";
 import { WebSocketProvider } from "./contexts/WebSocketContext";
 
 function App() {
   const [sharedStream, setSharedStream] = useState(null);
   const [isStreamReady, setIsStreamReady] = useState(false);
   const [robotState, setRobotState] = useState('neutral');
-
-  const videoTimeoutRef = useRef(null);
-  const VIDEO_TIMEOUT = 10000;
+  const streamRef = useRef(null);
 
   const webSocketHandlers = {
     handleRegistrationSuccess: () => {
@@ -21,39 +18,13 @@ function App() {
     }
   };
 
-  const handleStreamReady = (stream) => {
-    if (videoTimeoutRef.current) {
-      clearTimeout(videoTimeoutRef.current);
-      videoTimeoutRef.current = null;
-    }
-
-    if (stream) {
-      console.log("Stream ready - camera available");
-      setSharedStream(stream);
-    } else {
-      console.log("No stream available - proceeding without camera");
-      setSharedStream(null);
-    }
-    setIsStreamReady(true);
-  };
-
-  const handleStreamError = (error) => {
-    console.error("Stream error, proceeding without camera:", error);
-
-    if (videoTimeoutRef.current) {
-      clearTimeout(videoTimeoutRef.current);
-      videoTimeoutRef.current = null;
-    }
-
-    setIsStreamReady(true);
-  };
-
   useEffect(() => {
-    const initializeApp = async () => {
+    let isMounted = true;
+
+    const initializeCamera = async () => {
       try {
-        if (typeof navigator.mediaDevices === 'undefined') {
+        if (typeof navigator.mediaDevices === 'undefined' || !navigator.mediaDevices.getUserMedia) {
           console.log("MediaDevices API not available");
-          setIsStreamReady(true);
           return;
         }
 
@@ -62,39 +33,35 @@ function App() {
 
         if (!hasCamera) {
           console.log("No camera devices found");
-          setIsStreamReady(true);
           return;
         }
 
-        try {
-          const testStream = await navigator.mediaDevices.getUserMedia({
-            video: { width: 1, height: 1 },
-            audio: false
-          });
-          testStream.getTracks().forEach(track => track.stop());
-          console.log("Camera access test successful");
-
-          videoTimeoutRef.current = setTimeout(() => {
-            console.log("Video services timeout reached");
-            setIsStreamReady(true);
-          }, VIDEO_TIMEOUT);
-
-        } catch (cameraError) {
-          console.log("Camera access denied:", cameraError.message);
-          setIsStreamReady(true);
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        if (!isMounted) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
         }
 
+        console.log("Camera stream ready");
+        streamRef.current = stream;
+        setSharedStream(stream);
       } catch (error) {
-        console.log("Initialization error:", error);
-        setIsStreamReady(true);
+        console.log("Proceeding without camera:", error?.message || error);
+        setSharedStream(null);
+      } finally {
+        if (isMounted) {
+          setIsStreamReady(true);
+        }
       }
     };
 
-    initializeApp();
+    initializeCamera();
 
     return () => {
-      if (videoTimeoutRef.current) {
-        clearTimeout(videoTimeoutRef.current);
+      isMounted = false;
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
     };
   }, []);
@@ -103,12 +70,6 @@ function App() {
     <WebSocketProvider handlers={webSocketHandlers}>
       {/* Full-screen robot image with eye animation overlay */}
       <RobotView robotState={robotState} />
-
-      {/* Camera stream for face detection */}
-      <WebSocketVideoComponent
-        onStreamReady={handleStreamReady}
-        onStreamError={handleStreamError}
-      />
 
       {/* UI overlay: chat, audio controls, status bar */}
       {isStreamReady && (

@@ -8,7 +8,6 @@ Since frontend and backend share the same origin, CORS is not needed.
 
 Architecture:
     /message   namespace — conversation (audio, text, face events)
-    /video     namespace — video stream from browser
     /animation namespace — eye animation frames relay (Python → Web)
     /*                   — serves React SPA static build
 """
@@ -28,7 +27,7 @@ import time
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
-from flask_socketio import Namespace, SocketIO
+from flask_socketio import SocketIO
 
 load_dotenv()
 
@@ -77,13 +76,11 @@ state_machine.init(
 
 # ── Socket namespaces ─────────────────────────────────────────────────────────
 from sockets.message_handler import MessageNamespace
-from sockets.video_handler import VideoNamespace
 
 
 socketio.on_namespace(MessageNamespace('/message'))
-socketio.on_namespace(VideoNamespace('/video'))
 
-logger.info('Namespaces registered: /message, /video, /animation')
+logger.info('Namespaces registered: /message, /animation')
 
 @app.route('/health')
 def health():

@@ -16,7 +16,7 @@ const SCREEN = { top: 0.195, left: 0.275, width: 0.40, height: 0.17 };
 
 // Position of the LED ring relative to the robot image bounds.
 // Adjust top/left to match the physical LED ring location on shara.png.
-const LED_RING = { top: 0.62, left: 0.5 };
+const LED_RING = { top: 0.72, left: 0.45, size: 0.136 };
 
 const RobotView = ({ robotState }) => {
     const imgRef = useRef(null);
@@ -56,9 +56,9 @@ const RobotView = ({ robotState }) => {
 
         // LED circle position — derived from the same image bounds
         setLedPos({
-            top:  rt + rh * LED_RING.top,
+            top: rt + rh * LED_RING.top,
             left: rl + rw * LED_RING.left,
-            size: Math.round(rw * 0.08),
+            size: Math.round(rw * LED_RING.size),
         });
     }, []);
 

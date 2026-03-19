@@ -78,6 +78,21 @@ def _persist_current_conversation(username):
         logger.warning(f'Could not persist conversation history: {e}')
 
 
+def _reset_unknown_user_tracking():
+    robot_context.unknown_user_interactions = 0
+
+
+def _mark_unknown_user_interaction():
+    robot_context.unknown_user_interactions += 1
+
+    if robot_context.unknown_user_interactions >= 1:
+        robot_context.proactive_question = 'casual_ask_known_username'
+        logger.info(
+            'Time to ask casual_ask_known_username '
+            f'(unknown interactions={robot_context.unknown_user_interactions})'
+        )
+
+
 # ── Proactive callback ────────────────────────────────────────────────────────
 
 def proactive_event_handler(event: str, params: dict = None):
@@ -145,6 +160,9 @@ def on_user_lost(user_data: dict):
     robot_context.face_session_id = None
     robot_context.username = None
     robot_context.needs_identification = False
+    robot_context.proactive_question = ''
+    robot_context.continue_conversation = False
+    _reset_unknown_user_tracking()
     _proactive.cancel_timers()
 
     if robot_context.state == 'listening':
@@ -249,6 +267,9 @@ def process_transition(transition: str, params: dict = None):
 
         elif transition == 'speaking2idle_presence' and current == 'speaking':
             robot_context.state = 'idle_presence'
+            robot_context.proactive_question = ''
+            robot_context.continue_conversation = False
+            _reset_unknown_user_tracking()
             _emit_state_update()
 
         elif transition == 'proactive2processingquery':
@@ -445,8 +466,13 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
 
     elif response.action == 'set_username':
         previous_username = robot_context.username
+        logger.info(
+            f'Updating username to {response.username} '
+            f'(proactive presence conversation - N interactions {robot_context.unknown_user_interactions})'
+        )
         robot_context.username = response.username
         robot_context.needs_identification = False
+        _reset_unknown_user_tracking()
 
         if previous_username != response.username:
             _load_conversation_history_for(response.username)
@@ -457,6 +483,9 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
         robot_context.needs_identification = False
         if previous_username != response.username:
             _load_conversation_history_for(response.username)
+
+    if sid is not None and not robot_context.username:
+        _mark_unknown_user_interaction()
 
     if _eyes and response.robot_mood:
         try:

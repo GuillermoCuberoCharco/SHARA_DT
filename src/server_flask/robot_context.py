@@ -107,6 +107,14 @@ class RobotContext:
     def face_session_id(self, value):
         self.set('face_session_id', value)
 
+    @property
+    def unknown_user_interactions(self) -> int:
+        return self.get('unknown_user_interactions', 0)
+
+    @unknown_user_interactions.setter
+    def unknown_user_interactions(self, value: int):
+        self.set('unknown_user_interactions', int(value))
+
 
 # Singleton instance shared across the application
 robot_context = RobotContext()

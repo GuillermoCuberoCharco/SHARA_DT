@@ -2,13 +2,6 @@
  * WebSocketContext
  *
  * Connects to the Flask-SocketIO server /message namespace.
- *
- * Migration note (Node.js → Flask):
- *   Before: io(SERVER_URL, { path: '/message-socket' })
- *   After:  io(SERVER_URL + '/message')   ← Socket.IO namespace syntax
- *
- * The namespace approach is idiomatic for Flask-SocketIO and requires
- * no path configuration — the namespace is part of the URL.
  */
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
@@ -39,7 +32,7 @@ export const WebSocketProvider = ({ children, handlers }) => {
         console.log('[WebSocket] Connecting to:', SERVER_URL + '/message');
 
         if (!socketRef.current) {
-            // Flask-SocketIO namespace: SERVER_URL + '/message'
+            // Shared Flask-SocketIO namespace.
             const newSocket = io(`${SERVER_URL}/message`, {
                 transports: ['websocket', 'polling'],
                 reconnectionAttempts: 10,

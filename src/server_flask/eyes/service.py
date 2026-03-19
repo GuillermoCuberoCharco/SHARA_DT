@@ -3,7 +3,7 @@ eyes/service.py
 
 Minimal eyes service for ViSHARA web deployment.
 All rendering, interpolation and blink logic runs on the React frontend.
-This module only emits set_face events to the /animation namespace.
+This module emits set_face events on the shared /message namespace.
 """
 
 import logging

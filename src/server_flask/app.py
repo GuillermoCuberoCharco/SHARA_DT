@@ -7,8 +7,7 @@ Flask serves both the React frontend (static build) and the WebSocket API.
 Since frontend and backend share the same origin, CORS is not needed.
 
 Architecture:
-    /message   namespace — conversation (audio, text, face events)
-    /animation namespace — eye animation frames relay (Python → Web)
+    /message   namespace — conversation, face events and eye state updates
     /*                   — serves React SPA static build
 """
 
@@ -74,13 +73,13 @@ state_machine.init(
     proactive_instance=proactive,
 )
 
-# ── Socket namespaces ─────────────────────────────────────────────────────────
+# ── Socket namespace ──────────────────────────────────────────────────────────
 from sockets.message_handler import MessageNamespace
 
 
 socketio.on_namespace(MessageNamespace('/message'))
 
-logger.info('Namespaces registered: /message, /animation')
+logger.info('Namespace registered: /message')
 
 @app.route('/health')
 def health():

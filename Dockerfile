@@ -12,25 +12,11 @@ FROM python:3.10-bullseye AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV CMAKE_BUILD_PARALLEL_LEVEL=1
 
 WORKDIR /app/src/server_flask
 
-# Native toolchain required by face_recognition/dlib.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    g++ \
-    pkg-config \
-    python3-dev \
-    libopenblas-dev \
-    liblapack-dev \
-    libjpeg-dev \
-    zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY src/server_flask/requirements.txt src/server_flask/requirements.face-recognition.txt ./
-RUN pip install --no-cache-dir -r requirements.face-recognition.txt
+COPY src/server_flask/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/server_flask/ ./
 COPY --from=frontend-builder /app/src/web/dist ./static

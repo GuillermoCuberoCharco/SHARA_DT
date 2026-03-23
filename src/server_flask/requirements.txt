@@ -5,8 +5,5 @@ gevent==24.11.1
 gevent-websocket==0.10.1
 python-dotenv==1.1.0
 openai==1.78.0
-google-cloud-speech==2.30.0
-google-cloud-texttospeech==2.24.0
 python-socketio==5.12.1
-numpy==2.2.6
-Pillow==11.2.1
+pydantic==2.11.3

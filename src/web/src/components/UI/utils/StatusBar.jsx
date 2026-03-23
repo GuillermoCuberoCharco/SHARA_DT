@@ -1,77 +1,18 @@
 import React from "react";
 import '../../../styles/StatusBar.css';
 
-const StatusBar = ({
-    isRecording,
-    isWaiting,
-    isWaitingResponse,
-    audioSrc,
-    connectionError,
-    isRegistered,
-    faceDetected
-}) => {
+const StatusBar = ({ connectionError, isRegistered, isWaitingResponse }) => {
     const getStatusMessage = () => {
         if (connectionError) {
-            return {
-                message: "Connection error",
-                icon: "⚠️",
-                bgColor: "status-bar-error"
-            };
+            return { message: "Error de conexión", icon: "⚠️", bgColor: "status-bar-error" };
         }
-
         if (!isRegistered) {
-            return {
-                message: "Connecting to the server...",
-                icon: "🔄",
-                bgColor: "status-bar-connecting"
-            };
+            return { message: "Conectando al servidor...", icon: "🔄", bgColor: "status-bar-connecting" };
         }
-
-        if (isRecording) {
-            return {
-                message: "Recording audio...",
-                icon: "🎙️",
-                bgColor: "status-bar-recording"
-            };
-        }
-
-        if (isWaiting) {
-            return {
-                message: "Processing audio...",
-                icon: "⚙️",
-                color: "status-bar-processing"
-            };
-        }
-
         if (isWaitingResponse) {
-            return {
-                message: "Waiting for response...",
-                icon: "⏳",
-                color: "status-bar-waiting"
-            };
+            return { message: "Esperando respuesta...", icon: "⏳", bgColor: "status-bar-waiting" };
         }
-
-        if (audioSrc) {
-            return {
-                message: "Audio ready",
-                icon: "🔊",
-                color: "status-bar-playing"
-            };
-        }
-
-        if (!faceDetected) {
-            return {
-                message: "Face not detected",
-                icon: "😢",
-                color: "status-bar-face-not-detected"
-            };
-        }
-
-        return {
-            message: "Ready",
-            icon: "✅",
-            color: "status-bar-ready"
-        };
+        return { message: "Listo", icon: "✅", bgColor: "status-bar-ready" };
     };
 
     const status = getStatusMessage();

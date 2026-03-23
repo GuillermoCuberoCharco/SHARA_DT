@@ -12,7 +12,7 @@ body, html {
   position: fixed;
   top: 0;
   right: 0;
-  width: 380px;
+  width: 33.333vw;
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -193,12 +193,14 @@ body, html {
   color: #e5e7eb;
   border-radius: 18px 18px 18px 4px;
   border: 1px solid rgba(255, 255, 255, 0.06);
+  white-space: pre-wrap;
 }
 
 .message-row.client .message-bubble {
   background: #6366f1;
   color: #fff;
   border-radius: 18px 18px 4px 18px;
+  white-space: pre-wrap;
 }
 
 /* Indicador de escritura */
@@ -276,10 +278,12 @@ body, html {
   font-family: inherit;
   resize: none;
   min-height: 42px;
-  max-height: 120px;
+  max-height: 200px;
+  overflow-y: auto;
   line-height: 1.5;
   outline: none;
   transition: border-color 0.2s;
+  box-sizing: border-box;
 }
 
 .input-area textarea::placeholder {

@@ -1,4 +1,5 @@
 import PropTypes from 'prop-types';
+import { useEffect, useRef } from 'react';
 
 const SendIcon = () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -27,6 +28,15 @@ const ChatWindow = ({
     };
 
     const { dot, label } = getStatusInfo();
+
+    // Auto-resize del textarea según el contenido
+    const textareaRef = useRef(null);
+    useEffect(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = `${el.scrollHeight}px`;
+    }, [newMessage]);
 
     return (
         <div className={`chat-panel ${isVisible ? '' : 'hidden'}`}>
@@ -85,6 +95,7 @@ const ChatWindow = ({
                             onMessageSend();
                         }
                     }}
+                    ref={textareaRef}
                     placeholder="Escribe un mensaje..."
                     rows={1}
                     disabled={!isRegistered || isWaitingResponse}

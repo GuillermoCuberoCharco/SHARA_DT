@@ -1,10 +1,10 @@
 /**
  * UI
  *
- * Text-only chat interface overlay.
+ * Panel de chat lateral derecho para conversación de texto con SHARA.
  *
  * Props:
- *   onRobotStateChange - Callback(stateName: string) for robot emotional state
+ *   onRobotStateChange - Callback(stateName: string) para el estado emocional del robot
  */
 
 import PropTypes from 'prop-types';
@@ -13,7 +13,6 @@ import { ANIMATION_MAPPINGS } from "../../config";
 import { useWebSocketContext } from '../../contexts/WebSocketContext';
 import '../../styles/InterfaceStyle.css';
 import ChatWindow from './subcomponents/ChatWindow';
-import StatusBar from './utils/StatusBar';
 
 const UI = ({ onRobotStateChange }) => {
     const [messages, setMessages] = useState([]);
@@ -32,39 +31,12 @@ const UI = ({ onRobotStateChange }) => {
     }, [onRobotStateChange]);
 
     const handleRobotMessage = useCallback((message) => {
-        if (message.state) {
-            notifyRobotState(message.state);
-        }
+        if (message.state) notifyRobotState(message.state);
         if (message.text?.trim()) {
             setMessages((prev) => [...prev, { text: message.text, sender: 'robot' }]);
         }
         setIsWaitingResponse(false);
     }, [notifyRobotState]);
-
-    const handleSendMessage = (text = null) => {
-        const messageText = text || newMessage.trim();
-
-        if (messageText && isConnected) {
-            const messageObject = {
-                type: 'client_message',
-                text: messageText,
-            };
-
-            const success = emit('client_message', messageObject);
-
-            if (success) {
-                setIsWaitingResponse(true);
-                setMessages((prev) => [...prev, { text: messageText, sender: 'client' }]);
-                setNewMessage('');
-                setTimeout(scrollToBottom, 100);
-            } else {
-                setMessages((prev) => [...prev, {
-                    text: 'No se pudo enviar el mensaje. Comprueba tu conexión.',
-                    sender: 'robot'
-                }]);
-            }
-        }
-    };
 
     const scrollToBottom = () => {
         if (messagesContainerRef.current) {
@@ -72,50 +44,56 @@ const UI = ({ onRobotStateChange }) => {
         }
     };
 
-    useEffect(() => {
-        scrollToBottom();
-    }, [messages]);
+    const handleSendMessage = (text = null) => {
+        const messageText = text || newMessage.trim();
+        if (!messageText || !isConnected) return;
 
-    useEffect(() => {
-        setConnectionError(!isConnected);
-    }, [isConnected]);
+        const success = emit('client_message', { type: 'client_message', text: messageText });
+
+        if (success) {
+            setIsWaitingResponse(true);
+            setMessages((prev) => [...prev, { text: messageText, sender: 'client' }]);
+            setNewMessage('');
+            setTimeout(scrollToBottom, 100);
+        } else {
+            setMessages((prev) => [...prev, {
+                text: 'No se pudo enviar el mensaje. Comprueba tu conexión.',
+                sender: 'robot',
+            }]);
+        }
+    };
+
+    useEffect(() => { scrollToBottom(); }, [messages, isWaitingResponse]);
+
+    useEffect(() => { setConnectionError(!isConnected); }, [isConnected]);
 
     useEffect(() => {
         if (!socket) return;
-
         socket.off('robot_message');
         socket.on('robot_message', handleRobotMessage);
-
-        return () => {
-            socket.off('robot_message');
-        };
+        return () => { socket.off('robot_message'); };
     }, [socket, handleRobotMessage]);
 
     return (
-        <div className="chat-wrapper">
-            <button
-                className="toggle-chat-button"
-                onClick={() => setIsChatVisible(!isChatVisible)}
-            >
-                {isChatVisible ? '🗨️ Ocultar chat' : '🗨️ Mostrar chat'}
-            </button>
+        <>
+            {!isChatVisible && (
+                <button className="chat-tab" onClick={() => setIsChatVisible(true)}>
+                    Chat
+                </button>
+            )}
             <ChatWindow
                 messages={messages}
                 newMessage={newMessage}
                 messagesContainerRef={messagesContainerRef}
-                isChatVisible={isChatVisible}
+                isVisible={isChatVisible}
+                onClose={() => setIsChatVisible(false)}
                 onMessageSend={handleSendMessage}
                 onInputChange={(e) => setNewMessage(e.target.value)}
-            >
-                <div className="chat-controls">
-                    <StatusBar
-                        isRegistered={isRegistered}
-                        connectionError={connectionError}
-                        isWaitingResponse={isWaitingResponse}
-                    />
-                </div>
-            </ChatWindow>
-        </div>
+                isWaitingResponse={isWaitingResponse}
+                isRegistered={isRegistered}
+                connectionError={connectionError}
+            />
+        </>
     );
 };
 

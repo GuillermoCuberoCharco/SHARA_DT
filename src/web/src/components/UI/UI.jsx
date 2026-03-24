@@ -11,10 +11,13 @@ import PropTypes from 'prop-types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ANIMATION_MAPPINGS } from "../../config";
 import { useWebSocketContext } from '../../contexts/WebSocketContext';
+import { useAuth } from '../../auth/useAuth';
 import '../../styles/InterfaceStyle.css';
 import ChatWindow from './subcomponents/ChatWindow';
 
-const UI = ({ onRobotStateChange }) => {
+const UI = ({ onRobotStateChange, onLogout }) => {
+    const { getUserId } = useAuth();
+    const username = getUserId();
     const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState('');
     const [isChatVisible, setIsChatVisible] = useState(true);
@@ -92,6 +95,8 @@ const UI = ({ onRobotStateChange }) => {
                 isWaitingResponse={isWaitingResponse}
                 isRegistered={isRegistered}
                 connectionError={connectionError}
+                username={username}
+                onLogout={onLogout}
             />
         </>
     );
@@ -99,6 +104,7 @@ const UI = ({ onRobotStateChange }) => {
 
 UI.propTypes = {
     onRobotStateChange: PropTypes.func,
+    onLogout: PropTypes.func,
 };
 
 export default UI;

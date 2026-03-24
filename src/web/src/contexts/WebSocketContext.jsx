@@ -2,11 +2,18 @@
  * WebSocketContext
  *
  * Connects to the Flask-SocketIO server /message namespace.
+ * Passes the JWT token in the Socket.IO auth option so the server
+ * can validate the user before accepting the connection.
+ *
+ * Props (WebSocketProvider):
+ *   onAuthError — called when the server rejects the connection due to
+ *                 an invalid/expired token (so App can redirect to login)
  */
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import { SERVER_URL } from "../config";
+import { useAuth } from "../auth/useAuth";
 
 const WebSocketContext = createContext(null);
 
@@ -18,11 +25,13 @@ export const useWebSocketContext = () => {
     return context;
 };
 
-export const WebSocketProvider = ({ children, handlers }) => {
+export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
     const [isConnected, setIsConnected] = useState(false);
     const [isRegistered, setIsRegistered] = useState(false);
     const socketRef = useRef(null);
     const handlersRef = useRef(handlers);
+
+    const { getToken } = useAuth();
 
     useEffect(() => {
         handlersRef.current = handlers;
@@ -32,8 +41,8 @@ export const WebSocketProvider = ({ children, handlers }) => {
         console.log('[WebSocket] Connecting to:', SERVER_URL + '/message');
 
         if (!socketRef.current) {
-            // Shared Flask-SocketIO namespace.
             const newSocket = io(`${SERVER_URL}/message`, {
+                auth: { token: getToken() },
                 transports: ['websocket', 'polling'],
                 reconnectionAttempts: 10,
                 reconnectionDelay: 1000,
@@ -48,7 +57,6 @@ export const WebSocketProvider = ({ children, handlers }) => {
         const handleConnect = () => {
             console.log('[WebSocket] Connected:', socket.id);
             setIsConnected(true);
-            socket.emit('register_client', { client: 'web' });
         };
 
         const handleDisconnect = (reason) => {
@@ -70,7 +78,11 @@ export const WebSocketProvider = ({ children, handlers }) => {
         };
 
         const handleConnectError = (error) => {
-            console.error('[WebSocket] Connection error:', error);
+            console.error('[WebSocket] Connection error:', error.message);
+            // Server rejected the connection due to invalid/expired token
+            if (error.message === 'Authentication error' || error.data?.code === 401) {
+                onAuthError?.();
+            }
             handlersRef.current?.handleConnectError?.(error);
         };
 
@@ -80,7 +92,6 @@ export const WebSocketProvider = ({ children, handlers }) => {
 
         const handleReconnect = () => {
             console.log('[WebSocket] Reconnected');
-            socket.emit('register_client', { client: 'web' });
         };
 
         const handleError = (error) => {

@@ -19,6 +19,8 @@ const ChatWindow = ({
     isWaitingResponse,
     isRegistered,
     connectionError,
+    username,
+    onLogout,
 }) => {
     const getStatusInfo = () => {
         if (connectionError)    return { dot: 'error',      label: 'Sin conexión' };
@@ -51,7 +53,19 @@ const ChatWindow = ({
                         <span className="status-label">{label}</span>
                     </div>
                 </div>
-                <button className="chat-close-btn" onClick={onClose} title="Cerrar chat">✕</button>
+                <div className="chat-header-actions">
+                    {username && (
+                        <span className="chat-username" title={`Conectado como ${username}`}>
+                            {username}
+                        </span>
+                    )}
+                    {onLogout && (
+                        <button className="chat-logout-btn" onClick={onLogout} title="Cerrar sesión">
+                            ⏻
+                        </button>
+                    )}
+                    <button className="chat-close-btn" onClick={onClose} title="Cerrar chat">✕</button>
+                </div>
             </div>
 
             {/* Mensajes */}
@@ -128,6 +142,8 @@ ChatWindow.propTypes = {
     isWaitingResponse: PropTypes.bool,
     isRegistered: PropTypes.bool,
     connectionError: PropTypes.bool,
+    username: PropTypes.string,
+    onLogout: PropTypes.func,
 };
 
 export default ChatWindow;

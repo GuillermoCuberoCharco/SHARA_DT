@@ -7,3 +7,5 @@ python-dotenv==1.1.0
 openai==1.78.0
 python-socketio==5.12.1
 pydantic==2.11.3
+PyJWT==2.8.0
+bcrypt==4.1.2

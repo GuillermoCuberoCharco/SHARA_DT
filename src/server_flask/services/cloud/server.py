@@ -6,7 +6,7 @@ Chat server module. Receives text input, calls OpenAI, returns text response.
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .openai_api import generate_response
 
@@ -16,6 +16,7 @@ logger = logging.getLogger('Server')
 @dataclass
 class Request:
     text: str = ''
+    user_id: str = ''
 
 
 @dataclass
@@ -30,7 +31,7 @@ def query(request: Request):
     Process a text query through the LLM.
 
     Args:
-        request: Request object with user text.
+        request: Request object with user text and user_id.
 
     Returns:
         Response object with assistant text and mood, or None if input is empty.
@@ -38,10 +39,10 @@ def query(request: Request):
     if not request.text:
         return None
 
-    logger.info(f"Processing query: '{request.text}'")
+    logger.info(f"Processing query for '{request.user_id}': '{request.text}'")
     start = time.time()
 
-    text_response, robot_mood = generate_response(request.text)
+    text_response, robot_mood = generate_response(request.text, request.user_id)
 
     logger.info(f"LLM response in {time.time() - start:.2f}s: '{text_response}'")
 

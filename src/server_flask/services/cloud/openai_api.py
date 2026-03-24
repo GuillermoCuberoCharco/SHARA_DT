@@ -1,15 +1,17 @@
 """
 services/cloud/openai_api.py
 
-OpenAI API wrapper. Handles conversation history and response generation.
+OpenAI API wrapper. Maintains a separate conversation history per user.
 """
-import json
+import threading
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
 client = OpenAI()
 
-conversation_history = []
+# Per-user conversation histories: { user_id: [{"role": ..., "content": ...}, ...] }
+_histories: dict[str, list] = {}
+_histories_lock = threading.Lock()
 
 SYSTEM_PROMPT_FILE = "files/shara_prompt.txt"
 
@@ -30,14 +32,18 @@ class ResponseFormat(BaseModel):
     response: str
 
 
-def generate_response(input_text: str) -> tuple[str, str]:
+def generate_response(input_text: str, user_id: str) -> tuple[str, str]:
     """
-    Generate a response from OpenAI for the given user text.
+    Generate a response from OpenAI for the given user.
+    Each user maintains an independent conversation history.
 
     Returns:
         (response_text, robot_mood)
     """
-    conversation_history.append({"role": "user", "content": input_text})
+    with _histories_lock:
+        history = _histories.setdefault(user_id, [])
+        history.append({"role": "user", "content": input_text})
+        history_snapshot = list(history)
 
     completion_args = {
         "model": "gpt-4o-mini",
@@ -45,7 +51,7 @@ def generate_response(input_text: str) -> tuple[str, str]:
         "temperature": 1,
         "top_p": 1,
         "instructions": system_prompt,
-        "input": list(conversation_history),
+        "input": history_snapshot,
         "truncation": "auto",
     }
 
@@ -55,10 +61,14 @@ def generate_response(input_text: str) -> tuple[str, str]:
     response_text = parsed.response.translate(str.maketrans("'", '"', '*_#'))
     robot_mood = parsed.robot_mood or "neutral"
 
-    conversation_history.append({"role": "assistant", "content": response_text})
+    with _histories_lock:
+        history = _histories.setdefault(user_id, [])
+        history.append({"role": "assistant", "content": response_text})
 
     return response_text, robot_mood
 
 
-def clear_conversation_history():
-    conversation_history.clear()
+def clear_user_history(user_id: str):
+    """Remove the conversation history for a specific user."""
+    with _histories_lock:
+        _histories.pop(user_id, None)

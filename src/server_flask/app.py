@@ -1,8 +1,8 @@
 """
 app.py
 
-Flask-SocketIO server — text-only chat interface.
-Flask serves both the React frontend (static build) and the WebSocket API.
+Flask-SocketIO server — text-only chat interface with JWT authentication.
+Flask serves both the React frontend (static build) and the WebSocket/REST API.
 """
 
 from gevent import monkey
@@ -38,8 +38,11 @@ socketio = SocketIO(
     ping_interval=25,
 )
 
+from auth import auth_bp
 from services.cloud import server as cloud_server
 import state_machine
+
+app.register_blueprint(auth_bp)
 
 state_machine.init(
     socketio_instance=socketio,
@@ -54,7 +57,7 @@ logger.info('Namespace registered: /message')
 
 @app.route('/health')
 def health():
-    return {'status': 'ok', 'robot_state': state_machine.robot_context.state}
+    return {'status': 'ok', 'active_queries': state_machine.get_active_users_count()}
 
 
 @app.route('/', defaults={'path': ''})

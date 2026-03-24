@@ -123,3 +123,6 @@ dist
 
 # Credentials files
 proyecto-1-450222-8c00d6ef9620.json
+
+# User database — create locally with create_user.py
+src/server_flask/files/users.json

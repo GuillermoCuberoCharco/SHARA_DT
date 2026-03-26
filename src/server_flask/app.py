@@ -38,9 +38,13 @@ socketio = SocketIO(
     ping_interval=25,
 )
 
+from db import ensure_schema
 from auth import auth_bp
 from services.cloud import server as cloud_server
 import state_machine
+
+ensure_schema()
+logger.info('Database schema ensured')
 
 app.register_blueprint(auth_bp)
 

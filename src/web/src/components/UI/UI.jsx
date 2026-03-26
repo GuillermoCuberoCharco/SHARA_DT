@@ -41,6 +41,15 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         setIsWaitingResponse(false);
     }, [notifyRobotState]);
 
+    const handleConversationHistory = useCallback((payload) => {
+        const historyMessages = Array.isArray(payload?.messages) ? payload.messages : [];
+        const normalizedHistory = historyMessages.filter(
+            (item) => item?.text?.trim() && (item.sender === 'client' || item.sender === 'robot')
+        );
+        setMessages((prev) => (prev.length > 0 ? prev : normalizedHistory));
+        setIsWaitingResponse(false);
+    }, []);
+
     const scrollToBottom = () => {
         if (messagesContainerRef.current) {
             messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
@@ -74,8 +83,13 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         if (!socket) return;
         socket.off('robot_message');
         socket.on('robot_message', handleRobotMessage);
-        return () => { socket.off('robot_message'); };
-    }, [socket, handleRobotMessage]);
+        socket.off('conversation_history');
+        socket.on('conversation_history', handleConversationHistory);
+        return () => {
+            socket.off('robot_message');
+            socket.off('conversation_history');
+        };
+    }, [socket, handleRobotMessage, handleConversationHistory]);
 
     return (
         <>

@@ -24,6 +24,7 @@ from flask_socketio import Namespace, emit
 
 import state_machine
 from auth import verify_token
+from services.cloud.openai_api import load_user_messages
 
 logger = logging.getLogger('MessageHandler')
 
@@ -44,6 +45,11 @@ class MessageNamespace(Namespace):
         logger.info(f'[/message] Client connected: {request.sid} (user={user_id})')
         _clients[request.sid] = {'user_id': user_id}
         emit('registration_success', {'status': 'ok', 'user_id': user_id})
+        try:
+            history = load_user_messages(user_id)
+            emit('conversation_history', {'messages': history})
+        except Exception:
+            logger.exception(f'[/message] Failed to load history for user {user_id}')
 
     def on_disconnect(self):
         client = _clients.pop(request.sid, None)

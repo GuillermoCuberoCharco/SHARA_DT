@@ -27,6 +27,10 @@ const RobotView = ({ robotState }) => {
 
     const [operationalState, setOperationalState] = useState('idle');
     const [ledPos, setLedPos] = useState(null);
+    const [isNarrowViewport, setIsNarrowViewport] = useState(
+        typeof window !== 'undefined' ? window.innerWidth <= 960 : false
+    );
+    const styles = getStyles(isNarrowViewport);
 
     // ── Sync canvas position + pixel dimensions ───────────────────────────────
 
@@ -71,6 +75,12 @@ const RobotView = ({ robotState }) => {
         window.addEventListener('resize', computeOverlay);
         return () => { ro.disconnect(); window.removeEventListener('resize', computeOverlay); };
     }, [computeOverlay]);
+
+    useEffect(() => {
+        const handleResize = () => setIsNarrowViewport(window.innerWidth <= 960);
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
 
     // ── set_face via /message socket ──────────────────────────────────────────
 
@@ -122,12 +132,12 @@ const RobotView = ({ robotState }) => {
     );
 };
 
-const styles = {
+const getStyles = (isNarrowViewport) => ({
     container: {
         position: 'fixed',
         top: 0,
         left: 0,
-        width: '100vw',
+        width: isNarrowViewport ? '100vw' : '50vw',
         height: '100vh',
         display: 'flex',
         alignItems: 'center',
@@ -143,8 +153,10 @@ const styles = {
     },
     robotImage: {
         position: 'relative',
-        height: '100vh',
         width: 'auto',
+        height: isNarrowViewport ? '100vh' : '88vh',
+        maxWidth: isNarrowViewport ? '100%' : '82%',
+        maxHeight: '100vh',
         objectFit: 'contain',
         zIndex: 1,
     },
@@ -155,7 +167,7 @@ const styles = {
         // Dimensions and position set imperatively in computeOverlay
         // to avoid React re-renders on every resize
     },
-};
+});
 
 RobotView.propTypes = { robotState: PropTypes.string };
 RobotView.defaultProps = { robotState: 'neutral' };

@@ -260,9 +260,9 @@ El script hace upsert sobre la tabla `users`, asi que sirve tanto para importar 
 
 ## Contexto del proyecto
 
-Este repositorio forma parte de un Trabajo de Fin de Master desarrollado en la ESI (UCLM), Ciudad Real, Espana.
+Este repositorio forma parte de un Trabajo de Fin de Master desarrollado en la ESI (UCLM), Ciudad Real, España.
 
 **Autor:** Guillermo Cubero Charco - Guillermo.Cubero@uclm.es  
-**Director:** Ramon Hervas Lucas  
-**Co-directora:** Laura Villa Fernandez-Arroyo  
+**Director:** Ramon Hervás Lucas  
+**Co-directora:** Laura Villa Fernández-Arroyo  
 **Laboratorio:** MAmI Research Lab

@@ -53,6 +53,7 @@ function drawEye(ctx, eye, sx, sy) {
     const pupilRx = (eye.pupil.width / 2) * sx;
     const pupilRy = (eye.pupil.height / 2) * sy;
     const [r, g, b] = eye.iris.color;
+    const eyeOutlineWidth = 14 * Math.min(sx, sy);
 
     // ── Everything inside eye ellipse clip ───────────────────────────────────
     ctx.save();
@@ -98,7 +99,7 @@ function drawEye(ctx, eye, sx, sy) {
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 7 * Math.min(sx, sy);
+    ctx.lineWidth = eyeOutlineWidth;
     ctx.stroke();
     ctx.restore();
 
@@ -112,9 +113,8 @@ function drawEye(ctx, eye, sx, sy) {
     ctx.fill();
 
     // Eyelid lines (drawn inside clip — no bleeding outside eye)
-    const lw = 7 * Math.min(sx, sy);
     ctx.strokeStyle = '#000000';
-    ctx.lineWidth = lw;
+    ctx.lineWidth = eyeOutlineWidth;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 

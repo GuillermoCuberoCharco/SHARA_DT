@@ -14,6 +14,8 @@
 
 const SRC_W = 1024;
 const SRC_H = 600;
+const EYE_OUTLINE_BASE_WIDTH = 14;
+const EYELID_BASE_WIDTH = EYE_OUTLINE_BASE_WIDTH * (2 / 3);
 
 // ── Bézier helper ─────────────────────────────────────────────────────────────
 
@@ -53,7 +55,8 @@ function drawEye(ctx, eye, sx, sy) {
     const pupilRx = (eye.pupil.width / 2) * sx;
     const pupilRy = (eye.pupil.height / 2) * sy;
     const [r, g, b] = eye.iris.color;
-    const eyeOutlineWidth = 14 * Math.min(sx, sy);
+    const eyeOutlineWidth = EYE_OUTLINE_BASE_WIDTH * Math.min(sx, sy);
+    const eyelidLineWidth = EYELID_BASE_WIDTH * Math.min(sx, sy);
 
     // ── Everything inside eye ellipse clip ───────────────────────────────────
     ctx.save();
@@ -114,7 +117,7 @@ function drawEye(ctx, eye, sx, sy) {
 
     // Eyelid lines (drawn inside clip — no bleeding outside eye)
     ctx.strokeStyle = '#000000';
-    ctx.lineWidth = eyeOutlineWidth;
+    ctx.lineWidth = eyelidLineWidth;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
@@ -168,8 +171,8 @@ export function drawFace(ctx, canvasW, canvasH, faceData) {
     ctx.fillRect(0, 0, canvasW, canvasH);
 
     // Eyebrows
-    bezier(ctx, faceData.eyebrows.left, sx, sy, '#000000', 5);
-    bezier(ctx, faceData.eyebrows.right, sx, sy, '#000000', 5);
+    bezier(ctx, faceData.eyebrows.left, sx, sy, '#000000', EYELID_BASE_WIDTH);
+    bezier(ctx, faceData.eyebrows.right, sx, sy, '#000000', EYELID_BASE_WIDTH);
 
     // Eyes
     drawEye(ctx, faceData.eyes.left, sx, sy);

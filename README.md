@@ -1,6 +1,6 @@
 # PI-ChatShara
 
-PI-ChatShara es una variante de SHARA_DT centrada en una interfaz de chat de texto con autenticacion de usuario. La aplicacion se ejecuta como un unico servicio: Flask sirve la SPA de React, mantiene el canal Socket.IO y orquesta las llamadas a OpenAI.
+PI-ChatShara es una variante de SHARA_DT centrada en una interfaz de chat autenticado con texto y audio. La aplicacion se ejecuta como un unico servicio: Flask sirve la SPA de React, mantiene el canal Socket.IO y orquesta las llamadas a OpenAI y Google Cloud.
 
 ## Estado actual
 
@@ -10,10 +10,11 @@ La rama `PI-ChatShara` implementa actualmente:
 - Conexion Socket.IO autenticada en el namespace `/message`.
 - Persistencia de usuarios y conversaciones en Postgres a traves de `DATABASE_URL`.
 - Recuperacion automatica del historial de chat al reconectar.
-- Interfaz web de chat con estado de conexion y espera.
+- Interfaz web de chat con estado de conexion, espera, grabacion de audio y reproduccion opcional de voz.
+- STT y TTS con Google Cloud integrados en el flujo del chat.
 - Vista visual del robot con ojos animados y anillo LED.
 
-La aplicacion ya no usa audio, reconocimiento facial ni comportamiento proactivo. El foco actual es una experiencia de chat web autenticada con persistencia fuera del filesystem efimero de Render.
+La aplicacion sigue centrada en una experiencia de chat web autenticada con persistencia fuera del filesystem efimero de Render. El reconocimiento facial y el comportamiento proactivo siguen fuera del flujo activo, pero el chat vuelve a admitir audio: el usuario puede grabar mensajes, el backend los transcribe con Google Cloud Speech-to-Text y la respuesta del robot puede reproducirse con Google Cloud Text-to-Speech. Esta voz se puede silenciar desde la interfaz y, cuando esta desactivada, no se invoca el servicio TTS.
 
 ## Arquitectura
 
@@ -29,17 +30,21 @@ PI-ChatShara
 |   |-- sockets/message_handler.py  # Namespace /message autenticado
 |   `-- services/cloud
 |       |-- server.py               # Pipeline de consulta al modelo
+|       |-- google_api.py           # STT/TTS de Google Cloud
 |       `-- openai_api.py           # Historial por usuario y llamada a OpenAI
 `-- src/web
     |-- src/App.jsx
     |-- src/auth
     |   |-- Login.jsx               # Pantalla de login/registro
     |   `-- useAuth.js              # Sesion en localStorage
+    |-- public
+    |   `-- pcm-processor.js        # AudioWorklet para enviar PCM LINEAR16
     |-- src/contexts/WebSocketContext.jsx
     `-- src/components
         |-- RobotView.jsx           # Imagen del robot, ojos y LED
         `-- UI
             |-- UI.jsx              # Estado del chat
+            |-- hooks/useAudioRecorder.jsx
             `-- subcomponents/ChatWindow.jsx
 ```
 
@@ -58,24 +63,27 @@ PI-ChatShara
 ### 2. Chat
 
 ```text
-Usuario autenticado escribe texto
-    -> client_message (Socket.IO)
-        -> state_machine.on_text_message()
+Usuario autenticado escribe texto o envia audio
+    -> client_message / audio_stream_* (Socket.IO)
+        -> state_machine.py
+            -> Google STT (solo si hay audio)
             -> services/cloud/server.py
                 -> OpenAI Responses API (gpt-4o-mini)
-                    -> robot_message (Socket.IO)
-                        -> UI muestra la respuesta
+                -> Google TTS opcional segun el altavoz del chat
+                    -> robot_message / transcription_result (Socket.IO)
+                        -> UI muestra la transcripcion y la respuesta
 ```
 
-1. El usuario envia un mensaje desde el chat.
-2. El frontend emite `client_message` al namespace `/message`.
+1. El usuario envia un mensaje escrito o pulsa el boton de microfono del chat.
+2. El frontend emite `client_message` o el flujo `audio_stream_start` -> `audio_chunk` -> `audio_stream_end` al namespace `/message`.
 3. El backend valida el socket con el JWT y resuelve el `user_id`.
-4. `state_machine.py` marca al usuario como `processing_query`.
-5. `openai_api.py` carga desde Postgres el historial de ese usuario y envia ese contexto mas el nuevo mensaje a OpenAI.
-6. La respuesta vuelve como `robot_message` con `text` y `state`.
-7. El backend persiste en Postgres el mensaje del usuario y la respuesta del asistente.
-8. El frontend actualiza el chat y la expresion visual del robot.
-9. El backend emite `state_update` con `idle`.
+4. Si el mensaje es de audio, `google_api.py` lo transcribe con Google Cloud STT y el frontend recibe `transcription_result` para pintar lo que se ha entendido.
+5. `state_machine.py` marca al usuario como `processing_query`.
+6. `openai_api.py` carga desde Postgres el historial de ese usuario y envia ese contexto mas el nuevo mensaje a OpenAI.
+7. La respuesta vuelve como `robot_message` con `text`, `state` y, solo si el altavoz esta activado, `audio`.
+8. El backend persiste en Postgres el mensaje del usuario y la respuesta del asistente.
+9. El frontend actualiza el chat, la expresion visual del robot y reproduce el audio si el TTS esta habilitado.
+10. El backend emite `state_update` con `idle`.
 
 ## Persistencia y estado
 
@@ -135,7 +143,11 @@ Si el token es invalido o ha expirado, el servidor rechaza la conexion.
 
 | Evento | Payload | Descripcion |
 |---|---|---|
-| `client_message` | `{ type, text }` | Mensaje de texto del usuario |
+| `client_message` | `{ type, text }` o `{ type: "audio", data }` | Mensaje de texto o audio enviado en bloque |
+| `audio_stream_start` | `{}` | Inicio de una grabacion PCM LINEAR16 |
+| `audio_chunk` | `{ data }` | Chunk PCM codificado en base64 |
+| `audio_stream_end` | `{}` | Fin de la grabacion y envio a STT |
+| `tts_preference` | `{ enabled }` | Preferencia actual del altavoz del chat |
 
 ### Eventos emitidos por el backend
 
@@ -143,7 +155,8 @@ Si el token es invalido o ha expirado, el servidor rechaza la conexion.
 |---|---|---|
 | `registration_success` | `{ status, user_id }` | Confirmacion de conexion autenticada |
 | `conversation_history` | `{ messages }` | Historial persistido del usuario para repintar el chat |
-| `robot_message` | `{ text, state }` | Respuesta del asistente |
+| `robot_message` | `{ text, state, audio? }` | Respuesta del asistente, con audio opcional |
+| `transcription_result` | `{ text }` | Texto transcrito a partir del audio del usuario |
 | `state_update` | `{ state }` | Estado operativo del usuario en curso |
 
 ### Estados operativos
@@ -151,6 +164,7 @@ Si el token es invalido o ha expirado, el servidor rechaza la conexion.
 | Estado | Significado |
 |---|---|
 | `idle` | Esperando una nueva consulta |
+| `recording` | El usuario esta grabando audio |
 | `processing_query` | Llamada al modelo en curso |
 
 ## Variables de entorno
@@ -161,10 +175,15 @@ DATABASE_URL=postgresql://...      # Cadena de conexion Postgres, por ejemplo Ne
 FLASK_SECRET_KEY=...               # Opcional, por defecto: shara-woz-secret
 JWT_SECRET=...                     # Muy recomendable en produccion
 JWT_EXPIRY_HOURS=8                 # Opcional, por defecto: 8
+GOOGLE_CLIENT_EMAIL=...            # Opcion 1 para credenciales de Google Cloud
+GOOGLE_PRIVATE_KEY=...             # Opcion 1 para credenciales de Google Cloud
+GOOGLE_PROJECT_ID=...              # Opcion 1 para credenciales de Google Cloud
+GOOGLE_APPLICATION_CREDENTIALS=... # Opcion 2: JSON completo o ruta a fichero
 PORT=8081                          # Opcional, por defecto: 8081
 ```
 
 `DATABASE_URL` es obligatoria para la autenticacion y la persistencia de usuarios y conversaciones.
+Las credenciales de Google Cloud son necesarias para el envio de audio y para la reproduccion TTS.
 
 ## Requisitos
 
@@ -172,6 +191,7 @@ PORT=8081                          # Opcional, por defecto: 8081
 - Node.js `20+`
 - Yarn
 - OpenAI API key
+- Credenciales de Google Cloud Speech/Text-to-Speech si se quiere usar audio
 - Una base de datos Postgres accesible desde el backend
 
 ## Desarrollo local
@@ -255,6 +275,7 @@ El script hace upsert sobre la tabla `users`, asi que sirve tanto para importar 
 ## Limitaciones actuales
 
 - La interfaz recupera el historial persistido, pero no implementa aun paginacion ni borrado de conversaciones.
+- La grabacion de audio depende de un navegador con soporte para `AudioWorklet`.
 - La gestion de usuarios ya no depende del filesystem local, pero sigue siendo una autenticacion sencilla sobre una sola tabla principal de usuarios.
 - La rama conserva algunos restos del proyecto original en dependencias y archivos auxiliares, pero el flujo activo es ya el de chat autenticado descrito arriba.
 

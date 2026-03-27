@@ -1,5 +1,5 @@
-/* ── Reset base ─────────────────────────────────────────────────────────── */
-body, html {
+body,
+html {
   margin: 0;
   padding: 0;
   height: 100%;
@@ -7,7 +7,6 @@ body, html {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
-/* ── Panel lateral derecho ──────────────────────────────────────────────── */
 .chat-panel {
   position: fixed;
   top: 0;
@@ -34,7 +33,6 @@ body, html {
   }
 }
 
-/* Tab para reabrir el chat cuando está oculto */
 .chat-tab {
   position: fixed;
   top: 50%;
@@ -47,7 +45,6 @@ body, html {
   cursor: pointer;
   border-radius: 8px 0 0 8px;
   z-index: 11;
-  font-size: 18px;
   transition: background 0.2s;
   writing-mode: vertical-rl;
   letter-spacing: 1px;
@@ -59,7 +56,6 @@ body, html {
   background: rgba(99, 102, 241, 1);
 }
 
-/* ── Header del chat ────────────────────────────────────────────────────── */
 .chat-header {
   display: flex;
   align-items: center;
@@ -69,16 +65,53 @@ body, html {
   flex-shrink: 0;
 }
 
+.chat-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .chat-header-avatar {
   width: 38px;
   height: 38px;
   border-radius: 50%;
   background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 18px;
   flex-shrink: 0;
+}
+
+.tts-toggle {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: #d1d5db;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.tts-toggle.enabled:hover {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: rgba(99, 102, 241, 0.45);
+}
+
+.tts-toggle.muted {
+  color: #9ca3af;
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.22);
+}
+
+.tts-toggle.muted:hover {
+  background: rgba(239, 68, 68, 0.16);
 }
 
 .chat-header-info {
@@ -108,10 +141,33 @@ body, html {
   flex-shrink: 0;
 }
 
-.status-dot.connected    { background: #10b981; }
-.status-dot.connecting   { background: #f59e0b; animation: pulse-dot 1.5s infinite; }
-.status-dot.error        { background: #ef4444; }
-.status-dot.processing   { background: #6366f1; animation: pulse-dot 1.5s infinite; }
+.status-dot.connected {
+  background: #10b981;
+}
+
+.status-dot.connecting {
+  background: #f59e0b;
+  animation: pulse-dot 1.5s infinite;
+}
+
+.status-dot.error {
+  background: #ef4444;
+}
+
+.status-dot.processing {
+  background: #6366f1;
+  animation: pulse-dot 1.5s infinite;
+}
+
+.status-dot.recording {
+  background: #ef4444;
+  animation: pulse-dot 1s infinite;
+}
+
+.status-dot.speaking {
+  background: #22c55e;
+  animation: pulse-dot 1.2s infinite;
+}
 
 .status-label {
   color: #9ca3af;
@@ -138,12 +194,12 @@ body, html {
   white-space: nowrap;
 }
 
-.chat-logout-btn {
+.chat-logout-btn,
+.chat-close-btn {
   background: none;
   border: none;
   color: #6b7280;
   cursor: pointer;
-  font-size: 16px;
   width: 28px;
   height: 28px;
   border-radius: 6px;
@@ -153,22 +209,18 @@ body, html {
   transition: color 0.2s, background 0.2s;
 }
 
-.chat-logout-btn:hover {
-  color: #f87171;
-  background: rgba(248, 113, 113, 0.1);
+.chat-logout-btn {
+  font-size: 16px;
 }
 
 .chat-close-btn {
-  background: none;
-  border: none;
-  color: #6b7280;
-  cursor: pointer;
   font-size: 18px;
-  padding: 4px;
-  border-radius: 6px;
   line-height: 1;
-  transition: color 0.2s, background 0.2s;
-  flex-shrink: 0;
+}
+
+.chat-logout-btn:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
 }
 
 .chat-close-btn:hover {
@@ -176,7 +228,6 @@ body, html {
   background: rgba(255, 255, 255, 0.08);
 }
 
-/* ── Zona de mensajes ───────────────────────────────────────────────────── */
 .messages-container {
   flex: 1;
   overflow-y: auto;
@@ -199,7 +250,6 @@ body, html {
   border-radius: 4px;
 }
 
-/* Mensaje genérico */
 .message-row {
   display: flex;
   align-items: flex-end;
@@ -212,12 +262,12 @@ body, html {
   flex-direction: row-reverse;
 }
 
-/* Avatar del robot en el mensaje */
 .message-avatar {
   width: 28px;
   height: 28px;
   border-radius: 50%;
   background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -225,7 +275,6 @@ body, html {
   flex-shrink: 0;
 }
 
-/* Burbuja */
 .message-bubble {
   max-width: 78%;
   padding: 10px 14px;
@@ -249,7 +298,6 @@ body, html {
   white-space: pre-wrap;
 }
 
-/* Indicador de escritura */
 .typing-row {
   display: flex;
   align-items: flex-end;
@@ -276,10 +324,14 @@ body, html {
   animation: typingBounce 1.2s infinite ease-in-out;
 }
 
-.typing-dot:nth-child(2) { animation-delay: 0.15s; }
-.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
 
-/* Mensaje de bienvenida vacío */
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
 .chat-empty {
   flex: 1;
   display: flex;
@@ -293,8 +345,18 @@ body, html {
 }
 
 .chat-empty-icon {
-  font-size: 36px;
+  width: 36px;
+  height: 36px;
+  color: #6b7280;
   opacity: 0.5;
+}
+
+.chat-header-avatar svg,
+.message-avatar svg,
+.chat-empty-icon svg,
+.chat-logout-btn svg,
+.chat-close-btn svg {
+  display: block;
 }
 
 .chat-empty p {
@@ -303,7 +365,6 @@ body, html {
   line-height: 1.6;
 }
 
-/* ── Área de input ──────────────────────────────────────────────────────── */
 .input-area {
   padding: 14px 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
@@ -313,13 +374,60 @@ body, html {
   flex-shrink: 0;
 }
 
+.audio-btn,
+.send-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.2s, opacity 0.2s;
+  color: white;
+  line-height: 1;
+}
+
+.audio-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.audio-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.audio-btn.recording {
+  background: #ef4444;
+  color: white;
+  animation: pulse-dot 1s infinite;
+}
+
+.send-btn {
+  background: #6366f1;
+  font-size: 18px;
+}
+
+.send-btn:hover {
+  background: #4f46e5;
+}
+
+.audio-btn:disabled,
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .input-area textarea::-webkit-scrollbar {
   display: none;
 }
 
 .input-area textarea {
-  scrollbar-width: none;      /* Firefox */
-  -ms-overflow-style: none;   /* IE / Edge legacy */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   flex: 1;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.11);
@@ -346,34 +454,6 @@ body, html {
   border-color: rgba(99, 102, 241, 0.5);
 }
 
-.send-btn {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: #6366f1;
-  border: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: background 0.2s, opacity 0.2s;
-  color: white;
-  font-size: 18px;
-  line-height: 1;
-}
-
-.send-btn:hover {
-  background: #4f46e5;
-}
-
-.send-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  background: #6366f1;
-}
-
-/* Hint Enter to send */
 .input-hint {
   font-size: 11px;
   color: #374151;
@@ -382,18 +462,37 @@ body, html {
   flex-shrink: 0;
 }
 
-/* ── Animaciones ────────────────────────────────────────────────────────── */
 @keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes typingBounce {
-  0%, 60%, 100% { transform: translateY(0); }
-  30%           { transform: translateY(-5px); }
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+  }
+
+  30% {
+    transform: translateY(-5px);
+  }
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
 }

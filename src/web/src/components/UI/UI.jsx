@@ -1,95 +1,202 @@
-/**
- * UI
- *
- * Panel de chat lateral derecho para conversación de texto con SHARA.
- *
- * Props:
- *   onRobotStateChange - Callback(stateName: string) para el estado emocional del robot
- */
-
 import PropTypes from 'prop-types';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ANIMATION_MAPPINGS } from "../../config";
-import { useWebSocketContext } from '../../contexts/WebSocketContext';
+import { ANIMATION_MAPPINGS } from '../../config';
 import { useAuth } from '../../auth/useAuth';
+import { useWebSocketContext } from '../../contexts/WebSocketContext';
 import '../../styles/InterfaceStyle.css';
+import useAudioRecorder from './hooks/useAudioRecorder';
 import ChatWindow from './subcomponents/ChatWindow';
+
+const TTS_PREFERENCE_KEY = 'shara_tts_enabled';
 
 const UI = ({ onRobotStateChange, onLogout }) => {
     const { getUserId } = useAuth();
     const username = getUserId();
+
     const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState('');
     const [isChatVisible, setIsChatVisible] = useState(true);
     const [connectionError, setConnectionError] = useState(false);
     const [isWaitingResponse, setIsWaitingResponse] = useState(false);
+    const [conversationState, setConversationState] = useState('idle');
+    const [isTtsEnabled, setIsTtsEnabled] = useState(() => {
+        const stored = localStorage.getItem(TTS_PREFERENCE_KEY);
+        return stored === null ? true : stored === 'true';
+    });
 
     const { isConnected, isRegistered, emit, socket } = useWebSocketContext();
     const messagesContainerRef = useRef(null);
 
+    const appendMessage = useCallback((message) => {
+        if (!message?.text?.trim()) {
+            return;
+        }
+
+        setMessages((prev) => [...prev, message]);
+    }, []);
+
     const notifyRobotState = useCallback((state) => {
-        if (!state) return;
+        if (!state) {
+            return;
+        }
+
         const knownState = ANIMATION_MAPPINGS[state] ? state : 'neutral';
         onRobotStateChange?.(knownState);
     }, [onRobotStateChange]);
 
-    const handleRobotMessage = useCallback((message) => {
-        if (message.state) notifyRobotState(message.state);
-        if (message.text?.trim()) {
-            setMessages((prev) => [...prev, { text: message.text, sender: 'robot' }]);
+    const {
+        isRecording,
+        isSpeaking,
+        startRecording,
+        stopRecording,
+        playAudio,
+        stopPlayback,
+    } = useAudioRecorder({
+        isWaitingResponse,
+        onAudioSubmitted: () => {
+            setIsWaitingResponse(true);
+            setConversationState('processing_query');
+        },
+        onAudioError: (text) => appendMessage({ text, sender: 'robot' }),
+    });
+
+    const scrollToBottom = useCallback(() => {
+        if (messagesContainerRef.current) {
+            messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
         }
+    }, []);
+
+    const handleRobotMessage = useCallback((message) => {
+        if (message.state) {
+            notifyRobotState(message.state);
+        }
+
+        if (message.text?.trim()) {
+            appendMessage({ text: message.text, sender: 'robot' });
+        }
+
         setIsWaitingResponse(false);
-    }, [notifyRobotState]);
+        setConversationState('idle');
+
+        if (message.audio && isTtsEnabled) {
+            playAudio(message.audio);
+        }
+    }, [appendMessage, isTtsEnabled, notifyRobotState, playAudio]);
 
     const handleConversationHistory = useCallback((payload) => {
         const historyMessages = Array.isArray(payload?.messages) ? payload.messages : [];
         const normalizedHistory = historyMessages.filter(
-            (item) => item?.text?.trim() && (item.sender === 'client' || item.sender === 'robot')
+            (item) => item?.text?.trim() && (item.sender === 'client' || item.sender === 'robot'),
         );
+
         setMessages((prev) => (prev.length > 0 ? prev : normalizedHistory));
         setIsWaitingResponse(false);
+        setConversationState('idle');
     }, []);
 
-    const scrollToBottom = () => {
-        if (messagesContainerRef.current) {
-            messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+    const handleTranscriptionResult = useCallback((payload) => {
+        const text = payload?.text?.trim();
+        if (!text) {
+            return;
         }
-    };
 
-    const handleSendMessage = (text = null) => {
-        const messageText = text || newMessage.trim();
-        if (!messageText || !isConnected) return;
+        appendMessage({ text, sender: 'client' });
+    }, [appendMessage]);
 
-        const success = emit('client_message', { type: 'client_message', text: messageText });
+    const handleStateUpdate = useCallback((payload) => {
+        const nextState = payload?.state || 'idle';
+        setConversationState(nextState);
+
+        if (nextState === 'processing_query') {
+            setIsWaitingResponse(true);
+        } else if (nextState === 'idle') {
+            setIsWaitingResponse(false);
+        }
+    }, []);
+
+    const handleSendMessage = useCallback((text = null) => {
+        const messageText = (text ?? newMessage).trim();
+        if (!messageText || !isConnected) {
+            return;
+        }
+
+        stopPlayback();
+
+        const success = emit('client_message', {
+            type: 'client_message',
+            text: messageText,
+        });
 
         if (success) {
             setIsWaitingResponse(true);
-            setMessages((prev) => [...prev, { text: messageText, sender: 'client' }]);
+            setConversationState('processing_query');
+            appendMessage({ text: messageText, sender: 'client' });
             setNewMessage('');
             setTimeout(scrollToBottom, 100);
         } else {
-            setMessages((prev) => [...prev, {
-                text: 'No se pudo enviar el mensaje. Comprueba tu conexión.',
+            appendMessage({
+                text: 'No se pudo enviar el mensaje. Comprueba tu conexion.',
                 sender: 'robot',
-            }]);
+            });
         }
-    };
+    }, [appendMessage, emit, isConnected, newMessage, scrollToBottom, stopPlayback]);
 
-    useEffect(() => { scrollToBottom(); }, [messages, isWaitingResponse]);
+    const handleStartRecording = useCallback(() => {
+        stopPlayback();
+        startRecording();
+    }, [startRecording, stopPlayback]);
 
-    useEffect(() => { setConnectionError(!isConnected); }, [isConnected]);
+    const handleToggleTts = useCallback(() => {
+        setIsTtsEnabled((prev) => !prev);
+    }, []);
 
     useEffect(() => {
-        if (!socket) return;
+        scrollToBottom();
+    }, [conversationState, isWaitingResponse, messages, scrollToBottom]);
+
+    useEffect(() => {
+        setConnectionError(!isConnected);
+    }, [isConnected]);
+
+    useEffect(() => {
+        localStorage.setItem(TTS_PREFERENCE_KEY, String(isTtsEnabled));
+
+        if (!isTtsEnabled) {
+            stopPlayback();
+        }
+
+        if (isConnected && isRegistered) {
+            emit('tts_preference', { enabled: isTtsEnabled });
+        }
+    }, [emit, isConnected, isRegistered, isTtsEnabled, stopPlayback]);
+
+    useEffect(() => {
+        if (!socket) {
+            return undefined;
+        }
+
         socket.off('robot_message');
         socket.on('robot_message', handleRobotMessage);
         socket.off('conversation_history');
         socket.on('conversation_history', handleConversationHistory);
+        socket.off('transcription_result');
+        socket.on('transcription_result', handleTranscriptionResult);
+        socket.off('state_update');
+        socket.on('state_update', handleStateUpdate);
+
         return () => {
             socket.off('robot_message');
             socket.off('conversation_history');
+            socket.off('transcription_result');
+            socket.off('state_update');
         };
-    }, [socket, handleRobotMessage, handleConversationHistory]);
+    }, [
+        handleConversationHistory,
+        handleRobotMessage,
+        handleStateUpdate,
+        handleTranscriptionResult,
+        socket,
+    ]);
 
     return (
         <>
@@ -105,12 +212,19 @@ const UI = ({ onRobotStateChange, onLogout }) => {
                 isVisible={isChatVisible}
                 onClose={() => setIsChatVisible(false)}
                 onMessageSend={handleSendMessage}
-                onInputChange={(e) => setNewMessage(e.target.value)}
+                onInputChange={(event) => setNewMessage(event.target.value)}
                 isWaitingResponse={isWaitingResponse}
                 isRegistered={isRegistered}
                 connectionError={connectionError}
                 username={username}
                 onLogout={onLogout}
+                onStartRecording={handleStartRecording}
+                onStopRecording={stopRecording}
+                isRecording={isRecording}
+                isSpeaking={isSpeaking}
+                isTtsEnabled={isTtsEnabled}
+                onToggleTts={handleToggleTts}
+                conversationState={conversationState}
             />
         </>
     );

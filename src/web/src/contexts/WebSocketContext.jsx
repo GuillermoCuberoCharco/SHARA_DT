@@ -1,26 +1,18 @@
 /**
- * WebSocketContext
- *
- * Connects to the Flask-SocketIO server /message namespace.
- * Passes the JWT token in the Socket.IO auth option so the server
- * can validate the user before accepting the connection.
- *
- * Props (WebSocketProvider):
- *   onAuthError — called when the server rejects the connection due to
- *                 an invalid/expired token (so App can redirect to login)
+ * Connects the frontend to the authenticated Socket.IO namespace.
  */
 
-import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { io } from "socket.io-client";
-import { SERVER_URL } from "../config";
-import { useAuth } from "../auth/useAuth";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { io } from 'socket.io-client';
+import { useAuth } from '../auth/useAuth';
+import { SERVER_URL } from '../config';
 
 const WebSocketContext = createContext(null);
 
 export const useWebSocketContext = () => {
     const context = useContext(WebSocketContext);
     if (!context) {
-        throw new Error("useWebSocketContext must be used within a WebSocketProvider");
+        throw new Error('useWebSocketContext must be used within a WebSocketProvider');
     }
     return context;
 };
@@ -38,10 +30,10 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
     }, [handlers]);
 
     useEffect(() => {
-        console.log('[WebSocket] Connecting to:', SERVER_URL + '/message');
+        console.log('[WebSocket] Connecting to:', `${SERVER_URL}/message`);
 
         if (!socketRef.current) {
-            const newSocket = io(`${SERVER_URL}/message`, {
+            socketRef.current = io(`${SERVER_URL}/message`, {
                 auth: { token: getToken() },
                 transports: ['websocket', 'polling'],
                 reconnectionAttempts: 10,
@@ -49,7 +41,6 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
                 timeout: 20000,
                 autoConnect: true,
             });
-            socketRef.current = newSocket;
         }
 
         const socket = socketRef.current;
@@ -79,7 +70,6 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
 
         const handleConnectError = (error) => {
             console.error('[WebSocket] Connection error:', error.message);
-            // Server rejected the connection due to invalid/expired token
             if (error.message === 'Authentication error' || error.data?.code === 401) {
                 onAuthError?.();
             }
@@ -115,25 +105,28 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
             socket.off('reconnect', handleReconnect);
             socket.off('error', handleError);
         };
-    }, []);
+    }, [getToken, onAuthError]);
 
-    const emit = (event, data) => {
+    const emit = useCallback((event, data) => {
         if (socketRef.current?.connected) {
             socketRef.current.emit(event, data);
             return true;
         }
-        console.error('[WebSocket] Cannot emit — not connected');
+
+        console.error('[WebSocket] Cannot emit - not connected');
         return false;
-    };
+    }, []);
 
     return (
-        <WebSocketContext.Provider value={{
-            socket: socketRef.current,
-            isConnected,
-            isRegistered,
-            emit,
-            id: socketRef.current?.id,
-        }}>
+        <WebSocketContext.Provider
+            value={{
+                socket: socketRef.current,
+                isConnected,
+                isRegistered,
+                emit,
+                id: socketRef.current?.id,
+            }}
+        >
             {children}
         </WebSocketContext.Provider>
     );

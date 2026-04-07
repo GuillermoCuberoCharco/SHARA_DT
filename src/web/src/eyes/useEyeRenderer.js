@@ -16,7 +16,7 @@ import { drawFace } from './drawFace';
 import { FACES } from './faceData';
 import { getInBetweenFaces } from './interpolation';
 
-const TRANSITION_STEPS = 8;
+const TRANSITION_STEPS = 3;
 const BLINK_STEPS = 1;
 const BLINK_MIN_MS = 4000;
 const BLINK_MAX_MS = 7000;

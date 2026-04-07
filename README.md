@@ -1,6 +1,6 @@
-# SHARA_DT: Digital Twin of SHARA^3
+# SHARA_DT: Digital Twin of SHARA
 
-SHARA_DT is the web-based digital twin of SHARA^3. It reproduces the physical robot's conversational flow with a Flask + Socket.IO + React/Vite architecture, replacing embedded sensors and actuators with browser camera, microphone, facial rendering, and audio playback.
+SHARA_DT is the web-based digital twin of SHARA. It reproduces the physical robot's conversational flow with a Flask + Socket.IO + React/Vite architecture, replacing embedded sensors and actuators with browser camera, microphone, facial rendering, and audio playback.
 
 The system currently runs as a single service: Flask serves the built SPA, exposes the HTTP API, and hosts the Socket.IO channel used by the web interface for conversation, face recognition, and robot state visualization.
 

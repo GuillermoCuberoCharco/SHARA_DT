@@ -21,8 +21,8 @@ function interpolatePoints(a, b, steps) {
     const result = [];
     for (let i = 1; i <= steps; i++) {
         result.push([
-            Math.round(a[0] + disp[0] * i),
-            Math.round(a[1] + disp[1] * i),
+            Math.trunc(a[0] + disp[0] * i),
+            Math.trunc(a[1] + disp[1] * i),
         ]);
     }
     return result;

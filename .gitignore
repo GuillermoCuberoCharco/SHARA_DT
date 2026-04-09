@@ -8,6 +8,7 @@ venv
 .venv11
 .claude
 .codex_dbinspect
+.npm-cache
 webrtc_event_logs
 vite.config.js.timestamp-*
 testing

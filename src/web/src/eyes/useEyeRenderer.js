@@ -81,6 +81,11 @@ export function useEyeRenderer(canvasRef) {
         }
     }, [canvasRef, getCachedBitmap, cacheBitmap, invalidateBitmaps]);
 
+    const refresh = useCallback(() => {
+        const faceData = currentFaceData.current ?? getFace(currentFaceName.current);
+        renderFrame({ faceData, baseName: null });
+    }, [renderFrame]);
+
     // ── rAF loop ─────────────────────────────────────────────────────────────
 
     const loop = useCallback(() => {
@@ -132,6 +137,7 @@ export function useEyeRenderer(canvasRef) {
     useEffect(() => {
         const neutralData = getFace('neutral');
         currentFaceData.current = neutralData;
+        currentFaceName.current = 'neutral';
         renderFrame({ faceData: neutralData, baseName: 'neutral' });
         rafId.current = requestAnimationFrame(loop);
         scheduleBlink();
@@ -142,5 +148,5 @@ export function useEyeRenderer(canvasRef) {
         };
     }, [loop, renderFrame, scheduleBlink]);
 
-    return { setFace };
+    return { setFace, refresh };
 }

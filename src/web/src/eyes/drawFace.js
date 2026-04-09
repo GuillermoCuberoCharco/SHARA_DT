@@ -3,8 +3,8 @@
  *
  * Port of draw.py to Canvas 2D API.
  *
- * Coordinate space: 1024 × 600 px
- * (Robot uses sc_width=600, sc_height=1024 → numpy shape (600,1024) → 1024w × 600h)
+ * Coordinate space: 1024 x 600 px
+ * (Robot uses sc_width=600, sc_height=1024 -> numpy shape (600,1024) -> 1024w x 600h)
  *
  * Key fix vs previous version: all eye drawing (iris, pupil, eyelid fills AND
  * eyelid bezier lines) happens inside a single save/clip/restore block clipped
@@ -12,75 +12,72 @@
  * it sits cleanly on top with no bleeding into adjacent frames.
  */
 
-const SRC_W = 1024;
-const SRC_H = 600;
+export const EYE_COORDINATE_WIDTH = 1024;
+export const EYE_COORDINATE_HEIGHT = 600;
+export const EYE_COORDINATE_ASPECT_RATIO = EYE_COORDINATE_WIDTH / EYE_COORDINATE_HEIGHT;
+
 const EYE_OUTLINE_BASE_WIDTH = 14;
 const EYELID_BASE_WIDTH = EYE_OUTLINE_BASE_WIDTH * (2 / 3);
 
-// ── Bézier helper ─────────────────────────────────────────────────────────────
+function bezier(ctx, pts, transform, color, lineWidth) {
+    const { scale, offsetX, offsetY } = transform;
 
-function bezier(ctx, pts, sx, sy, color, lineWidth) {
     ctx.beginPath();
-    ctx.moveTo(pts[0][0] * sx, pts[0][1] * sy);
+    ctx.moveTo(offsetX + pts[0][0] * scale, offsetY + pts[0][1] * scale);
     ctx.quadraticCurveTo(
-        pts[1][0] * sx, pts[1][1] * sy,
-        pts[2][0] * sx, pts[2][1] * sy,
+        offsetX + pts[1][0] * scale,
+        offsetY + pts[1][1] * scale,
+        offsetX + pts[2][0] * scale,
+        offsetY + pts[2][1] * scale,
     );
     ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth * Math.min(sx, sy);
+    ctx.lineWidth = lineWidth * scale;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.stroke();
 }
 
-// ── Eye ───────────────────────────────────────────────────────────────────────
-
-function drawEye(ctx, eye, sx, sy) {
-    const cx = eye.center[0] * sx;
-    const cy = eye.center[1] * sy;
-    const rx = (eye.width / 2) * sx;
-    const ry = (eye.height / 2) * sy;
+function drawEye(ctx, eye, transform) {
+    const { scale, offsetX, offsetY } = transform;
+    const cx = offsetX + eye.center[0] * scale;
+    const cy = offsetY + eye.center[1] * scale;
+    const rx = (eye.width / 2) * scale;
+    const ry = (eye.height / 2) * scale;
     const pad = Math.max(rx, ry) + 10;
 
-    // Absolute pixel coords of eyelid bezier control points
-    const topPts = eye.eyelid_top.map(([dx, dy]) => [cx + dx * sx, cy + dy * sy]);
-    const botPts = eye.eyelid_bottom.map(([dx, dy]) => [cx + dx * sx, cy + dy * sy]);
+    const topPts = eye.eyelid_top.map(([dx, dy]) => [cx + dx * scale, cy + dy * scale]);
+    const botPts = eye.eyelid_bottom.map(([dx, dy]) => [cx + dx * scale, cy + dy * scale]);
 
-    const pupilX = cx + eye.pupil.offset[0] * sx;
-    const pupilY = cy + eye.pupil.offset[1] * sy;
-    const irisX = pupilX + eye.iris.offset[0] * sx;
-    const irisY = pupilY + eye.iris.offset[1] * sy;
-    const irisRx = (eye.iris.width / 2) * sx;
-    const irisRy = (eye.iris.height / 2) * sy;
-    const pupilRx = (eye.pupil.width / 2) * sx;
-    const pupilRy = (eye.pupil.height / 2) * sy;
+    const pupilX = cx + eye.pupil.offset[0] * scale;
+    const pupilY = cy + eye.pupil.offset[1] * scale;
+    const irisX = pupilX + eye.iris.offset[0] * scale;
+    const irisY = pupilY + eye.iris.offset[1] * scale;
+    const irisRx = (eye.iris.width / 2) * scale;
+    const irisRy = (eye.iris.height / 2) * scale;
+    const pupilRx = (eye.pupil.width / 2) * scale;
+    const pupilRy = (eye.pupil.height / 2) * scale;
     const [r, g, b] = eye.iris.color;
-    const eyeOutlineWidth = EYE_OUTLINE_BASE_WIDTH * Math.min(sx, sy);
-    const eyelidLineWidth = EYELID_BASE_WIDTH * Math.min(sx, sy);
+    const eyeOutlineWidth = EYE_OUTLINE_BASE_WIDTH * scale;
+    const eyelidLineWidth = EYELID_BASE_WIDTH * scale;
 
-    // ── Everything inside eye ellipse clip ───────────────────────────────────
     ctx.save();
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     ctx.clip();
 
-    // White base
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(cx - rx - 5, cy - ry - 5, (rx + 5) * 2, (ry + 5) * 2);
 
-    // Iris
     ctx.beginPath();
     ctx.ellipse(irisX, irisY, irisRx, irisRy, 0, 0, Math.PI * 2);
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fill();
 
-    // Pupil
     ctx.beginPath();
     ctx.ellipse(pupilX, pupilY, pupilRx, pupilRy, 0, 0, Math.PI * 2);
     ctx.fillStyle = '#000000';
     ctx.fill();
 
-    // Eyelid top — white fill above the bezier curve
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
     ctx.moveTo(topPts[0][0], topPts[0][1]);
@@ -90,7 +87,6 @@ function drawEye(ctx, eye, sx, sy) {
     ctx.closePath();
     ctx.fill();
 
-    // ── Eye contour — clipped to area above bottom eyelid ────────────────────
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(botPts[0][0], botPts[0][1]);
@@ -106,7 +102,6 @@ function drawEye(ctx, eye, sx, sy) {
     ctx.stroke();
     ctx.restore();
 
-    // Eyelid bottom — white fill below the bezier curve
     ctx.beginPath();
     ctx.moveTo(botPts[0][0], botPts[0][1]);
     ctx.quadraticCurveTo(botPts[1][0], botPts[1][1], botPts[2][0], botPts[2][1]);
@@ -115,7 +110,6 @@ function drawEye(ctx, eye, sx, sy) {
     ctx.closePath();
     ctx.fill();
 
-    // Eyelid lines (drawn inside clip — no bleeding outside eye)
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = eyelidLineWidth;
     ctx.lineJoin = 'round';
@@ -134,17 +128,16 @@ function drawEye(ctx, eye, sx, sy) {
     ctx.restore();
 }
 
-// ── Blush ─────────────────────────────────────────────────────────────────────
-
-function drawBlush(ctx, face, sx, sy) {
+function drawBlush(ctx, face, transform) {
+    const { scale, offsetX, offsetY } = transform;
     const le = face.eyes.left;
     const re = face.eyes.right;
-    const rx = (le.width / 2) * sx;
-    const ry = (le.height / 2) * sy;
+    const rx = (le.width / 2) * scale;
+    const ry = (le.height / 2) * scale;
 
-    const lcx = (le.center[0] / 2) * sx;
-    const rcx = (re.center[0] + le.center[0] / 2) * sx;
-    const bcy = (le.center[1] * sy) + (SRC_H / 3) * sy;
+    const lcx = offsetX + (le.center[0] / 2) * scale;
+    const rcx = offsetX + (re.center[0] + le.center[0] / 2) * scale;
+    const bcy = offsetY + (le.center[1] + EYE_COORDINATE_HEIGHT / 3) * scale;
 
     ctx.globalAlpha = 0.45;
     ctx.fillStyle = 'rgb(246,195,255)';
@@ -160,24 +153,27 @@ function drawBlush(ctx, face, sx, sy) {
     ctx.globalAlpha = 1.0;
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
 export function drawFace(ctx, canvasW, canvasH, faceData) {
-    const sx = canvasW / SRC_W;
-    const sy = canvasH / SRC_H;
+    const scale = Math.min(
+        canvasW / EYE_COORDINATE_WIDTH,
+        canvasH / EYE_COORDINATE_HEIGHT,
+    );
+    const renderW = EYE_COORDINATE_WIDTH * scale;
+    const renderH = EYE_COORDINATE_HEIGHT * scale;
+    const transform = {
+        scale,
+        offsetX: (canvasW - renderW) / 2,
+        offsetY: (canvasH - renderH) / 2,
+    };
 
-    // Clear to white
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvasW, canvasH);
 
-    // Eyebrows
-    bezier(ctx, faceData.eyebrows.left, sx, sy, '#000000', EYELID_BASE_WIDTH);
-    bezier(ctx, faceData.eyebrows.right, sx, sy, '#000000', EYELID_BASE_WIDTH);
+    bezier(ctx, faceData.eyebrows.left, transform, '#000000', EYELID_BASE_WIDTH);
+    bezier(ctx, faceData.eyebrows.right, transform, '#000000', EYELID_BASE_WIDTH);
 
-    // Eyes
-    drawEye(ctx, faceData.eyes.left, sx, sy);
-    drawEye(ctx, faceData.eyes.right, sx, sy);
+    drawEye(ctx, faceData.eyes.left, transform);
+    drawEye(ctx, faceData.eyes.right, transform);
 
-    // Blush (optional)
-    if (faceData.blush) drawBlush(ctx, faceData, sx, sy);
+    if (faceData.blush) drawBlush(ctx, faceData, transform);
 }

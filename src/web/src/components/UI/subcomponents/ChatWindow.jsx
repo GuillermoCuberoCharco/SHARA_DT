@@ -111,7 +111,9 @@ const ChatWindow = ({
     subjectCode,
     subjectCodes,
     onAddSubjects,
+    onSwitchSubject,
     isAddingSubjects,
+    isSwitchingSubject,
     subjectFeedback,
     subjectFeedbackTone,
 }) => {
@@ -128,6 +130,7 @@ const ChatWindow = ({
     const textareaRef = useRef(null);
     const [isSubjectPanelOpen, setIsSubjectPanelOpen] = useState(false);
     const [subjectInput, setSubjectInput] = useState('');
+    const [shouldRestoreTextareaFocus, setShouldRestoreTextareaFocus] = useState(false);
 
     useEffect(() => {
         const element = textareaRef.current;
@@ -138,6 +141,21 @@ const ChatWindow = ({
         element.style.height = 'auto';
         element.style.height = `${element.scrollHeight}px`;
     }, [newMessage]);
+
+    useEffect(() => {
+        if (
+            !shouldRestoreTextareaFocus
+            || !isVisible
+            || !isRegistered
+            || isWaitingResponse
+            || isRecording
+        ) {
+            return;
+        }
+
+        textareaRef.current?.focus({ preventScroll: true });
+        setShouldRestoreTextareaFocus(false);
+    }, [isRecording, isRegistered, isVisible, isWaitingResponse, shouldRestoreTextareaFocus]);
 
     const handleSubjectSubmit = async (event) => {
         event.preventDefault();
@@ -152,6 +170,11 @@ const ChatWindow = ({
         } catch {
             // The parent already exposes the error message in the panel.
         }
+    };
+
+    const handleSend = () => {
+        setShouldRestoreTextareaFocus(true);
+        onMessageSend();
     };
 
     return (
@@ -215,12 +238,23 @@ const ChatWindow = ({
                         </div>
                         <div className="subject-chip-list">
                             {subjectCodes.map((code) => (
-                                <span
+                                <button
                                     key={code}
+                                    type="button"
                                     className={`subject-chip ${code === subjectCode ? 'active' : ''}`}
+                                    onClick={() => onSwitchSubject?.(code)}
+                                    disabled={
+                                        !onSwitchSubject
+                                        || code === subjectCode
+                                        || isSwitchingSubject
+                                        || isAddingSubjects
+                                        || !isRegistered
+                                        || isWaitingResponse
+                                        || isRecording
+                                    }
                                 >
                                     {code}
-                                </span>
+                                </button>
                             ))}
                         </div>
                     </div>
@@ -232,18 +266,18 @@ const ChatWindow = ({
                             onChange={(event) => setSubjectInput(event.target.value)}
                             placeholder="mat101, mat102"
                             autoComplete="off"
-                            disabled={isAddingSubjects}
+                            disabled={isAddingSubjects || isSwitchingSubject}
                         />
                         <button
                             type="submit"
-                            disabled={!subjectInput.trim() || isAddingSubjects}
+                            disabled={!subjectInput.trim() || isAddingSubjects || isSwitchingSubject}
                         >
                             {isAddingSubjects ? 'Anadiendo...' : 'Anadir'}
                         </button>
                     </form>
 
                     <p className={`subject-manager-help ${subjectFeedbackTone}`}>
-                        {subjectFeedback || 'Puedes anadir una o varias asignaturas separadas por comas. El cambio no sustituye la asignatura activa.'}
+                        {subjectFeedback || 'Pulsa una asignatura para cambiar de contexto o anade nuevas separadas por comas.'}
                     </p>
                 </div>
             )}
@@ -299,7 +333,7 @@ const ChatWindow = ({
                     onKeyDown={(event) => {
                         if (event.key === 'Enter' && !event.shiftKey) {
                             event.preventDefault();
-                            onMessageSend();
+                            handleSend();
                         }
                     }}
                     ref={textareaRef}
@@ -309,7 +343,7 @@ const ChatWindow = ({
                 />
                 <button
                     className="send-btn"
-                    onClick={() => onMessageSend()}
+                    onClick={handleSend}
                     disabled={!newMessage.trim() || !isRegistered || isWaitingResponse || isRecording}
                     title="Enviar"
                     type="button"
@@ -352,7 +386,9 @@ ChatWindow.propTypes = {
     subjectCode: PropTypes.string,
     subjectCodes: PropTypes.arrayOf(PropTypes.string),
     onAddSubjects: PropTypes.func,
+    onSwitchSubject: PropTypes.func,
     isAddingSubjects: PropTypes.bool,
+    isSwitchingSubject: PropTypes.bool,
     subjectFeedback: PropTypes.string,
     subjectFeedbackTone: PropTypes.string,
 };
@@ -373,7 +409,9 @@ ChatWindow.defaultProps = {
     subjectCode: '',
     subjectCodes: [],
     onAddSubjects: null,
+    onSwitchSubject: null,
     isAddingSubjects: false,
+    isSwitchingSubject: false,
     subjectFeedback: '',
     subjectFeedbackTone: 'info',
 };

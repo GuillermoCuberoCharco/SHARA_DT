@@ -29,6 +29,34 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
         handlersRef.current = handlers;
     }, [handlers]);
 
+    const connectWithLatestToken = useCallback(() => {
+        const socket = socketRef.current;
+        if (!socket) {
+            return false;
+        }
+
+        socket.auth = { token: getToken() };
+        socket.connect();
+        return true;
+    }, [getToken]);
+
+    const refreshConnection = useCallback(() => {
+        const socket = socketRef.current;
+        if (!socket) {
+            return false;
+        }
+
+        socket.auth = { token: getToken() };
+        setIsRegistered(false);
+
+        if (socket.connected) {
+            socket.disconnect();
+        }
+
+        socket.connect();
+        return true;
+    }, [getToken]);
+
     useEffect(() => {
         console.log('[WebSocket] Connecting to:', `${SERVER_URL}/message`);
 
@@ -57,7 +85,7 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
 
             setTimeout(() => {
                 if (socketRef.current && !socket.connected) {
-                    socket.connect();
+                    connectWithLatestToken();
                 }
             }, 1000);
         };
@@ -111,7 +139,7 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
             socket.off('reconnect', handleReconnect);
             socket.off('error', handleError);
         };
-    }, [getToken, onAuthError]);
+    }, [connectWithLatestToken, getToken, onAuthError]);
 
     const emit = useCallback((event, data) => {
         if (socketRef.current?.connected) {
@@ -130,6 +158,7 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
                 isConnected,
                 isRegistered,
                 emit,
+                refreshConnection,
                 id: socketRef.current?.id,
             }}
         >

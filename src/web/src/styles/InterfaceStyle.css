@@ -281,6 +281,7 @@ html {
 }
 
 .subject-chip {
+  appearance: none;
   padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -288,12 +289,28 @@ html {
   color: #cbd5e1;
   font-size: 11px;
   line-height: 1.2;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, opacity 0.2s;
+}
+
+.subject-chip:hover:not(:disabled) {
+  border-color: rgba(99, 102, 241, 0.45);
+  background: rgba(99, 102, 241, 0.12);
+  color: #ffffff;
 }
 
 .subject-chip.active {
   color: #ffffff;
   border-color: rgba(99, 102, 241, 0.45);
   background: rgba(99, 102, 241, 0.24);
+}
+
+.subject-chip:disabled {
+  cursor: default;
+}
+
+.subject-chip:not(.active):disabled {
+  opacity: 0.5;
 }
 
 .subject-manager-form {

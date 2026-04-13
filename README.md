@@ -66,7 +66,8 @@ PI-ChatShara
 7. El frontend guarda esos datos en `localStorage`.
 8. Socket.IO se conecta a `/message` enviando el token en `auth`.
 9. Al conectar, el backend devuelve el historial persistido del usuario para esa asignatura activa.
-10. Desde la UI, el usuario autenticado puede anadir nuevas asignaturas con `POST /auth/subjects`; eso actualiza su cuenta, pero no cambia la asignatura activa hasta el siguiente inicio de sesion.
+10. Desde la UI, el usuario autenticado puede anadir nuevas asignaturas con `POST /auth/subjects`.
+11. Desde ese mismo panel puede cambiar la asignatura activa pulsando una de las asignaturas disponibles; el frontend pide un nuevo JWT con `POST /auth/switch-subject` y reconecta el socket con el nuevo contexto.
 
 ### 2. Chat
 
@@ -115,6 +116,7 @@ El backend crea automaticamente las tablas `users`, `subjects`, `user_subjects` 
 | `POST` | `/auth/login` | Inicia sesion y devuelve `{ token, user_id, role, subject_code, subject_codes }` |
 | `POST` | `/auth/register` | Registra un alumno y devuelve `{ token, user_id, role, subject_code, subject_codes }` |
 | `POST` | `/auth/subjects` | Anade asignaturas al usuario autenticado y devuelve la lista actualizada |
+| `POST` | `/auth/switch-subject` | Cambia la asignatura activa del usuario autenticado y devuelve un nuevo JWT |
 | `GET` | `/health` | Devuelve `{ status, active_queries }` |
 | `GET` | `/*` | Sirve la SPA de React en produccion |
 
@@ -163,6 +165,22 @@ Body:
 ```json
 {
   "subject_codes": ["mat103", "mat104"]
+}
+```
+
+### Ejemplo para cambiar de asignatura activa
+
+Cabecera:
+
+```http
+Authorization: Bearer <jwt>
+```
+
+Body:
+
+```json
+{
+  "subject_code": "mat102"
 }
 ```
 
@@ -282,7 +300,7 @@ En desarrollo:
 - El registro desde la interfaz web crea siempre cuentas `student`.
 - Durante el registro se pueden indicar una o varias asignaturas.
 - Una vez autenticado, cualquier usuario puede anadir nuevas asignaturas desde el panel del chat.
-- Anadir asignaturas no cambia la asignatura activa de la sesion actual; para trabajar en otra asignatura hay que volver a iniciar sesion con ese codigo.
+- Desde ese mismo panel se puede cambiar la asignatura activa sin cerrar sesion.
 
 ### CLI
 

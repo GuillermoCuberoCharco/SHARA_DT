@@ -292,6 +292,44 @@ def add_subjects():
     })
 
 
+@auth_bp.route("/auth/switch-subject", methods=["POST"])
+def switch_subject():
+    token = _extract_bearer_token()
+    auth_context = verify_token(token) if token else None
+    if not auth_context:
+        return jsonify({"error": "Sesion no valida"}), 401
+
+    data = request.get_json(silent=True) or {}
+    subject_code = normalize_subject_code(data.get("subject_code"))
+
+    if not subject_code:
+        return jsonify({"error": "Debes indicar una asignatura"}), 400
+
+    if not is_valid_subject_code(subject_code):
+        return jsonify({"error": "Codigo de asignatura invalido"}), 400
+
+    user_id = auth_context["user_id"]
+
+    try:
+        has_subject = _user_has_subject(user_id, subject_code)
+        user_subjects = _fetch_user_subjects(user_id)
+    except psycopg.Error:
+        logger.exception("[Auth] Database error while switching subjects")
+        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+
+    if not has_subject:
+        return jsonify({"error": "No tienes acceso a esa asignatura"}), 403
+
+    logger.info("[Auth] Switched subject for %s: %s", user_id, subject_code)
+    return jsonify({
+        "token": _issue_token(user_id, auth_context["role"], subject_code),
+        "user_id": user_id,
+        "role": auth_context["role"],
+        "subject_code": subject_code,
+        "subject_codes": user_subjects,
+    })
+
+
 def verify_token(token: str) -> dict[str, str] | None:
     """Decode JWT and return auth context, or None if invalid/expired."""
     try:

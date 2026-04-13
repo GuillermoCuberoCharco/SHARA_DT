@@ -79,6 +79,26 @@ export const useAuth = () => {
         return data;
     };
 
+    const switchSubject = async (subjectCode) => {
+        const token = getToken();
+        if (!token) {
+            throw new Error('Sesion no valida');
+        }
+
+        const res = await fetch(`${SERVER_URL}/auth/switch-subject`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ subject_code: subjectCode }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error al cambiar de asignatura');
+        _storeSession(data);
+        return data;
+    };
+
     const logout = () => {
         localStorage.removeItem('auth_token');
         localStorage.removeItem('auth_user_id');
@@ -97,6 +117,7 @@ export const useAuth = () => {
         login,
         register,
         addSubjects,
+        switchSubject,
         logout,
     };
 };

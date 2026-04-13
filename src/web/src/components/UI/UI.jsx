@@ -10,7 +10,7 @@ import ChatWindow from './subcomponents/ChatWindow';
 const TTS_PREFERENCE_KEY = 'shara_tts_enabled';
 
 const UI = ({ onRobotStateChange, onLogout }) => {
-    const { getUserId, getSubjectCode, getSubjectCodes, addSubjects } = useAuth();
+    const { getUserId, getSubjectCode, getSubjectCodes, addSubjects, switchSubject } = useAuth();
     const username = getUserId();
     const subjectCode = getSubjectCode();
     const displayUsername = username
@@ -25,6 +25,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     const [conversationState, setConversationState] = useState('idle');
     const [subjectCodes, setSubjectCodes] = useState(() => getSubjectCodes());
     const [isAddingSubjects, setIsAddingSubjects] = useState(false);
+    const [isSwitchingSubject, setIsSwitchingSubject] = useState(false);
     const [subjectFeedback, setSubjectFeedback] = useState('');
     const [subjectFeedbackTone, setSubjectFeedbackTone] = useState('info');
     const [isTtsEnabled, setIsTtsEnabled] = useState(() => {
@@ -32,7 +33,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         return stored === null ? true : stored === 'true';
     });
 
-    const { isConnected, isRegistered, emit, socket } = useWebSocketContext();
+    const { isConnected, isRegistered, emit, refreshConnection, socket } = useWebSocketContext();
     const messagesContainerRef = useRef(null);
 
     const appendMessage = useCallback((message) => {
@@ -160,7 +161,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
 
     const handleAddSubjects = useCallback(async (subjectCodesInput) => {
         const normalizedInput = subjectCodesInput.trim();
-        if (!normalizedInput || isAddingSubjects) {
+        if (!normalizedInput || isAddingSubjects || isSwitchingSubject) {
             return null;
         }
 
@@ -178,7 +179,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
             if (addedSubjectCodes.length > 0) {
                 setSubjectFeedback(
                     `Asignaturas anadidas: ${addedSubjectCodes.join(', ')}. `
-                    + 'La asignatura activa no cambia hasta el siguiente inicio de sesion.',
+                    + 'Ya puedes pulsarlas para cambiar de contexto.',
                 );
                 setSubjectFeedbackTone('success');
             } else {
@@ -194,7 +195,55 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         } finally {
             setIsAddingSubjects(false);
         }
-    }, [addSubjects, isAddingSubjects]);
+    }, [addSubjects, isAddingSubjects, isSwitchingSubject]);
+
+    const handleSwitchSubject = useCallback(async (nextSubjectCode) => {
+        const normalizedSubjectCode = nextSubjectCode.trim().toLowerCase();
+        if (
+            !normalizedSubjectCode
+            || normalizedSubjectCode === subjectCode
+            || isSwitchingSubject
+            || isAddingSubjects
+            || isWaitingResponse
+            || isRecording
+        ) {
+            return null;
+        }
+
+        setIsSwitchingSubject(true);
+        setSubjectFeedback(`Cambiando a ${normalizedSubjectCode}...`);
+        setSubjectFeedbackTone('info');
+        stopPlayback();
+        setNewMessage('');
+        setMessages([]);
+        setIsWaitingResponse(false);
+        setConversationState('idle');
+
+        try {
+            const data = await switchSubject(normalizedSubjectCode);
+            const updatedSubjectCodes = Array.isArray(data?.subject_codes) ? data.subject_codes : [];
+            setSubjectCodes(updatedSubjectCodes);
+            refreshConnection();
+            setSubjectFeedback(`Asignatura activa cambiada a ${normalizedSubjectCode}.`);
+            setSubjectFeedbackTone('success');
+            return data;
+        } catch (error) {
+            setSubjectFeedback(error.message || 'No se pudo cambiar de asignatura.');
+            setSubjectFeedbackTone('error');
+            throw error;
+        } finally {
+            setIsSwitchingSubject(false);
+        }
+    }, [
+        isAddingSubjects,
+        isRecording,
+        isSwitchingSubject,
+        isWaitingResponse,
+        refreshConnection,
+        stopPlayback,
+        subjectCode,
+        switchSubject,
+    ]);
 
     useEffect(() => {
         scrollToBottom();
@@ -274,7 +323,9 @@ const UI = ({ onRobotStateChange, onLogout }) => {
                 subjectCode={subjectCode}
                 subjectCodes={subjectCodes}
                 onAddSubjects={handleAddSubjects}
+                onSwitchSubject={handleSwitchSubject}
                 isAddingSubjects={isAddingSubjects}
+                isSwitchingSubject={isSwitchingSubject}
                 subjectFeedback={subjectFeedback}
                 subjectFeedbackTone={subjectFeedbackTone}
             />

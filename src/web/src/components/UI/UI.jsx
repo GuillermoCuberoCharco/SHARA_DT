@@ -10,8 +10,12 @@ import ChatWindow from './subcomponents/ChatWindow';
 const TTS_PREFERENCE_KEY = 'shara_tts_enabled';
 
 const UI = ({ onRobotStateChange, onLogout }) => {
-    const { getUserId } = useAuth();
+    const { getUserId, getSubjectCode, getSubjectCodes, addSubjects } = useAuth();
     const username = getUserId();
+    const subjectCode = getSubjectCode();
+    const displayUsername = username
+        ? (subjectCode ? `${username} - ${subjectCode}` : username)
+        : '';
 
     const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState('');
@@ -19,6 +23,10 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     const [connectionError, setConnectionError] = useState(false);
     const [isWaitingResponse, setIsWaitingResponse] = useState(false);
     const [conversationState, setConversationState] = useState('idle');
+    const [subjectCodes, setSubjectCodes] = useState(() => getSubjectCodes());
+    const [isAddingSubjects, setIsAddingSubjects] = useState(false);
+    const [subjectFeedback, setSubjectFeedback] = useState('');
+    const [subjectFeedbackTone, setSubjectFeedbackTone] = useState('info');
     const [isTtsEnabled, setIsTtsEnabled] = useState(() => {
         const stored = localStorage.getItem(TTS_PREFERENCE_KEY);
         return stored === null ? true : stored === 'true';
@@ -150,6 +158,44 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         setIsTtsEnabled((prev) => !prev);
     }, []);
 
+    const handleAddSubjects = useCallback(async (subjectCodesInput) => {
+        const normalizedInput = subjectCodesInput.trim();
+        if (!normalizedInput || isAddingSubjects) {
+            return null;
+        }
+
+        setIsAddingSubjects(true);
+        setSubjectFeedback('');
+        setSubjectFeedbackTone('info');
+
+        try {
+            const data = await addSubjects(normalizedInput);
+            const updatedSubjectCodes = Array.isArray(data?.subject_codes) ? data.subject_codes : [];
+            const addedSubjectCodes = Array.isArray(data?.added_subject_codes) ? data.added_subject_codes : [];
+
+            setSubjectCodes(updatedSubjectCodes);
+
+            if (addedSubjectCodes.length > 0) {
+                setSubjectFeedback(
+                    `Asignaturas anadidas: ${addedSubjectCodes.join(', ')}. `
+                    + 'La asignatura activa no cambia hasta el siguiente inicio de sesion.',
+                );
+                setSubjectFeedbackTone('success');
+            } else {
+                setSubjectFeedback('Esas asignaturas ya estaban vinculadas a tu cuenta.');
+                setSubjectFeedbackTone('info');
+            }
+
+            return data;
+        } catch (error) {
+            setSubjectFeedback(error.message || 'No se pudieron anadir las asignaturas.');
+            setSubjectFeedbackTone('error');
+            throw error;
+        } finally {
+            setIsAddingSubjects(false);
+        }
+    }, [addSubjects, isAddingSubjects]);
+
     useEffect(() => {
         scrollToBottom();
     }, [conversationState, isWaitingResponse, messages, scrollToBottom]);
@@ -216,7 +262,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
                 isWaitingResponse={isWaitingResponse}
                 isRegistered={isRegistered}
                 connectionError={connectionError}
-                username={username}
+                username={displayUsername}
                 onLogout={onLogout}
                 onStartRecording={handleStartRecording}
                 onStopRecording={stopRecording}
@@ -225,6 +271,12 @@ const UI = ({ onRobotStateChange, onLogout }) => {
                 isTtsEnabled={isTtsEnabled}
                 onToggleTts={handleToggleTts}
                 conversationState={conversationState}
+                subjectCode={subjectCode}
+                subjectCodes={subjectCodes}
+                onAddSubjects={handleAddSubjects}
+                isAddingSubjects={isAddingSubjects}
+                subjectFeedback={subjectFeedback}
+                subjectFeedbackTone={subjectFeedbackTone}
             />
         </>
     );

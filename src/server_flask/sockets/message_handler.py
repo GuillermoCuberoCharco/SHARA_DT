@@ -24,23 +24,43 @@ class MessageNamespace(Namespace):
 
     def on_connect(self, auth):
         token = (auth or {}).get('token')
-        user_id = verify_token(token) if token else None
+        auth_context = verify_token(token) if token else None
 
-        if not user_id:
+        if not auth_context:
             logger.warning('[/message] Rejected connection - invalid token (sid=%s)', request.sid)
             return False
 
-        logger.info('[/message] Client connected: %s (user=%s)', request.sid, user_id)
-        _clients[request.sid] = {'user_id': user_id, 'tts_enabled': True}
+        user_id = auth_context['user_id']
+        user_role = auth_context['role']
+        subject_code = auth_context['subject_code']
+
+        logger.info(
+            '[/message] Client connected: %s (user=%s, role=%s, subject=%s)',
+            request.sid,
+            user_id,
+            user_role,
+            subject_code,
+        )
+        _clients[request.sid] = {
+            'user_id': user_id,
+            'user_role': user_role,
+            'subject_code': subject_code,
+            'tts_enabled': True,
+        }
         state_machine.register_session(request.sid, tts_enabled=True)
 
-        emit('registration_success', {'status': 'ok', 'user_id': user_id})
+        emit('registration_success', {
+            'status': 'ok',
+            'user_id': user_id,
+            'role': user_role,
+            'subject_code': subject_code,
+        })
 
         try:
-            history = load_user_messages(user_id)
+            history = load_user_messages(user_id, subject_code)
             emit('conversation_history', {'messages': history})
         except Exception:
-            logger.exception('[/message] Failed to load history for user %s', user_id)
+            logger.exception('[/message] Failed to load history for user %s [%s]', user_id, subject_code)
 
     def on_disconnect(self):
         client = _clients.pop(request.sid, None)
@@ -70,7 +90,12 @@ class MessageNamespace(Namespace):
         _cleanup_audio_buffer(request.sid)
         _audio_buffers[request.sid] = bytearray()
 
-        accepted = state_machine.on_audio_stream_start(request.sid, client['user_id'])
+        accepted = state_machine.on_audio_stream_start(
+            request.sid,
+            client['user_id'],
+            client.get('user_role', 'student'),
+            client.get('subject_code', ''),
+        )
         if not accepted:
             _cleanup_audio_buffer(request.sid)
 
@@ -108,7 +133,13 @@ class MessageNamespace(Namespace):
             logger.warning('[/message] audio_stream_end with no buffer for %s', request.sid)
             return
 
-        state_machine.on_audio_stream_end(bytes(buffer), request.sid, client['user_id'])
+        state_machine.on_audio_stream_end(
+            bytes(buffer),
+            request.sid,
+            client['user_id'],
+            client.get('user_role', 'student'),
+            client.get('subject_code', ''),
+        )
 
     def on_client_message(self, data):
         client = _clients.get(request.sid)
@@ -136,7 +167,13 @@ class MessageNamespace(Namespace):
                 return
 
             logger.info('[/message] Raw audio payload from %s (%s)', user_id, request.sid)
-            state_machine.on_audio_stream_end(audio_bytes, request.sid, user_id)
+            state_machine.on_audio_stream_end(
+                audio_bytes,
+                request.sid,
+                user_id,
+                client.get('user_role', 'student'),
+                client.get('subject_code', ''),
+            )
             return
 
         text = data.get('text', '').strip()
@@ -145,7 +182,13 @@ class MessageNamespace(Namespace):
             return
 
         logger.info('[/message] Text from %s (%s): "%s"', user_id, request.sid, text)
-        state_machine.on_text_message(text, request.sid, user_id)
+        state_machine.on_text_message(
+            text,
+            request.sid,
+            user_id,
+            client.get('user_role', 'student'),
+            client.get('subject_code', ''),
+        )
 
 
 def _cleanup_audio_buffer(sid: str):

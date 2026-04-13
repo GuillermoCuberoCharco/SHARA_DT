@@ -5,7 +5,7 @@
  * Calls POST /auth/login or POST /auth/register and stores the JWT token.
  *
  * Props:
- *   onLoginSuccess — called after a successful login or registration
+ *   onLoginSuccess - called after a successful login or registration
  */
 
 import { useState } from 'react';
@@ -17,6 +17,7 @@ const Login = ({ onLoginSuccess }) => {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
+    const [subjectCodesInput, setSubjectCodesInput] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
@@ -34,16 +35,16 @@ const Login = ({ onLoginSuccess }) => {
         setError('');
 
         if (mode === 'register' && password !== confirmPassword) {
-            setError('Las contraseñas no coinciden');
+            setError('Las contrasenas no coinciden');
             return;
         }
 
         setLoading(true);
         try {
             if (mode === 'login') {
-                await login(username.trim(), password);
+                await login(username.trim(), password, subjectCodesInput.trim());
             } else {
-                await register(username.trim(), password);
+                await register(username.trim(), password, subjectCodesInput.trim());
             }
             onLoginSuccess();
         } catch (err) {
@@ -54,7 +55,11 @@ const Login = ({ onLoginSuccess }) => {
     };
 
     const isLogin = mode === 'login';
-    const canSubmit = username.trim() && password && (isLogin || confirmPassword) && !loading;
+    const canSubmit = username.trim()
+        && password
+        && subjectCodesInput.trim()
+        && (isLogin || confirmPassword)
+        && !loading;
 
     return (
         <div className="login-overlay">
@@ -62,7 +67,7 @@ const Login = ({ onLoginSuccess }) => {
                 <div className="login-avatar">🤖</div>
                 <h1 className="login-title">SHARA</h1>
                 <p className="login-subtitle">
-                    {isLogin ? 'Inicia sesión para continuar' : 'Crea tu cuenta'}
+                    {isLogin ? 'Inicia sesion para continuar' : 'Crea tu cuenta'}
                 </p>
 
                 <div className="login-tabs">
@@ -98,27 +103,42 @@ const Login = ({ onLoginSuccess }) => {
                     </div>
 
                     <div className="login-field">
-                        <label htmlFor="password">Contraseña</label>
+                        <label htmlFor="password">Contrasena</label>
                         <input
                             id="password"
                             type="password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
-                            placeholder="••••••••"
+                            placeholder="********"
                             autoComplete={isLogin ? 'current-password' : 'new-password'}
+                            disabled={loading}
+                        />
+                    </div>
+
+                    <div className="login-field">
+                        <label htmlFor="subjectCode">
+                            {isLogin ? 'Codigo de asignatura' : 'Codigo/s de asignatura'}
+                        </label>
+                        <input
+                            id="subjectCode"
+                            type="text"
+                            value={subjectCodesInput}
+                            onChange={(e) => setSubjectCodesInput(e.target.value)}
+                            placeholder={isLogin ? 'mat101' : 'mat101, mat102'}
+                            autoComplete="off"
                             disabled={loading}
                         />
                     </div>
 
                     {!isLogin && (
                         <div className="login-field">
-                            <label htmlFor="confirmPassword">Confirmar contraseña</label>
+                            <label htmlFor="confirmPassword">Confirmar contrasena</label>
                             <input
                                 id="confirmPassword"
                                 type="password"
                                 value={confirmPassword}
                                 onChange={(e) => setConfirmPassword(e.target.value)}
-                                placeholder="••••••••"
+                                placeholder="********"
                                 autoComplete="new-password"
                                 disabled={loading}
                             />

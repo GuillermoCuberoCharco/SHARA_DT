@@ -19,6 +19,8 @@ logger = logging.getLogger('Server')
 class Request:
     text: str = ''
     user_id: str = ''
+    user_role: str = 'student'
+    subject_code: str = ''
     audio: bytes = b''
 
 
@@ -50,7 +52,12 @@ def query(request: Request):
     logger.info("Processing query for '%s': '%s'", request.user_id, request.text)
     start = time.time()
 
-    text_response, robot_mood = generate_response(request.text, request.user_id)
+    text_response, robot_mood = generate_response(
+        request.text,
+        request.user_id,
+        request.user_role,
+        request.subject_code,
+    )
 
     logger.info("LLM response in %.2fs: '%s'", time.time() - start, text_response)
 

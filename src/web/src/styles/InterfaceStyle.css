@@ -194,6 +194,7 @@ html {
   white-space: nowrap;
 }
 
+.subject-manager-toggle,
 .chat-logout-btn,
 .chat-close-btn {
   background: none;
@@ -218,6 +219,16 @@ html {
   line-height: 1;
 }
 
+.subject-manager-toggle:hover {
+  color: #c4b5fd;
+  background: rgba(99, 102, 241, 0.14);
+}
+
+.subject-manager-toggle.active {
+  color: #ffffff;
+  background: rgba(99, 102, 241, 0.22);
+}
+
 .chat-logout-btn:hover {
   color: #f87171;
   background: rgba(248, 113, 113, 0.1);
@@ -226,6 +237,131 @@ html {
 .chat-close-btn:hover {
   color: #e5e7eb;
   background: rgba(255, 255, 255, 0.08);
+}
+
+.subject-manager-panel {
+  padding: 14px 16px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background:
+    radial-gradient(circle at top left, rgba(99, 102, 241, 0.18), transparent 42%),
+    rgba(10, 10, 16, 0.72);
+}
+
+.subject-manager-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.subject-manager-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #cbd5e1;
+}
+
+.subject-manager-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.subject-manager-note span {
+  color: #f8fafc;
+}
+
+.subject-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.subject-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.subject-chip.active {
+  color: #ffffff;
+  border-color: rgba(99, 102, 241, 0.45);
+  background: rgba(99, 102, 241, 0.24);
+}
+
+.subject-manager-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.subject-manager-form input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 12px;
+  color: #f3f4f6;
+  padding: 10px 14px;
+  font-size: 14px;
+  line-height: 1.4;
+  outline: none;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.subject-manager-form input::placeholder {
+  color: #4b5563;
+}
+
+.subject-manager-form input:focus {
+  border-color: rgba(99, 102, 241, 0.5);
+}
+
+.subject-manager-form button {
+  border: none;
+  border-radius: 12px;
+  padding: 0 14px;
+  background: #6366f1;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+}
+
+.subject-manager-form button:hover {
+  background: #4f46e5;
+}
+
+.subject-manager-form button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.subject-manager-help {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #93c5fd;
+}
+
+.subject-manager-help.success {
+  color: #86efac;
+}
+
+.subject-manager-help.error {
+  color: #fca5a5;
+}
+
+.subject-manager-help.info {
+  color: #93c5fd;
 }
 
 .messages-container {
@@ -354,6 +490,7 @@ html {
 .chat-header-avatar svg,
 .message-avatar svg,
 .chat-empty-icon svg,
+.subject-manager-toggle svg,
 .chat-logout-btn svg,
 .chat-close-btn svg {
   display: block;
@@ -494,5 +631,15 @@ html {
 
   50% {
     opacity: 0.45;
+  }
+}
+
+@media (max-width: 640px) {
+  .subject-manager-form {
+    flex-direction: column;
+  }
+
+  .subject-manager-form button {
+    height: 42px;
   }
 }

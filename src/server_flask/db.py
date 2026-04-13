@@ -59,8 +59,50 @@ def ensure_schema():
                     create table if not exists users (
                         username text primary key,
                         password_hash text not null,
+                        role text not null default 'student',
                         created_at timestamptz not null default now()
                     )
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table users
+                    add column if not exists role text
+                    """
+                )
+                cur.execute(
+                    """
+                    update users
+                    set role = 'student'
+                    where role is null or role not in ('student', 'teacher')
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table users
+                    alter column role set default 'student'
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table users
+                    alter column role set not null
+                    """
+                )
+                cur.execute(
+                    """
+                    do $$
+                    begin
+                        if not exists (
+                            select 1
+                            from pg_constraint
+                            where conname = 'users_role_check'
+                        ) then
+                            alter table users
+                            add constraint users_role_check
+                            check (role in ('student', 'teacher'));
+                        end if;
+                    end $$;
                     """
                 )
                 cur.execute(
@@ -68,6 +110,7 @@ def ensure_schema():
                     create table if not exists chat_messages (
                         id bigserial primary key,
                         user_id text not null references users(username) on delete cascade,
+                        subject_code text,
                         role text not null check (role in ('user', 'assistant')),
                         content text not null,
                         created_at timestamptz not null default now()
@@ -76,8 +119,60 @@ def ensure_schema():
                 )
                 cur.execute(
                     """
-                    create index if not exists chat_messages_user_created_idx
-                    on chat_messages(user_id, created_at, id)
+                    create table if not exists subjects (
+                        code text primary key,
+                        created_at timestamptz not null default now()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    create table if not exists user_subjects (
+                        user_id text not null references users(username) on delete cascade,
+                        subject_code text not null references subjects(code) on delete cascade,
+                        created_at timestamptz not null default now(),
+                        primary key (user_id, subject_code)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table chat_messages
+                    add column if not exists subject_code text
+                    """
+                )
+                cur.execute(
+                    """
+                    do $$
+                    begin
+                        if not exists (
+                            select 1
+                            from pg_constraint
+                            where conname = 'chat_messages_subject_code_fkey'
+                        ) then
+                            alter table chat_messages
+                            add constraint chat_messages_subject_code_fkey
+                            foreign key (subject_code) references subjects(code) on delete cascade;
+                        end if;
+                    end $$;
+                    """
+                )
+                cur.execute(
+                    """
+                    create index if not exists chat_messages_user_subject_created_idx
+                    on chat_messages(user_id, subject_code, created_at, id)
+                    """
+                )
+                cur.execute(
+                    """
+                    create index if not exists chat_messages_subject_user_created_idx
+                    on chat_messages(subject_code, user_id, created_at, id)
+                    """
+                )
+                cur.execute(
+                    """
+                    create index if not exists user_subjects_subject_user_idx
+                    on user_subjects(subject_code, user_id)
                     """
                 )
 

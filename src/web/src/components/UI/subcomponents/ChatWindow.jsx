@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const RobotIcon = () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -29,6 +29,15 @@ const CloseIcon = () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <line x1="18" y1="6" x2="6" y2="18" />
         <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+);
+
+const SubjectIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path d="M6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5v13" />
+        <path d="M12 8v6" />
+        <path d="M9 11h6" />
     </svg>
 );
 
@@ -99,6 +108,12 @@ const ChatWindow = ({
     isTtsEnabled,
     onToggleTts,
     conversationState,
+    subjectCode,
+    subjectCodes,
+    onAddSubjects,
+    isAddingSubjects,
+    subjectFeedback,
+    subjectFeedbackTone,
 }) => {
     const getStatusInfo = () => {
         if (connectionError) return { dot: 'error', label: 'Sin conexion' };
@@ -111,6 +126,8 @@ const ChatWindow = ({
 
     const { dot, label } = getStatusInfo();
     const textareaRef = useRef(null);
+    const [isSubjectPanelOpen, setIsSubjectPanelOpen] = useState(false);
+    const [subjectInput, setSubjectInput] = useState('');
 
     useEffect(() => {
         const element = textareaRef.current;
@@ -121,6 +138,21 @@ const ChatWindow = ({
         element.style.height = 'auto';
         element.style.height = `${element.scrollHeight}px`;
     }, [newMessage]);
+
+    const handleSubjectSubmit = async (event) => {
+        event.preventDefault();
+
+        if (!onAddSubjects || !subjectInput.trim() || isAddingSubjects) {
+            return;
+        }
+
+        try {
+            await onAddSubjects(subjectInput);
+            setSubjectInput('');
+        } catch {
+            // The parent already exposes the error message in the panel.
+        }
+    };
 
     return (
         <div className={`chat-panel ${isVisible ? '' : 'hidden'}`}>
@@ -151,6 +183,16 @@ const ChatWindow = ({
                             {username}
                         </span>
                     )}
+                    {onAddSubjects && (
+                        <button
+                            className={`subject-manager-toggle ${isSubjectPanelOpen ? 'active' : ''}`}
+                            onClick={() => setIsSubjectPanelOpen((prev) => !prev)}
+                            title="Gestionar asignaturas"
+                            type="button"
+                        >
+                            <SubjectIcon />
+                        </button>
+                    )}
                     {onLogout && (
                         <button className="chat-logout-btn" onClick={onLogout} title="Cerrar sesion" type="button">
                             <LogoutIcon />
@@ -161,6 +203,50 @@ const ChatWindow = ({
                     </button>
                 </div>
             </div>
+
+            {onAddSubjects && isSubjectPanelOpen && (
+                <div className="subject-manager-panel">
+                    <div className="subject-manager-header">
+                        <div>
+                            <p className="subject-manager-title">Asignaturas vinculadas</p>
+                            <p className="subject-manager-note">
+                                Activa ahora: <span>{subjectCode || 'sin asignatura'}</span>
+                            </p>
+                        </div>
+                        <div className="subject-chip-list">
+                            {subjectCodes.map((code) => (
+                                <span
+                                    key={code}
+                                    className={`subject-chip ${code === subjectCode ? 'active' : ''}`}
+                                >
+                                    {code}
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+
+                    <form className="subject-manager-form" onSubmit={handleSubjectSubmit}>
+                        <input
+                            type="text"
+                            value={subjectInput}
+                            onChange={(event) => setSubjectInput(event.target.value)}
+                            placeholder="mat101, mat102"
+                            autoComplete="off"
+                            disabled={isAddingSubjects}
+                        />
+                        <button
+                            type="submit"
+                            disabled={!subjectInput.trim() || isAddingSubjects}
+                        >
+                            {isAddingSubjects ? 'Anadiendo...' : 'Anadir'}
+                        </button>
+                    </form>
+
+                    <p className={`subject-manager-help ${subjectFeedbackTone}`}>
+                        {subjectFeedback || 'Puedes anadir una o varias asignaturas separadas por comas. El cambio no sustituye la asignatura activa.'}
+                    </p>
+                </div>
+            )}
 
             <div className="messages-container" ref={messagesContainerRef}>
                 {messages.length === 0 && (
@@ -263,6 +349,12 @@ ChatWindow.propTypes = {
     isTtsEnabled: PropTypes.bool,
     onToggleTts: PropTypes.func.isRequired,
     conversationState: PropTypes.string,
+    subjectCode: PropTypes.string,
+    subjectCodes: PropTypes.arrayOf(PropTypes.string),
+    onAddSubjects: PropTypes.func,
+    isAddingSubjects: PropTypes.bool,
+    subjectFeedback: PropTypes.string,
+    subjectFeedbackTone: PropTypes.string,
 };
 
 ChatWindow.defaultProps = {
@@ -278,6 +370,12 @@ ChatWindow.defaultProps = {
     isSpeaking: false,
     isTtsEnabled: true,
     conversationState: 'idle',
+    subjectCode: '',
+    subjectCodes: [],
+    onAddSubjects: null,
+    isAddingSubjects: false,
+    subjectFeedback: '',
+    subjectFeedbackTone: 'info',
 };
 
 export default ChatWindow;

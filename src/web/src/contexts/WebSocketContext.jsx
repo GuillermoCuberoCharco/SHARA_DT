@@ -62,10 +62,16 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
             }, 1000);
         };
 
-        const handleRegistrationSuccess = () => {
+        const handleRegistrationSuccess = (payload) => {
             console.log('[WebSocket] Registered successfully');
+            if (payload?.role) {
+                localStorage.setItem('auth_user_role', payload.role);
+            }
+            if (payload?.subject_code) {
+                localStorage.setItem('auth_subject_code', payload.subject_code);
+            }
             setIsRegistered(true);
-            handlersRef.current?.handleRegistrationSuccess?.();
+            handlersRef.current?.handleRegistrationSuccess?.(payload);
         };
 
         const handleConnectError = (error) => {

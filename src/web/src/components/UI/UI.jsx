@@ -125,7 +125,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
 
     const handleSendMessage = useCallback((text = null) => {
         const messageText = (text ?? newMessage).trim();
-        if (!messageText || !isConnected) {
+        if (!messageText || !isConnected || !isRegistered || isSwitchingSubject) {
             return;
         }
 
@@ -148,7 +148,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
                 sender: 'robot',
             });
         }
-    }, [appendMessage, emit, isConnected, newMessage, scrollToBottom, stopPlayback]);
+    }, [appendMessage, emit, isConnected, isRegistered, isSwitchingSubject, newMessage, scrollToBottom, stopPlayback]);
 
     const handleStartRecording = useCallback(() => {
         stopPlayback();
@@ -223,7 +223,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
             const data = await switchSubject(normalizedSubjectCode);
             const updatedSubjectCodes = Array.isArray(data?.subject_codes) ? data.subject_codes : [];
             setSubjectCodes(updatedSubjectCodes);
-            refreshConnection();
+            await refreshConnection();
             setSubjectFeedback(`Asignatura activa cambiada a ${normalizedSubjectCode}.`);
             setSubjectFeedbackTone('success');
             return data;

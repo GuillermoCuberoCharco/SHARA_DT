@@ -22,6 +22,7 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
     const [isRegistered, setIsRegistered] = useState(false);
     const socketRef = useRef(null);
     const handlersRef = useRef(handlers);
+    const isManualRefreshRef = useRef(false);
 
     const { getToken } = useAuth();
 
@@ -43,18 +44,53 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
     const refreshConnection = useCallback(() => {
         const socket = socketRef.current;
         if (!socket) {
-            return false;
+            return Promise.reject(new Error('WebSocket no disponible'));
         }
 
-        socket.auth = { token: getToken() };
-        setIsRegistered(false);
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const timeoutId = window.setTimeout(() => {
+                cleanup();
+                reject(new Error('Tiempo de espera agotado al cambiar de asignatura'));
+            }, 10000);
 
-        if (socket.connected) {
-            socket.disconnect();
-        }
+            const cleanup = () => {
+                if (settled) {
+                    return;
+                }
 
-        socket.connect();
-        return true;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                socket.off('registration_success', handleRegistrationReady);
+                socket.off('connect_error', handleRefreshError);
+                socket.off('error', handleRefreshError);
+                isManualRefreshRef.current = false;
+            };
+
+            const handleRegistrationReady = (payload) => {
+                cleanup();
+                resolve(payload);
+            };
+
+            const handleRefreshError = (error) => {
+                cleanup();
+                reject(error instanceof Error ? error : new Error('No se pudo reconectar el chat'));
+            };
+
+            isManualRefreshRef.current = true;
+            socket.auth = { token: getToken() };
+            setIsConnected(false);
+            setIsRegistered(false);
+            socket.on('registration_success', handleRegistrationReady);
+            socket.on('connect_error', handleRefreshError);
+            socket.on('error', handleRefreshError);
+
+            if (socket.connected) {
+                socket.disconnect();
+            }
+
+            socket.connect();
+        });
     }, [getToken]);
 
     useEffect(() => {
@@ -82,6 +118,10 @@ export const WebSocketProvider = ({ children, handlers, onAuthError }) => {
             console.log('[WebSocket] Disconnected:', reason);
             setIsConnected(false);
             setIsRegistered(false);
+
+            if (isManualRefreshRef.current) {
+                return;
+            }
 
             setTimeout(() => {
                 if (socketRef.current && !socket.connected) {

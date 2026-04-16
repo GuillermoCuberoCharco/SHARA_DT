@@ -2,58 +2,62 @@
 auth.py
 
 User authentication utilities for SHARA.
-User credentials are stored in files/users_db.json.
+Backed by PostgreSQL (Neon) via psycopg2.
 Passwords are hashed with werkzeug.security (Flask dependency — no extra install needed).
 """
 
-import json
 import logging
-from datetime import datetime
-from pathlib import Path
 
+import psycopg2
 from werkzeug.security import check_password_hash, generate_password_hash
+
+from db import get_connection
 
 logger = logging.getLogger('Auth')
 
-_USERS_DB = Path(__file__).parent / 'files' / 'users_db.json'
-
-
-def _load_users() -> dict:
-    try:
-        return json.loads(_USERS_DB.read_text(encoding='utf-8'))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def _save_users(users: dict) -> None:
-    _USERS_DB.write_text(
-        json.dumps(users, ensure_ascii=False, indent=2),
-        encoding='utf-8',
-    )
-
 
 def user_exists(login_name: str) -> bool:
-    return login_name.strip() in _load_users()
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute('SELECT 1 FROM users WHERE login_name = %s', (login_name.strip(),))
+            return cur.fetchone() is not None
+    finally:
+        if conn:
+            conn.close()
 
 
 def register_user(login_name: str, password: str) -> bool:
     """
     Register a new user.
-    Returns True on success, False if the login_name is already taken.
+    Returns True on success, False if login_name is already taken.
     """
     login_name = login_name.strip()
-    users = _load_users()
-    if login_name in users:
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                'INSERT INTO users (login_name, password_hash) VALUES (%s, %s)',
+                (login_name, generate_password_hash(password)),
+            )
+        conn.commit()
+        logger.info('New user registered: %s', login_name)
+        return True
+    except psycopg2.errors.UniqueViolation:
+        if conn:
+            conn.rollback()
         logger.info('Registration rejected — user already exists: %s', login_name)
         return False
-
-    users[login_name] = {
-        'password_hash': generate_password_hash(password),
-        'created_at': datetime.now().isoformat(),
-    }
-    _save_users(users)
-    logger.info('New user registered: %s', login_name)
-    return True
+    except Exception as exc:
+        if conn:
+            conn.rollback()
+        logger.error('Registration error for %s: %s', login_name, exc)
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 
 def verify_user(login_name: str, password: str) -> bool:
@@ -62,13 +66,24 @@ def verify_user(login_name: str, password: str) -> bool:
     Returns True if login_name exists and password matches.
     """
     login_name = login_name.strip()
-    users = _load_users()
-    user = users.get(login_name)
-    if not user:
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT password_hash FROM users WHERE login_name = %s',
+                (login_name,),
+            )
+            row = cur.fetchone()
+    finally:
+        if conn:
+            conn.close()
+
+    if not row:
         logger.info('Login failed — unknown user: %s', login_name)
         return False
 
-    ok = check_password_hash(user['password_hash'], password)
+    ok = check_password_hash(row[0], password)
     if not ok:
         logger.info('Login failed — wrong password for: %s', login_name)
     return ok

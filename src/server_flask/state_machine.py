@@ -76,7 +76,7 @@ def _persist_current_conversation(username=None):
         return
 
     try:
-        _server.dump_conversation_db(key)
+        _server.dump_conversation_db(key, session_id=robot_context.face_session_id)
     except Exception as e:
         logger.warning(f'Could not persist conversation history: {e}')
 

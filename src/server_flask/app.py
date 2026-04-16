@@ -40,11 +40,14 @@ socketio = SocketIO(
     ping_interval=25,
 )
 
+from db import init_schema as _init_db_schema
 from eyes.service import Eyes
 from proactive_service import ProactiveService
 from services.cloud import server as cloud_server
 from sockets.message_handler import MessageNamespace
 import state_machine
+
+_init_db_schema()
 
 eyes = Eyes(socketio_instance=socketio)
 proactive = ProactiveService(callback=state_machine.proactive_event_handler)

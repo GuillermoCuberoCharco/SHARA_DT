@@ -10,3 +10,4 @@ google-cloud-texttospeech==2.24.0
 python-socketio==5.12.1
 numpy==2.2.6
 Pillow==11.2.1
+psycopg2-binary==2.9.10

@@ -182,9 +182,9 @@ def load_conversation_db(username):
 
     logger.info(f'Conversation history of {username} loaded')
 
-def dump_conversation_db(username):
-    # Dump conversation history for the user, update database
-    save_conversation_history(username)
-    clear_conversation_history() # Clear conversation history in-RAM
+def dump_conversation_db(username, session_id=None):
+    # Persist conversation history for the user, then clear in-RAM state
+    save_conversation_history(username, session_id=session_id)
+    clear_conversation_history()
 
-    logger.info(f'Conversation history of {username} updated to file database')
+    logger.info(f'Conversation history of {username} persisted to database (session={session_id})')

@@ -7,14 +7,18 @@ and the structured response format defined in the prompt.
 Same code as the original OpenAI API wrapper.
 """
 import json
+import logging
 from datetime import datetime
-from openai import OpenAI  
+from openai import OpenAI
 from pydantic import BaseModel, Field
 
-client = OpenAI()
+from db import get_connection
 
-prev_conversation_history = [] # Conversation history from previous sessions (from file)
-current_conversation_history = [] # Conversation history from current session (new current interaction)
+client = OpenAI()
+logger = logging.getLogger('OpenAI')
+
+prev_conversation_history = []  # Conversation history from previous sessions (from DB)
+current_conversation_history = []  # Conversation history from current session (in-RAM)
 
 # Load prompt from file
 def load_prompt(filename="files/shara_prompt.txt"):
@@ -26,56 +30,85 @@ def load_tools(filename="files/tools_config.json"):
     with open(filename, "r", encoding="utf-8") as file:
         return json.load(file)
 
-# Load and save conversation history
-def load_conversation_history(username, filename="files/conversations_db.json"):
+
+# ── Conversation history — backed by PostgreSQL ───────────────────────────────
+
+def load_conversation_history(username):
+    """
+    Load all past messages for *username* from the DB into prev_conversation_history.
+    Messages are returned in chronological order (created_at ASC, id ASC).
+    """
     global prev_conversation_history
 
-    if username:
-        try:
-            with open(filename, "r", encoding="utf-8") as file:
-                conversation_dict = json.load(file)
-                prev_conversation_history = conversation_dict.get(username, [])
-        except (FileNotFoundError, json.JSONDecodeError):
-            prev_conversation_history = []
-    
-    else:
+    if not username:
         prev_conversation_history = []
+        return
 
-def save_conversation_history(username, filename="files/conversations_db.json"):
-    if current_conversation_history: # Save only if there is conversation history to save
-        if username: # Save conversation history only if username is provided
-            conversation_dict = {}
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT role, content
+                FROM   conversation_messages
+                WHERE  login_name = %s
+                ORDER  BY created_at ASC, id ASC
+                """,
+                (username,),
+            )
+            rows = cur.fetchall()
+        prev_conversation_history = [{'role': r[0], 'content': r[1]} for r in rows]
+        logger.info('Loaded %d messages for user %s', len(prev_conversation_history), username)
+    except Exception as exc:
+        logger.error('Failed to load conversation history for %s: %s', username, exc)
+        prev_conversation_history = []
+    finally:
+        if conn:
+            conn.close()
 
-            try:
-                with open(filename, "r", encoding="utf-8") as file:
-                    conversation_dict = json.load(file)
-            except (FileNotFoundError, json.JSONDecodeError):
-                conversation_dict = {}
 
-            # Update conversation history
-            conversation_dict.setdefault(username, []).extend(current_conversation_history)
+def save_conversation_history(username, session_id=None):
+    """
+    Persist current_conversation_history to the DB under *username*.
+    Each message becomes an individual row with an optional session_id
+    so sessions can be reconstructed for study analysis.
+    Does nothing if username is None or there are no new messages.
+    """
+    if not username or not current_conversation_history:
+        return
 
-            # Save conversation history to file
-            with open(filename, "w", encoding="utf-8") as file:
-                json.dump(conversation_dict, file, ensure_ascii=False, indent=4)
-        
-        else: # Save conversation history to unknown user database. -- ONLY FOR TESTING PURPOSES --
-            try:
-                with open('files/conversations_unknown_db.json', "r", encoding="utf-8") as file:
-                    try:
-                        conversation = json.load(file)
-                    except json.JSONDecodeError:
-                        conversation = [] 
-            except FileNotFoundError:
-                conversation = [] 
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO conversation_messages (login_name, role, content, session_id)
+                VALUES (%s, %s, %s, %s)
+                """,
+                [
+                    (username, msg['role'], msg['content'], session_id)
+                    for msg in current_conversation_history
+                ],
+            )
+        conn.commit()
+        logger.info(
+            'Saved %d messages for user %s (session %s)',
+            len(current_conversation_history), username, session_id,
+        )
+    except Exception as exc:
+        if conn:
+            conn.rollback()
+        logger.error('Failed to save conversation history for %s: %s', username, exc)
+    finally:
+        if conn:
+            conn.close()
 
-            conversation.extend(current_conversation_history)
-
-            with open('files/conversations_unknown_db.json', "w", encoding="utf-8") as file:
-                json.dump(conversation, file, ensure_ascii=False, indent=4)
 
 def get_full_conversation_history():
     return prev_conversation_history + current_conversation_history
+
 
 # Clear conversation history in-RAM (temporal context conversation)
 def clear_conversation_history():

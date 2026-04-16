@@ -32,6 +32,7 @@ class RobotContext:
         self._lock = threading.Lock()
         self._state = {
             'state': 'idle',
+            'login_username': None,
             'username': None,
             'face_session_id': None,
             'needs_identification': False,
@@ -66,6 +67,15 @@ class RobotContext:
         if value not in self.VALID_STATES:
             raise ValueError(f"Invalid state: {value}. Valid: {self.VALID_STATES}")
         self.set('state', value)
+
+    @property
+    def login_username(self):
+        """Stable key used to load/save conversation history. Set once at login."""
+        return self.get('login_username')
+
+    @login_username.setter
+    def login_username(self, value):
+        self.set('login_username', value)
 
     @property
     def username(self):

@@ -352,6 +352,17 @@ div::-webkit-scrollbar-thumb {
   box-shadow: 0 14px 28px rgba(15, 20, 36, 0.22);
 }
 
+.session-login-error {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(220, 53, 69, 0.1);
+  border: 1px solid rgba(220, 53, 69, 0.3);
+  color: #c0392b;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
 @media (max-width: 640px) {
   .session-login-card {
     padding: 24px;

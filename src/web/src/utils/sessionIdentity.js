@@ -15,6 +15,7 @@ export const buildSessionIdentity = ({
     sessionId = createSessionId(),
     username,
     userName,
+    loginName,
     needsIdentification,
     isNewUser,
     userStatus,
@@ -24,6 +25,7 @@ export const buildSessionIdentity = ({
 
     return {
         sessionId,
+        loginName: loginName || null,
         userName: normalizedUserName,
         isNewUser: typeof isNewUser === 'boolean' ? isNewUser : !isKnownUser,
         needsIdentification: typeof needsIdentification === 'boolean' ? needsIdentification : !isKnownUser,

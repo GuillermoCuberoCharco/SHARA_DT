@@ -1,76 +1,199 @@
 import PropTypes from 'prop-types';
 import { useState } from 'react';
-import { buildSessionIdentity } from '../utils/sessionIdentity';
+import { SERVER_URL } from '../config';
+import { buildSessionIdentity, createSessionId } from '../utils/sessionIdentity';
+
+/**
+ * SessionLogin
+ *
+ * Initial login screen shown before any interaction with Shara.
+ *
+ * Modes:
+ *   login    — existing user enters login name + password
+ *   register — new user creates login name + password
+ *
+ * The loginName is the stable key used for conversation history.
+ * It does NOT need to match the name Shara uses — the user can tell Shara
+ * their preferred name during the session ("llámame María").
+ */
 
 const SessionLogin = ({ onLogin }) => {
-    const [knownUsername, setKnownUsername] = useState('');
+    const [mode, setMode] = useState('login');
+    const [loginName, setLoginName] = useState('');
+    const [password, setPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [error, setError] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
 
-    const handleKnownUserSubmit = (event) => {
+    const resetForm = (nextMode) => {
+        setMode(nextMode);
+        setLoginName('');
+        setPassword('');
+        setConfirmPassword('');
+        setError('');
+    };
+
+    const handleLogin = async (event) => {
         event.preventDefault();
-        const cleanUsername = knownUsername.trim();
-        if (!cleanUsername) {
+        setError('');
+        setIsLoading(true);
+
+        try {
+            const res = await fetch(`${SERVER_URL}/api/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ loginName: loginName.trim(), password }),
+            });
+            const data = await res.json();
+
+            if (!res.ok) {
+                setError(data.error || 'Error al iniciar sesión');
+                return;
+            }
+
+            onLogin(buildSessionIdentity({
+                sessionId: createSessionId(),
+                loginName: data.loginName,
+                userName: data.loginName,
+                isNewUser: false,
+                needsIdentification: false,
+                userStatus: 'existing',
+            }));
+        } catch {
+            setError('No se pudo conectar con el servidor');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleRegister = async (event) => {
+        event.preventDefault();
+        setError('');
+
+        if (password !== confirmPassword) {
+            setError('Las contraseñas no coinciden');
             return;
         }
 
-        onLogin(buildSessionIdentity({
-            username: cleanUsername,
-            isNewUser: false,
-            needsIdentification: false,
-            userStatus: 'existing',
-        }));
-    };
+        setIsLoading(true);
 
-    const handleUnknownUserStart = () => {
-        onLogin(buildSessionIdentity({
-            username: 'unknown',
-            isNewUser: true,
-            needsIdentification: true,
-            userStatus: 'new_unknown',
-        }));
+        try {
+            const res = await fetch(`${SERVER_URL}/api/auth/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ loginName: loginName.trim(), password }),
+            });
+            const data = await res.json();
+
+            if (!res.ok) {
+                setError(data.error || 'Error al registrarse');
+                return;
+            }
+
+            onLogin(buildSessionIdentity({
+                sessionId: createSessionId(),
+                loginName: data.loginName,
+                userName: 'unknown',
+                isNewUser: true,
+                needsIdentification: true,
+                userStatus: 'new_unknown',
+            }));
+        } catch {
+            setError('No se pudo conectar con el servidor');
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     return (
         <div className="session-login-shell">
             <div className="session-login-card">
                 <p className="session-login-kicker">SHARA</p>
-                <h1 className="session-login-title">Inicia la sesión del estudio</h1>
+                <h1 className="session-login-title">
+                    {mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
+                </h1>
                 <p className="session-login-copy">
-                    Usa un nombre conocido para recuperar su historial o entra como usuario nuevo
-                    para que Shara le pregunte quién es al comenzar.
+                    {mode === 'login'
+                        ? 'Entra con tu nombre de usuario y contraseña para retomar la conversación donde la dejaste.'
+                        : 'Crea una cuenta nueva. Shara te preguntará tu nombre al comenzar.'}
                 </p>
 
-                <form className="session-login-form" onSubmit={handleKnownUserSubmit}>
-                    <label className="session-login-label" htmlFor="known-username">
-                        Usuario conocido
+                <form
+                    className="session-login-form"
+                    onSubmit={mode === 'login' ? handleLogin : handleRegister}
+                >
+                    <label className="session-login-label" htmlFor="login-name">
+                        Nombre de usuario
                     </label>
                     <input
-                        id="known-username"
+                        id="login-name"
                         className="session-login-input"
                         type="text"
-                        value={knownUsername}
-                        onChange={(event) => setKnownUsername(event.target.value)}
+                        value={loginName}
+                        onChange={(e) => setLoginName(e.target.value)}
                         placeholder="Ej. Carmen"
-                        autoComplete="off"
+                        autoComplete="username"
+                        disabled={isLoading}
                     />
+
+                    <label className="session-login-label" htmlFor="login-password" style={{ marginTop: '16px' }}>
+                        Contraseña
+                    </label>
+                    <input
+                        id="login-password"
+                        className="session-login-input"
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="••••••••"
+                        autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                        disabled={isLoading}
+                    />
+
+                    {mode === 'register' && (
+                        <>
+                            <label className="session-login-label" htmlFor="login-confirm" style={{ marginTop: '16px' }}>
+                                Confirmar contraseña
+                            </label>
+                            <input
+                                id="login-confirm"
+                                className="session-login-input"
+                                type="password"
+                                value={confirmPassword}
+                                onChange={(e) => setConfirmPassword(e.target.value)}
+                                placeholder="••••••••"
+                                autoComplete="new-password"
+                                disabled={isLoading}
+                            />
+                        </>
+                    )}
+
+                    {error && (
+                        <p className="session-login-error">{error}</p>
+                    )}
+
                     <button
                         className="session-login-button session-login-button-primary"
                         type="submit"
-                        disabled={!knownUsername.trim()}
+                        disabled={isLoading || !loginName.trim() || !password}
                     >
-                        Entrar con este usuario
+                        {isLoading
+                            ? (mode === 'login' ? 'Entrando...' : 'Registrando...')
+                            : (mode === 'login' ? 'Entrar' : 'Crear cuenta y entrar')}
                     </button>
                 </form>
 
                 <div className="session-login-divider">
-                    <span>o</span>
+                    <span>{mode === 'login' ? '¿Primera vez?' : '¿Ya tienes cuenta?'}</span>
                 </div>
 
                 <button
                     className="session-login-button session-login-button-secondary"
                     type="button"
-                    onClick={handleUnknownUserStart}
+                    onClick={() => resetForm(mode === 'login' ? 'register' : 'login')}
+                    disabled={isLoading}
                 >
-                    Entrar como usuario nuevo
+                    {mode === 'login' ? 'Crear cuenta nueva' : 'Volver al inicio de sesión'}
                 </button>
             </div>
         </div>

@@ -14,6 +14,7 @@ import os
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
+from auth import register_user, verify_user
 from flask_socketio import SocketIO
 
 load_dotenv()
@@ -57,6 +58,41 @@ state_machine.init(
 
 socketio.on_namespace(MessageNamespace('/message'))
 logger.info('Namespace registered: /message')
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    data = request.get_json(silent=True) or {}
+    login_name = (data.get('loginName') or '').strip()
+    password = data.get('password', '')
+
+    if not login_name or not password:
+        return jsonify({'error': 'Nombre de usuario y contraseña requeridos'}), 400
+
+    if not verify_user(login_name, password):
+        return jsonify({'error': 'Usuario o contraseña incorrectos'}), 401
+
+    logger.info('Login successful: %s', login_name)
+    return jsonify({'loginName': login_name, 'isNewUser': False})
+
+
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register():
+    data = request.get_json(silent=True) or {}
+    login_name = (data.get('loginName') or '').strip()
+    password = data.get('password', '')
+
+    if not login_name or not password:
+        return jsonify({'error': 'Nombre de usuario y contraseña requeridos'}), 400
+
+    if len(password) < 4:
+        return jsonify({'error': 'La contraseña debe tener al menos 4 caracteres'}), 400
+
+    if not register_user(login_name, password):
+        return jsonify({'error': 'El usuario ya existe'}), 409
+
+    logger.info('Registration successful: %s', login_name)
+    return jsonify({'loginName': login_name, 'isNewUser': True}), 201
 
 
 @app.route('/health')

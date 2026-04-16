@@ -2,10 +2,10 @@
  * UI
  * 
  * Overlay component that handles:
- * - Chat window (messages, input)
  * - Audio recording and synthesis
  * - Face detection (wakeface)
  * - Status bar
+ * - LED color legend
  * 
  * When a robot message arrives with an emotional state,
  * onRobotStateChange is called so RobotView can update the eye animation.
@@ -16,28 +16,56 @@
  */
 
 import PropTypes from 'prop-types';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ANIMATION_MAPPINGS } from "../../config";
 import { useWebSocketContext } from '../../contexts/WebSocketContext';
 import '../../styles/InterfaceStyle.css';
 import FaceDetection from '../FaceDetection';
 import useAudioRecorder from './hooks/useAudioRecorder';
 import AudioControls from './subcomponents/AudioControls';
-import ChatWindow from './subcomponents/ChatWindow';
 import StatusBar from './utils/StatusBar';
+
+const LED_LEGEND_ITEMS = [
+    {
+        id: 'presence',
+        chipClass: 'led-legend-chip-presence',
+        title: 'Morado fijo',
+        description: 'Presencia detectada. Shara esta atenta.',
+    },
+    {
+        id: 'listening',
+        chipClass: 'led-legend-chip-listening',
+        title: 'Azul girando',
+        description: 'Shara esta escuchando.',
+    },
+    {
+        id: 'recording',
+        chipClass: 'led-legend-chip-recording',
+        title: 'Blanco girando',
+        description: 'Audio en grabacion.',
+    },
+    {
+        id: 'speaking',
+        chipClass: 'led-legend-chip-speaking',
+        title: 'Azul respirando',
+        description: 'Shara esta hablando.',
+    },
+    {
+        id: 'off',
+        chipClass: 'led-legend-chip-off',
+        title: 'Apagado tenue',
+        description: 'Sin interaccion activa o procesando.',
+    },
+];
 
 const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdentityChange }) => {
     // Main states
-    const [messages, setMessages] = useState([]);
-    const [newMessage, setNewMessage] = useState('');
-    const [isChatVisible, setIsChatVisible] = useState(true);
     const [connectionError, setConnectionError] = useState(false);
     const [isWaitingResponse, setIsWaitingResponse] = useState(false);
     const [faceDetected, setFaceDetected] = useState(false);
 
     // Context and references
     const { isConnected, isRegistered, emit, socket } = useWebSocketContext();
-    const messagesContainerRef = useRef(null);
 
     // Audio hooks
     const {
@@ -71,8 +99,7 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
         }
 
         if (message.text?.trim()) {
-            console.log("Received robot message:", message.text);
-            setMessages((prev) => [...prev, { text: message.text, sender: 'robot' }]);
+            console.log('[SHARA][robot]', message.text);
             await handleSynthesize(message.text, message.audio || null);
         }
         emit('tts_complete', {});
@@ -83,18 +110,22 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
         if (message.state) {
             notifyRobotState(message.state);
         }
-        setMessages((prev) => [...prev, { text: message.text, sender: 'wizard' }]);
+
+        if (message.text?.trim()) {
+            console.log('[SHARA][wizard]', message.text);
+        }
+
         await handleSynthesize(message.text);
         emit('tts_complete', {});
         setIsWaitingResponse(false);
     }, [notifyRobotState, handleSynthesize, emit]);
 
-    const handleClientMessage = (message) => {
+    const handleClientMessage = useCallback((message) => {
         if (message.text?.trim()) {
-            setMessages((prev) => [...prev, { text: message.text, sender: 'client' }]);
+            console.log('[SHARA][client]', message.text);
             setIsWaitingResponse(true);
         }
-    };
+    }, []);
 
     const handleFaceDetected = () => {
         setFaceDetected(true);
@@ -109,44 +140,6 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
             stopRecording();
         }
     };
-
-    const handleSendMessage = (text = null) => {
-        const messageText = text || newMessage.trim();
-
-        if (messageText && isConnected) {
-            const messageObject = {
-                type: "client_message",
-                text: messageText,
-                proactive_question: "Ninguna",
-                username: sessionIdentity?.userName || "unknown"
-            };
-
-            const success = emit('client_message', messageObject);
-
-            if (success) {
-                setIsWaitingResponse(success);
-                setMessages((prev) => [...prev, { text: messageText, sender: 'client' }]);
-                setNewMessage('');
-                setTimeout(scrollToBottom, 100);
-            } else {
-                setMessages((prev) => [...prev, {
-                    text: "No se pudo enviar el mensaje. Comprueba tu conexión.",
-                    sender: 'robot'
-                }]);
-            }
-        }
-    };
-
-    const scrollToBottom = () => {
-        if (messagesContainerRef.current) {
-            messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
-        }
-    };
-
-    // Scroll to bottom when messages update
-    useEffect(() => {
-        scrollToBottom();
-    }, [messages]);
 
     // Track connection status
     useEffect(() => {
@@ -189,7 +182,7 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
             socket.off('session_identity_updated', handleSessionIdentityUpdated);
             socket.off('audio_empty');
         };
-    }, [socket, handleRobotMessage, handleWizardMessage, onSessionIdentityChange, sessionIdentity?.sessionId]);
+    }, [socket, handleClientMessage, handleRobotMessage, handleWizardMessage, onSessionIdentityChange, sessionIdentity?.sessionId]);
 
     useEffect(() => {
         if (!isRegistered || !sessionIdentity?.sessionId) {
@@ -210,47 +203,49 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
     }, [isWaitingResponse, isRecording, isSpeaking, faceDetected, startRecording]);
 
     return (
-        <div className="chat-wrapper">
-            <button
-                className="toggle-chat-button"
-                onClick={() => setIsChatVisible(!isChatVisible)}
-            >
-                {isChatVisible ? '🗨️ Ocultar chat' : '🗨️ Mostrar chat'}
-            </button>
-            <ChatWindow
-                messages={messages}
-                newMessage={newMessage}
-                messagesContainerRef={messagesContainerRef}
-                isChatVisible={isChatVisible}
-                onMessageSend={handleSendMessage}
-                onInputChange={(e) => setNewMessage(e.target.value)}
-            >
-                <div className="chat-controls">
-                    <AudioControls
-                        isRecording={isRecording}
-                        isSpeaking={isSpeaking}
-                        isWaitingResponse={isWaitingResponse}
-                        onStartRecording={startRecording}
-                        onStopRecording={stopRecording}
-                    />
-                    <StatusBar
-                        isRegistered={isRegistered}
-                        connectionError={connectionError}
-                        isSpeaking={isSpeaking}
-                        isWaitingResponse={isWaitingResponse}
-                        audioSrc={audioSrc}
-                        faceDetected={faceDetected}
-                    />
-                    {sharedStream && (
-                        <FaceDetection
-                            onFaceDetected={handleFaceDetected}
-                            onFaceLost={handleFaceLost}
-                            stream={sharedStream}
-                            sessionIdentity={sessionIdentity}
-                        />
-                    )}
-                </div>
-            </ChatWindow>
+        <div className="ui-overlay">
+            <div className="controls-panel">
+                <AudioControls
+                    isRecording={isRecording}
+                    isSpeaking={isSpeaking}
+                    isWaitingResponse={isWaitingResponse}
+                    onStartRecording={startRecording}
+                    onStopRecording={stopRecording}
+                />
+                <StatusBar
+                    isRegistered={isRegistered}
+                    connectionError={connectionError}
+                    isRecording={isRecording}
+                    isWaitingResponse={isWaitingResponse}
+                    audioSrc={audioSrc}
+                    faceDetected={faceDetected}
+                />
+            </div>
+
+            <aside className="led-legend-panel" aria-label="Leyenda LED de SHARA">
+                <p className="led-legend-kicker">ESTADOS LED</p>
+                <h2 className="led-legend-title">Significado de colores</h2>
+                <ul className="led-legend-list">
+                    {LED_LEGEND_ITEMS.map((item) => (
+                        <li key={item.id} className="led-legend-item">
+                            <span className={`led-legend-chip ${item.chipClass}`} />
+                            <div className="led-legend-copy">
+                                <span className="led-legend-item-title">{item.title}</span>
+                                <span className="led-legend-item-description">{item.description}</span>
+                            </div>
+                        </li>
+                    ))}
+                </ul>
+            </aside>
+
+            {sharedStream && (
+                <FaceDetection
+                    onFaceDetected={handleFaceDetected}
+                    onFaceLost={handleFaceLost}
+                    stream={sharedStream}
+                    sessionIdentity={sessionIdentity}
+                />
+            )}
         </div>
     );
 };

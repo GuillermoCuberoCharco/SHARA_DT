@@ -169,8 +169,9 @@ def on_session_login(session_data: dict):
     if previous_login and previous_login != login_name:
         _persist_current_conversation()
 
-    # Load history keyed by login_name (not by Shara display name)
-    if login_name and login_name != previous_login:
+    # Always refresh history on login so in-RAM context matches DB,
+    # even when the same account re-authenticates in a new browser session.
+    if login_name:
         _load_conversation_history_for(login_name)
 
     robot_context.face_session_id = session_id

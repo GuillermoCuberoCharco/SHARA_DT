@@ -26,7 +26,7 @@ import AudioControls from './subcomponents/AudioControls';
 import ChatWindow from './subcomponents/ChatWindow';
 import StatusBar from './utils/StatusBar';
 
-const UI = ({ sharedStream, onRobotStateChange }) => {
+const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdentityChange }) => {
     // Main states
     const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState('');
@@ -44,7 +44,6 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
         isRecording,
         audioSrc,
         isSpeaking,
-        transcribedText,
         startRecording,
         stopRecording,
         handleSynthesize
@@ -119,7 +118,7 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
                 type: "client_message",
                 text: messageText,
                 proactive_question: "Ninguna",
-                username: "Desconocido"
+                username: sessionIdentity?.userName || "unknown"
             };
 
             const success = emit('client_message', messageObject);
@@ -162,11 +161,24 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
         socket.off('wizard_message');
         socket.off('client_message');
         socket.off('transcription_result');
+        socket.off('session_identity_updated');
+
+        const handleSessionIdentityUpdated = (nextSessionIdentity) => {
+            if (!nextSessionIdentity?.sessionId || nextSessionIdentity.sessionId !== sessionIdentity?.sessionId) {
+                return;
+            }
+
+            onSessionIdentityChange?.((currentIdentity) => ({
+                ...(currentIdentity || {}),
+                ...nextSessionIdentity,
+            }));
+        };
 
         socket.on('robot_message', handleRobotMessage);
         socket.on('wizard_message', handleWizardMessage);
         socket.on('client_message', handleClientMessage);
         socket.on('transcription_result', handleClientMessage);
+        socket.on('session_identity_updated', handleSessionIdentityUpdated);
         socket.on('audio_empty', () => { setIsWaitingResponse(false); });
 
         return () => {
@@ -174,9 +186,18 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
             socket.off('wizard_message');
             socket.off('client_message');
             socket.off('transcription_result');
+            socket.off('session_identity_updated', handleSessionIdentityUpdated);
             socket.off('audio_empty');
         };
-    }, [socket, handleRobotMessage, handleWizardMessage]);
+    }, [socket, handleRobotMessage, handleWizardMessage, onSessionIdentityChange, sessionIdentity?.sessionId]);
+
+    useEffect(() => {
+        if (!isRegistered || !sessionIdentity?.sessionId) {
+            return;
+        }
+
+        emit('set_login_identity', sessionIdentity);
+    }, [emit, isRegistered, sessionIdentity]);
 
     // Auto-restart recording when face is present and system is idle
     useEffect(() => {
@@ -225,7 +246,7 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
                             onFaceDetected={handleFaceDetected}
                             onFaceLost={handleFaceLost}
                             stream={sharedStream}
-                            isRecognitionEnabled={!isWaitingResponse && !isSpeaking}
+                            sessionIdentity={sessionIdentity}
                         />
                     )}
                 </div>
@@ -237,6 +258,14 @@ const UI = ({ sharedStream, onRobotStateChange }) => {
 UI.propTypes = {
     sharedStream: PropTypes.instanceOf(MediaStream),
     onRobotStateChange: PropTypes.func,
+    sessionIdentity: PropTypes.shape({
+        sessionId: PropTypes.string,
+        userName: PropTypes.string,
+        isNewUser: PropTypes.bool,
+        needsIdentification: PropTypes.bool,
+        userStatus: PropTypes.string,
+    }),
+    onSessionIdentityChange: PropTypes.func,
 };
 
 export default UI;

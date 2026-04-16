@@ -11,6 +11,7 @@ vite.config.js.timestamp-*
 testing
 test_data
 temp
+.npm-cache
 
 # Logs
 logs

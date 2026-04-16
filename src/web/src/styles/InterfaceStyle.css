@@ -231,3 +231,134 @@ div::-webkit-scrollbar-thumb {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.session-login-shell {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top, rgba(255, 217, 128, 0.28), transparent 36%),
+    linear-gradient(180deg, rgba(16, 32, 58, 0.82), rgba(7, 13, 27, 0.92));
+  z-index: 150;
+}
+
+.session-login-card {
+  width: min(460px, 100%);
+  padding: 32px;
+  border-radius: 24px;
+  background: rgba(248, 245, 237, 0.96);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  color: #1e2233;
+}
+
+.session-login-kicker {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #8f5b1d;
+}
+
+.session-login-title {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 38px);
+  line-height: 1.05;
+}
+
+.session-login-copy {
+  margin: 16px 0 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #49516a;
+}
+
+.session-login-form {
+  margin-top: 28px;
+}
+
+.session-login-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.session-login-input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid rgba(61, 74, 112, 0.2);
+  border-radius: 14px;
+  background: #fff;
+  font-size: 16px;
+  color: #1e2233;
+  box-sizing: border-box;
+}
+
+.session-login-input:focus {
+  outline: 2px solid rgba(232, 147, 35, 0.28);
+  border-color: #e89323;
+}
+
+.session-login-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 24px 0 16px;
+  color: #7d8598;
+}
+
+.session-login-divider::before,
+.session-login-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(61, 74, 112, 0.16);
+}
+
+.session-login-button {
+  width: 100%;
+  border: none;
+  border-radius: 14px;
+  padding: 14px 18px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+
+.session-login-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.session-login-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.session-login-button-primary {
+  margin-top: 14px;
+  background: linear-gradient(135deg, #f4a63d, #d46d1d);
+  color: #fffdf8;
+  box-shadow: 0 14px 28px rgba(212, 109, 29, 0.28);
+}
+
+.session-login-button-secondary {
+  background: #1f2d4a;
+  color: #f6f7fb;
+  box-shadow: 0 14px 28px rgba(15, 20, 36, 0.22);
+}
+
+@media (max-width: 640px) {
+  .session-login-card {
+    padding: 24px;
+    border-radius: 18px;
+  }
+
+  .session-login-title {
+    font-size: 30px;
+  }
+}

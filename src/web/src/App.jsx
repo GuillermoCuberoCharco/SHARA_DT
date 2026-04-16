@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import RobotView from "./components/RobotView";
+import SessionLogin from "./components/SessionLogin";
 import UI from "./components/UI/UI";
 import { WebSocketProvider } from "./contexts/WebSocketContext";
 
 function App() {
+  const [sessionIdentity, setSessionIdentity] = useState(null);
   const [sharedStream, setSharedStream] = useState(null);
   const [isStreamReady, setIsStreamReady] = useState(false);
   const [robotState, setRobotState] = useState('neutral');
@@ -19,6 +21,12 @@ function App() {
   };
 
   useEffect(() => {
+    if (!sessionIdentity?.sessionId) {
+      setSharedStream(null);
+      setIsStreamReady(false);
+      return undefined;
+    }
+
     let isMounted = true;
 
     const initializeCamera = async () => {
@@ -64,18 +72,24 @@ function App() {
         streamRef.current = null;
       }
     };
-  }, []);
+  }, [sessionIdentity?.sessionId]);
 
   return (
     <WebSocketProvider handlers={webSocketHandlers}>
       {/* Full-screen robot image with eye animation overlay */}
       <RobotView robotState={robotState} />
 
+      {!sessionIdentity && (
+        <SessionLogin onLogin={setSessionIdentity} />
+      )}
+
       {/* UI overlay: chat, audio controls, status bar */}
-      {isStreamReady && (
+      {sessionIdentity && isStreamReady && (
         <UI
           sharedStream={sharedStream}
           onRobotStateChange={setRobotState}
+          sessionIdentity={sessionIdentity}
+          onSessionIdentityChange={setSessionIdentity}
         />
       )}
     </WebSocketProvider>

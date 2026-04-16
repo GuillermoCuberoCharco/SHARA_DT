@@ -34,7 +34,6 @@ import gevent
 
 from robot_context import robot_context
 from proactive_service import ProactiveService
-from services.camera_service import record_face_for_session
 
 logger = logging.getLogger('StateMachine')
 
@@ -93,6 +92,13 @@ def _mark_unknown_user_interaction():
         )
 
 
+def _normalize_username(username):
+    clean_username = (username or '').strip()
+    if not clean_username or clean_username.lower() == 'unknown':
+        return None
+    return clean_username
+
+
 # ── Proactive callback ────────────────────────────────────────────────────────
 
 def proactive_event_handler(event: str, params: dict = None):
@@ -113,11 +119,38 @@ def proactive_event_handler(event: str, params: dict = None):
         )
 
 
+def on_session_login(session_data: dict):
+    session_data = session_data or {}
+    session_id = session_data.get('sessionId')
+    username = _normalize_username(session_data.get('userName') or session_data.get('username'))
+    previous_username = robot_context.username
+
+    logger.info(
+        'Session login updated: session_id=%s username=%s previous_username=%s',
+        session_id,
+        username,
+        previous_username,
+    )
+
+    if previous_username and previous_username != username:
+        _persist_current_conversation(previous_username)
+
+    if previous_username != username:
+        _load_conversation_history_for(username)
+
+    robot_context.face_session_id = session_id
+    robot_context.username = username
+    robot_context.needs_identification = not bool(username)
+    robot_context.proactive_question = ''
+    robot_context.continue_conversation = False
+    _reset_unknown_user_tracking()
+
+
 # ── WebSocket entry points (called from message_handler.py) ──────────────────
 
 def on_user_detected(user_data: dict):
     """Face detected by FaceDetection.jsx — replaces wf_event_handler 'face_listen'."""
-    username = user_data.get('userName')
+    username = _normalize_username(user_data.get('userName'))
     face_session_id = user_data.get('sessionId')
     needs_identification = bool(user_data.get('needsIdentification', False))
     is_new_user = user_data.get('isNewUser', True)
@@ -131,7 +164,7 @@ def on_user_detected(user_data: dict):
     robot_context.face_session_id = face_session_id
     robot_context.needs_identification = needs_identification
 
-    is_known_user = not needs_identification and username not in (None, '', 'unknown')
+    is_known_user = not needs_identification and username is not None
 
     if is_known_user:
         if previous_username and previous_username != username:
@@ -447,22 +480,17 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
 
     if response.action == 'record_face':
         previous_username = robot_context.username
-        if robot_context.face_session_id:
-            try:
-                update_result = record_face_for_session(robot_context.face_session_id, response.username)
-                if not update_result.get('success'):
-                    logger.warning(f"Could not persist recorded face: {update_result.get('error')}")
-            except Exception as e:
-                logger.warning(f'Could not record face in embedding database: {e}')
-        else:
-            logger.warning('record_face action received without current face_session_id')
-
         robot_context.username = response.username
-        robot_context.face_session_id = None
         robot_context.needs_identification = False
 
         if previous_username != response.username:
             _load_conversation_history_for(response.username)
+
+        _emit_session_identity_updated(
+            sid=sid,
+            session_id=robot_context.face_session_id,
+            username=response.username,
+        )
 
     elif response.action == 'set_username':
         previous_username = robot_context.username
@@ -476,6 +504,12 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
 
         if previous_username != response.username:
             _load_conversation_history_for(response.username)
+
+        _emit_session_identity_updated(
+            sid=sid,
+            session_id=robot_context.face_session_id,
+            username=response.username,
+        )
 
     elif response.username:
         previous_username = robot_context.username
@@ -525,6 +559,24 @@ def _emit_state_update():
     _socketio.emit(
         'state_update',
         {'state': robot_context.state},
+        namespace='/message'
+    )
+
+
+def _emit_session_identity_updated(sid=None, session_id=None, username=None):
+    if _socketio is None or sid is None or not session_id:
+        return
+
+    _socketio.emit(
+        'session_identity_updated',
+        {
+            'sessionId': session_id,
+            'userName': username,
+            'isNewUser': False,
+            'needsIdentification': False,
+            'userStatus': 'existing',
+        },
+        to=sid,
         namespace='/message'
     )
 

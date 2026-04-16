@@ -87,3 +87,50 @@ def verify_user(login_name: str, password: str) -> bool:
     if not ok:
         logger.info('Login failed — wrong password for: %s', login_name)
     return ok
+
+
+def get_shara_name(login_name: str):
+    """
+    Return the Shara display name for this user (e.g. 'María'), or None if not set yet.
+    This is the name Shara uses to address the person, which may differ from login_name.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT shara_name FROM users WHERE login_name = %s',
+                (login_name.strip(),),
+            )
+            row = cur.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception as exc:
+        logger.error('Error fetching shara_name for %s: %s', login_name, exc)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_shara_name(login_name: str, shara_name: str) -> None:
+    """
+    Persist the Shara display name for this user.
+    Called when the user introduces themselves to Shara during conversation.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                'UPDATE users SET shara_name = %s WHERE login_name = %s',
+                (shara_name, login_name.strip()),
+            )
+        conn.commit()
+        logger.info('shara_name updated: %s → %s', login_name, shara_name)
+    except Exception as exc:
+        if conn:
+            conn.rollback()
+        logger.error('Error updating shara_name for %s: %s', login_name, exc)
+    finally:
+        if conn:
+            conn.close()

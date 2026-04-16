@@ -53,6 +53,7 @@ _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     login_name    VARCHAR(255) PRIMARY KEY,
     password_hash TEXT         NOT NULL,
+    shara_name    VARCHAR(255),
     created_at    TIMESTAMPTZ  DEFAULT NOW()
 );
 
@@ -64,6 +65,9 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     session_id  VARCHAR(255),
     created_at  TIMESTAMPTZ  DEFAULT NOW()
 );
+
+-- Idempotent migration: add shara_name to existing deployments
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shara_name VARCHAR(255);
 
 CREATE INDEX IF NOT EXISTS idx_conv_login   ON conversation_messages (login_name);
 CREATE INDEX IF NOT EXISTS idx_conv_session ON conversation_messages (session_id);

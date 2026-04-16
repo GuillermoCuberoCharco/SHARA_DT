@@ -32,6 +32,7 @@ import concurrent.futures
 import logging
 import gevent
 
+from auth import get_shara_name, update_shara_name
 from robot_context import robot_context
 from proactive_service import ProactiveService
 
@@ -103,6 +104,20 @@ def _normalize_username(username):
     return clean_username
 
 
+def _get_stored_shara_name(login_name):
+    clean_login = _normalize_username(login_name)
+    if not clean_login:
+        return None
+    return _normalize_username(get_shara_name(clean_login))
+
+
+def _persist_shara_name_for_login(shara_name):
+    clean_login = _normalize_username(robot_context.login_username)
+    clean_shara = _normalize_username(shara_name)
+    if clean_login and clean_shara:
+        update_shara_name(clean_login, clean_shara)
+
+
 # ── Proactive callback ────────────────────────────────────────────────────────
 
 def proactive_event_handler(event: str, params: dict = None):
@@ -128,16 +143,20 @@ def on_session_login(session_data: dict):
     session_id = session_data.get('sessionId')
 
     # login_name: stable key used for conversation history (e.g. "Maria Del Carmen")
-    login_name = (session_data.get('loginName') or '').strip() or None
+    login_name = _normalize_username(session_data.get('loginName'))
 
     # shara_name: how Shara addresses the person — may differ from login_name.
     # For new users it starts as None so Shara asks who they are.
-    # For returning users we seed it with login_name so Shara has a name to use
-    # while reading history; the user can tell Shara a preferred name later.
+    # For returning users it is restored from DB (users.shara_name).
     is_new_user = bool(session_data.get('isNewUser', False))
-    shara_name = None if is_new_user else _normalize_username(
-        session_data.get('userName') or session_data.get('username') or login_name
-    )
+    incoming_username = _normalize_username(session_data.get('userName') or session_data.get('username'))
+    shara_name = None if is_new_user else _get_stored_shara_name(login_name)
+
+    # Backfill DB when frontend already knows a non-login display name.
+    if not shara_name and incoming_username and incoming_username != login_name:
+        shara_name = incoming_username
+        if login_name:
+            update_shara_name(login_name, shara_name)
 
     previous_login = robot_context.login_username
 
@@ -167,31 +186,55 @@ def on_session_login(session_data: dict):
 
 def on_user_detected(user_data: dict):
     """Face detected by FaceDetection.jsx — replaces wf_event_handler 'face_listen'."""
-    username = _normalize_username(user_data.get('userName'))
+    incoming_username = _normalize_username(user_data.get('userName'))
+    login_name = _normalize_username(user_data.get('loginName')) or robot_context.login_username
     face_session_id = user_data.get('sessionId')
-    needs_identification = bool(user_data.get('needsIdentification', False))
+    incoming_needs_identification = bool(user_data.get('needsIdentification', False))
     is_new_user = user_data.get('isNewUser', True)
     previous_username = robot_context.username
+    previous_login = robot_context.login_username
 
     logger.info(
-        f'User detected: session_id={face_session_id}, username={username}, '
-        f'needs_identification={needs_identification}, new={is_new_user}, state={robot_context.state}'
+        f'User detected: session_id={face_session_id}, login_name={login_name}, '
+        f'username={incoming_username}, needs_identification={incoming_needs_identification}, '
+        f'new={is_new_user}, state={robot_context.state}'
     )
 
+    if login_name and login_name != previous_login:
+        if previous_login:
+            _persist_current_conversation()
+        robot_context.login_username = login_name
+
+    # Rehydrate full DB-backed history when the face is detected.
+    # This restores context after on_user_lost() persisted and cleared in-RAM history.
+    if login_name:
+        _load_conversation_history_for(login_name)
+
     robot_context.face_session_id = face_session_id
+
+    if login_name:
+        if not robot_context.username:
+            robot_context.username = _get_stored_shara_name(login_name)
+        username = _normalize_username(robot_context.username)
+        needs_identification = not bool(username)
+    else:
+        username = incoming_username
+        needs_identification = incoming_needs_identification
+
     robot_context.needs_identification = needs_identification
 
     is_known_user = not needs_identification and username is not None
 
     if is_known_user:
-        if previous_username and previous_username != username:
-            _persist_current_conversation(previous_username)
-        if previous_username != username:
-            _load_conversation_history_for(username)
+        if not login_name:
+            if previous_username and previous_username != username:
+                _persist_current_conversation(previous_username)
+            if previous_username != username:
+                _load_conversation_history_for(username)
         robot_context.username = username
         _proactive.update('sensor', 'close_face_recognized', {'username': username})
     else:
-        if previous_username:
+        if not login_name and previous_username:
             _persist_current_conversation(previous_username)
         robot_context.username = None
         _proactive.update('sensor', 'unknown_face')
@@ -208,9 +251,7 @@ def on_user_lost(user_data: dict):
     logger.info(f'User lost, state={robot_context.state}')
     _persist_current_conversation()
     robot_context.face_session_id = None
-    robot_context.login_username = None
-    robot_context.username = None
-    robot_context.needs_identification = False
+    # Keep login identity so re-entering the frame can recover user context.
     robot_context.proactive_question = ''
     robot_context.continue_conversation = False
     _reset_unknown_user_tracking()
@@ -499,6 +540,7 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
     if response.action == 'record_face':
         robot_context.username = response.username
         robot_context.needs_identification = False
+        _persist_shara_name_for_login(response.username)
 
         # With login-based auth, history is already loaded for login_username.
         # Only reload if no login session is active (legacy / face-only mode).
@@ -518,6 +560,7 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
         )
         robot_context.username = response.username
         robot_context.needs_identification = False
+        _persist_shara_name_for_login(response.username)
         _reset_unknown_user_tracking()
 
         # Same as record_face: skip history reload when login session is active.
@@ -534,6 +577,7 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
         previous_username = robot_context.username
         robot_context.username = response.username
         robot_context.needs_identification = False
+        _persist_shara_name_for_login(response.username)
         if not robot_context.login_username and previous_username != response.username:
             _load_conversation_history_for(response.username)
 

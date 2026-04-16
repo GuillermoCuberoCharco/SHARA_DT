@@ -51,13 +51,16 @@ const SessionLogin = ({ onLogin }) => {
                 return;
             }
 
+            const sharaName = typeof data.sharaName === 'string' ? data.sharaName.trim() : '';
+            const hasStoredSharaName = Boolean(sharaName);
+
             onLogin(buildSessionIdentity({
                 sessionId: createSessionId(),
                 loginName: data.loginName,
-                userName: data.loginName,
+                userName: hasStoredSharaName ? sharaName : 'unknown',
                 isNewUser: false,
-                needsIdentification: false,
-                userStatus: 'existing',
+                needsIdentification: !hasStoredSharaName,
+                userStatus: hasStoredSharaName ? 'existing' : 'existing_unknown',
             }));
         } catch {
             setError('No se pudo conectar con el servidor');

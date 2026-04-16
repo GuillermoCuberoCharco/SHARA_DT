@@ -14,7 +14,7 @@ import os
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
-from auth import register_user, verify_user
+from auth import get_shara_name, register_user, verify_user
 from flask_socketio import SocketIO
 
 load_dotenv()
@@ -75,8 +75,10 @@ def auth_login():
     if not verify_user(login_name, password):
         return jsonify({'error': 'Usuario o contraseña incorrectos'}), 401
 
+    shara_name = get_shara_name(login_name)
+
     logger.info('Login successful: %s', login_name)
-    return jsonify({'loginName': login_name, 'isNewUser': False})
+    return jsonify({'loginName': login_name, 'sharaName': shara_name, 'isNewUser': False})
 
 
 @app.route('/api/auth/register', methods=['POST'])

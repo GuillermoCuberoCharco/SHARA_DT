@@ -13,62 +13,6 @@ html {
   pointer-events: none;
 }
 
-.controls-panel {
-  position: fixed;
-  left: 18px;
-  bottom: 18px;
-  width: min(360px, calc(100vw - 36px));
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border-radius: 16px;
-  background: linear-gradient(160deg, rgba(12, 34, 37, 0.86), rgba(22, 16, 41, 0.84));
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
-  pointer-events: auto;
-}
-
-.audio-controls {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  padding: 0;
-}
-
-.record-button {
-  width: 100%;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(240, 240, 240, 0.92);
-  color: #101626;
-  cursor: pointer;
-  font-weight: 700;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
-}
-
-.record-button.recording {
-  background-color: #ff4081;
-  color: white;
-}
-
-.record-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
-}
-
-.record-button.recording:hover {
-  background-color: #e03070;
-}
-
-.record-button[disabled] {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
-
 .led-legend-panel {
   position: fixed;
   top: 18px;
@@ -189,12 +133,6 @@ html {
 }
 
 @media (max-width: 860px) {
-  .controls-panel {
-    left: 12px;
-    bottom: 12px;
-    width: min(320px, calc(100vw - 24px));
-  }
-
   .led-legend-panel {
     top: 12px;
     right: 12px;

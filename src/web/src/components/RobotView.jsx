@@ -3,16 +3,18 @@
  *
  * Renders the robot image and overlays the eye canvas.
  * Listens for set_face events on the existing /message socket
- * via WebSocketContext — no separate socket connection needed.
+ * via WebSocketContext - no separate socket connection needed.
  */
 
 import PropTypes from 'prop-types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useWebSocketContext } from '../contexts/WebSocketContext';
+import { EYE_COORDINATE_ASPECT_RATIO } from '../eyes/drawFace';
 import { useEyeRenderer } from '../eyes/useEyeRenderer';
 import LedCircle from './LedCircle';
 
-const SCREEN = { top: 0.195, left: 0.275, width: 0.40, height: 0.17 };
+// Inner white display bounds measured from shara.png.
+const SCREEN = { top: 0.180283, left: 0.270822, width: 0.423782, height: 0.186567 };
 
 // Position of the LED ring relative to the robot image bounds.
 // Adjust top/left to match the physical LED ring location on shara.png.
@@ -23,12 +25,14 @@ const RobotView = ({ robotState }) => {
     const canvasRef = useRef(null);
 
     const { socket } = useWebSocketContext();
-    const { setFace } = useEyeRenderer(canvasRef);
+    const { setFace, refresh } = useEyeRenderer(canvasRef);
 
     const [operationalState, setOperationalState] = useState('idle');
     const [ledPos, setLedPos] = useState(null);
-
-    // ── Sync canvas position + pixel dimensions ───────────────────────────────
+    const [isNarrowViewport, setIsNarrowViewport] = useState(
+        typeof window !== 'undefined' ? window.innerWidth <= 960 : false
+    );
+    const styles = getStyles(isNarrowViewport);
 
     const computeOverlay = useCallback(() => {
         const img = imgRef.current;
@@ -37,30 +41,42 @@ const RobotView = ({ robotState }) => {
 
         const { width: rw, height: rh, left: rl, top: rt } = img.getBoundingClientRect();
 
-        const top = rt + rh * SCREEN.top;
-        const left = rl + rw * SCREEN.left;
-        const width = rw * SCREEN.width;
-        const height = rh * SCREEN.height;
+        const screenTop = rt + rh * SCREEN.top;
+        const screenLeft = rl + rw * SCREEN.left;
+        const maxWidth = rw * SCREEN.width;
+        const maxHeight = rh * SCREEN.height;
+
+        let width = maxWidth;
+        let height = width / EYE_COORDINATE_ASPECT_RATIO;
+
+        if (height > maxHeight) {
+            height = maxHeight;
+            width = height * EYE_COORDINATE_ASPECT_RATIO;
+        }
+
+        const top = screenTop + (maxHeight - height) / 2;
+        const left = screenLeft + (maxWidth - width) / 2;
 
         canvas.style.top = `${top}px`;
         canvas.style.left = `${left}px`;
         canvas.style.width = `${width}px`;
         canvas.style.height = `${height}px`;
 
-        const w = Math.round(width);
-        const h = Math.round(height);
+        const dpr = window.devicePixelRatio || 1;
+        const w = Math.max(1, Math.round(width * dpr));
+        const h = Math.max(1, Math.round(height * dpr));
         if (canvas.width !== w || canvas.height !== h) {
             canvas.width = w;
             canvas.height = h;
         }
+        refresh();
 
-        // LED circle position — derived from the same image bounds
         setLedPos({
             top: rt + rh * LED_RING.top,
             left: rl + rw * LED_RING.left,
             size: Math.round(rw * LED_RING.size),
         });
-    }, []);
+    }, [refresh]);
 
     useEffect(() => {
         const img = imgRef.current;
@@ -69,10 +85,17 @@ const RobotView = ({ robotState }) => {
         const ro = new ResizeObserver(computeOverlay);
         ro.observe(img);
         window.addEventListener('resize', computeOverlay);
-        return () => { ro.disconnect(); window.removeEventListener('resize', computeOverlay); };
+        return () => {
+            ro.disconnect();
+            window.removeEventListener('resize', computeOverlay);
+        };
     }, [computeOverlay]);
 
-    // ── set_face via /message socket ──────────────────────────────────────────
+    useEffect(() => {
+        const handleResize = () => setIsNarrowViewport(window.innerWidth <= 960);
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
 
     useEffect(() => {
         if (!socket) return;
@@ -81,8 +104,6 @@ const RobotView = ({ robotState }) => {
         return () => socket.off('set_face', handler);
     }, [socket, setFace]);
 
-    // ── LED state via state_update socket event ────────────────────────────────
-
     useEffect(() => {
         if (!socket) return;
         const handler = ({ state }) => setOperationalState(state);
@@ -90,13 +111,9 @@ const RobotView = ({ robotState }) => {
         return () => socket.off('state_update', handler);
     }, [socket]);
 
-    // ── robotState prop (from UI state machine) ───────────────────────────────
-
     useEffect(() => {
         if (robotState) setFace(robotState);
     }, [robotState, setFace]);
-
-    // ── Render ────────────────────────────────────────────────────────────────
 
     return (
         <div style={styles.container}>
@@ -122,12 +139,12 @@ const RobotView = ({ robotState }) => {
     );
 };
 
-const styles = {
+const getStyles = (isNarrowViewport) => ({
     container: {
         position: 'fixed',
         top: 0,
         left: 0,
-        width: '100vw',
+        width: isNarrowViewport ? '100vw' : '50vw',
         height: '100vh',
         display: 'flex',
         alignItems: 'center',
@@ -143,8 +160,10 @@ const styles = {
     },
     robotImage: {
         position: 'relative',
-        height: '100vh',
         width: 'auto',
+        height: isNarrowViewport ? '100vh' : '88vh',
+        maxWidth: isNarrowViewport ? '100%' : '82%',
+        maxHeight: '100vh',
         objectFit: 'contain',
         zIndex: 1,
     },
@@ -155,7 +174,7 @@ const styles = {
         // Dimensions and position set imperatively in computeOverlay
         // to avoid React re-renders on every resize
     },
-};
+});
 
 RobotView.propTypes = { robotState: PropTypes.string };
 RobotView.defaultProps = { robotState: 'neutral' };

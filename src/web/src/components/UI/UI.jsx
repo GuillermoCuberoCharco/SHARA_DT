@@ -4,7 +4,6 @@
  * Overlay component that handles:
  * - Audio recording and synthesis
  * - Face detection (wakeface)
- * - Status bar
  * - LED color legend
  * 
  * When a robot message arrives with an emotional state,
@@ -16,14 +15,12 @@
  */
 
 import PropTypes from 'prop-types';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ANIMATION_MAPPINGS } from "../../config";
 import { useWebSocketContext } from '../../contexts/WebSocketContext';
 import '../../styles/InterfaceStyle.css';
 import FaceDetection from '../FaceDetection';
 import useAudioRecorder from './hooks/useAudioRecorder';
-import AudioControls from './subcomponents/AudioControls';
-import StatusBar from './utils/StatusBar';
 
 const LED_LEGEND_ITEMS = [
     {
@@ -58,11 +55,57 @@ const LED_LEGEND_ITEMS = [
     },
 ];
 
+const UI_STATUS_MESSAGES = {
+    connection_error: 'Connection error',
+    connecting: 'Connecting to server',
+    recording: 'Recording audio',
+    waiting_response: 'Waiting for response',
+    speaking: 'Playing robot audio',
+    face_not_detected: 'Face not detected',
+    ready: 'Ready',
+};
+
+const getUiConsoleStatus = ({
+    connectionError,
+    isRegistered,
+    isRecording,
+    isWaitingResponse,
+    isSpeaking,
+    faceDetected,
+}) => {
+    if (connectionError) {
+        return 'connection_error';
+    }
+
+    if (!isRegistered) {
+        return 'connecting';
+    }
+
+    if (isRecording) {
+        return 'recording';
+    }
+
+    if (isWaitingResponse) {
+        return 'waiting_response';
+    }
+
+    if (isSpeaking) {
+        return 'speaking';
+    }
+
+    if (!faceDetected) {
+        return 'face_not_detected';
+    }
+
+    return 'ready';
+};
+
 const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdentityChange }) => {
     // Main states
     const [connectionError, setConnectionError] = useState(false);
     const [isWaitingResponse, setIsWaitingResponse] = useState(false);
     const [faceDetected, setFaceDetected] = useState(false);
+    const lastUiStatusRef = useRef(null);
 
     // Context and references
     const { isConnected, isRegistered, emit, socket } = useWebSocketContext();
@@ -70,7 +113,6 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
     // Audio hooks
     const {
         isRecording,
-        audioSrc,
         isSpeaking,
         startRecording,
         stopRecording,
@@ -146,6 +188,24 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
         setConnectionError(!isConnected);
     }, [isConnected]);
 
+    useEffect(() => {
+        const nextStatus = getUiConsoleStatus({
+            connectionError,
+            isRegistered,
+            isRecording,
+            isWaitingResponse,
+            isSpeaking,
+            faceDetected,
+        });
+
+        if (lastUiStatusRef.current === nextStatus) {
+            return;
+        }
+
+        lastUiStatusRef.current = nextStatus;
+        console.log(`[SHARA][ui-status] ${UI_STATUS_MESSAGES[nextStatus]} (${nextStatus})`);
+    }, [connectionError, isRegistered, isRecording, isWaitingResponse, isSpeaking, faceDetected]);
+
     // Register socket event listeners
     useEffect(() => {
         if (!socket) return;
@@ -204,24 +264,6 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
 
     return (
         <div className="ui-overlay">
-            <div className="controls-panel">
-                <AudioControls
-                    isRecording={isRecording}
-                    isSpeaking={isSpeaking}
-                    isWaitingResponse={isWaitingResponse}
-                    onStartRecording={startRecording}
-                    onStopRecording={stopRecording}
-                />
-                <StatusBar
-                    isRegistered={isRegistered}
-                    connectionError={connectionError}
-                    isRecording={isRecording}
-                    isWaitingResponse={isWaitingResponse}
-                    audioSrc={audioSrc}
-                    faceDetected={faceDetected}
-                />
-            </div>
-
             <aside className="led-legend-panel" aria-label="Leyenda LED de SHARA">
                 <p className="led-legend-kicker">ESTADOS LED</p>
                 <h2 className="led-legend-title">Significado de colores</h2>

@@ -1,12 +1,12 @@
 /**
  * eyes/useEyeRenderer.js
  *
- * Face data is imported statically from faceData.js — no HTTP requests,
+ * Face data is imported statically from faceData.js - no HTTP requests,
  * no server dependency, available instantly on mount.
  *
  * Two-level cache:
- *   Level 1 — FACES map (faceData.js): always in memory, zero latency.
- *   Level 2 — bitmapCache: OffscreenCanvas per named base face, rendered
+ *   Level 1 - FACES map (faceData.js): always in memory, zero latency.
+ *   Level 2 - bitmapCache: OffscreenCanvas per named base face, rendered
  *              once at current canvas size. Invalidated on resize.
  *              Interpolated frames are never cached (ephemeral).
  */
@@ -30,13 +30,11 @@ function getFace(name) {
 export function useEyeRenderer(canvasRef) {
     const currentFaceData = useRef(null);
     const currentFaceName = useRef('neutral');
-    const frameQueue = useRef([]);   // [{ faceData, baseName }]
+    const frameQueue = useRef([]);
     const rafId = useRef(null);
     const blinkTimer = useRef(null);
     const bitmapCache = useRef(new Map());
     const lastCanvasSize = useRef({ w: 0, h: 0 });
-
-    // ── Bitmap cache ─────────────────────────────────────────────────────────
 
     const getCachedBitmap = useCallback((name, w, h) => {
         const s = lastCanvasSize.current;
@@ -55,8 +53,6 @@ export function useEyeRenderer(canvasRef) {
     const invalidateBitmaps = useCallback(() => {
         bitmapCache.current.clear();
     }, []);
-
-    // ── Rendering ────────────────────────────────────────────────────────────
 
     const renderFrame = useCallback(({ faceData, baseName }) => {
         const canvas = canvasRef.current;
@@ -81,7 +77,10 @@ export function useEyeRenderer(canvasRef) {
         }
     }, [canvasRef, getCachedBitmap, cacheBitmap, invalidateBitmaps]);
 
-    // ── rAF loop ─────────────────────────────────────────────────────────────
+    const refresh = useCallback(() => {
+        const faceData = currentFaceData.current ?? getFace(currentFaceName.current);
+        renderFrame({ faceData, baseName: null });
+    }, [renderFrame]);
 
     const loop = useCallback(() => {
         if (frameQueue.current.length > 0) {
@@ -91,8 +90,6 @@ export function useEyeRenderer(canvasRef) {
         }
         rafId.current = requestAnimationFrame(loop);
     }, [renderFrame]);
-
-    // ── Face transition ──────────────────────────────────────────────────────
 
     const setFace = useCallback((name) => {
         try {
@@ -113,8 +110,6 @@ export function useEyeRenderer(canvasRef) {
         }
     }, []);
 
-    // ── Blink ────────────────────────────────────────────────────────────────
-
     const scheduleBlink = useCallback(() => {
         const delay = BLINK_MIN_MS + Math.random() * (BLINK_MAX_MS - BLINK_MIN_MS);
         blinkTimer.current = setTimeout(() => {
@@ -127,11 +122,10 @@ export function useEyeRenderer(canvasRef) {
         }, delay);
     }, [setFace]);
 
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
-
     useEffect(() => {
         const neutralData = getFace('neutral');
         currentFaceData.current = neutralData;
+        currentFaceName.current = 'neutral';
         renderFrame({ faceData: neutralData, baseName: 'neutral' });
         rafId.current = requestAnimationFrame(loop);
         scheduleBlink();
@@ -142,5 +136,5 @@ export function useEyeRenderer(canvasRef) {
         };
     }, [loop, renderFrame, scheduleBlink]);
 
-    return { setFace };
+    return { setFace, refresh };
 }

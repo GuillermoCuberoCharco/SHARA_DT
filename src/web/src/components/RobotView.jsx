@@ -29,10 +29,6 @@ const RobotView = ({ robotState }) => {
 
     const [operationalState, setOperationalState] = useState('idle');
     const [ledPos, setLedPos] = useState(null);
-    const [isNarrowViewport, setIsNarrowViewport] = useState(
-        typeof window !== 'undefined' ? window.innerWidth <= 960 : false
-    );
-    const styles = getStyles(isNarrowViewport);
 
     const computeOverlay = useCallback(() => {
         const img = imgRef.current;
@@ -92,12 +88,6 @@ const RobotView = ({ robotState }) => {
     }, [computeOverlay]);
 
     useEffect(() => {
-        const handleResize = () => setIsNarrowViewport(window.innerWidth <= 960);
-        window.addEventListener('resize', handleResize);
-        return () => window.removeEventListener('resize', handleResize);
-    }, []);
-
-    useEffect(() => {
         if (!socket) return;
         const handler = ({ face }) => setFace(face);
         socket.on('set_face', handler);
@@ -139,12 +129,12 @@ const RobotView = ({ robotState }) => {
     );
 };
 
-const getStyles = (isNarrowViewport) => ({
+const styles = {
     container: {
         position: 'fixed',
         top: 0,
         left: 0,
-        width: isNarrowViewport ? '100vw' : '50vw',
+        width: '100vw',
         height: '100vh',
         display: 'flex',
         alignItems: 'center',
@@ -160,9 +150,9 @@ const getStyles = (isNarrowViewport) => ({
     },
     robotImage: {
         position: 'relative',
+        height: '100vh',
         width: 'auto',
-        height: isNarrowViewport ? '100vh' : '88vh',
-        maxWidth: isNarrowViewport ? '100%' : '82%',
+        maxWidth: '100%',
         maxHeight: '100vh',
         objectFit: 'contain',
         zIndex: 1,
@@ -174,7 +164,7 @@ const getStyles = (isNarrowViewport) => ({
         // Dimensions and position set imperatively in computeOverlay
         // to avoid React re-renders on every resize
     },
-});
+};
 
 RobotView.propTypes = { robotState: PropTypes.string };
 RobotView.defaultProps = { robotState: 'neutral' };

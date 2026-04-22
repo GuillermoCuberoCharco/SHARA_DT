@@ -14,21 +14,46 @@ import os
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
-from auth import get_shara_name, register_user, verify_user
+from flask_cors import CORS
 from flask_socketio import SocketIO
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
+from auth import get_shara_name, register_user, user_exists, verify_user
 
 load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
+    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
 )
 logger = logging.getLogger('App')
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
 
+AUTH_COOKIE_NAME = 'shara_auth'
+AUTH_COOKIE_SALT = 'shara-auth-cookie'
+AUTH_COOKIE_MAX_AGE_SECONDS = int(
+    os.getenv('AUTH_COOKIE_MAX_AGE_SECONDS', str(30 * 24 * 60 * 60))
+)
+AUTH_COOKIE_SAMESITE = os.getenv('AUTH_COOKIE_SAMESITE', 'Lax')
+AUTH_COOKIE_SECURE = os.getenv('AUTH_COOKIE_SECURE', 'auto').strip().lower()
+FRONTEND_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'FRONTEND_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173',
+    ).split(',')
+    if origin.strip()
+]
+
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='')
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'shara-woz-secret')
+
+CORS(
+    app,
+    supports_credentials=True,
+    resources={r'/api/*': {'origins': FRONTEND_ORIGINS}},
+)
 
 socketio = SocketIO(
     app,
@@ -39,6 +64,8 @@ socketio = SocketIO(
     ping_timeout=60,
     ping_interval=25,
 )
+
+_auth_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'], salt=AUTH_COOKIE_SALT)
 
 from db import init_schema as _init_db_schema
 from eyes.service import Eyes
@@ -63,6 +90,89 @@ socketio.on_namespace(MessageNamespace('/message'))
 logger.info('Namespace registered: /message')
 
 
+def _should_use_secure_cookie():
+    if AUTH_COOKIE_SECURE in ('1', 'true', 'yes', 'on'):
+        return True
+
+    if AUTH_COOKIE_SECURE in ('0', 'false', 'no', 'off'):
+        return False
+
+    forwarded_proto = (request.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
+    if forwarded_proto:
+        return forwarded_proto == 'https'
+
+    if request.is_secure:
+        return True
+
+    host = request.host.split(':', 1)[0].strip().lower()
+    return host not in ('localhost', '127.0.0.1')
+
+
+def _clear_auth_cookie(response):
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        '',
+        max_age=0,
+        expires=0,
+        httponly=True,
+        secure=_should_use_secure_cookie(),
+        samesite=AUTH_COOKIE_SAMESITE,
+        path='/',
+    )
+    return response
+
+
+def _disable_auth_caching(response):
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+def _set_auth_cookie(response, login_name: str):
+    token = _auth_serializer.dumps({'loginName': login_name})
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=AUTH_COOKIE_MAX_AGE_SECONDS,
+        httponly=True,
+        secure=_should_use_secure_cookie(),
+        samesite=AUTH_COOKIE_SAMESITE,
+        path='/',
+    )
+    return response
+
+
+def _build_auth_payload(login_name: str):
+    return {
+        'loginName': login_name,
+        'sharaName': get_shara_name(login_name),
+        'isNewUser': False,
+    }
+
+
+def _get_authenticated_login_name():
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not token:
+        return None
+
+    try:
+        payload = _auth_serializer.loads(token, max_age=AUTH_COOKIE_MAX_AGE_SECONDS)
+    except SignatureExpired:
+        logger.info('Auth cookie expired')
+        return None
+    except BadSignature:
+        logger.warning('Invalid auth cookie signature')
+        return None
+
+    login_name = (payload.get('loginName') if isinstance(payload, dict) else '') or ''
+    login_name = login_name.strip()
+
+    if not login_name or not user_exists(login_name):
+        logger.info('Auth cookie rejected for missing user: %s', login_name or '<empty>')
+        return None
+
+    return login_name
+
+
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
     data = request.get_json(silent=True) or {}
@@ -70,15 +180,14 @@ def auth_login():
     password = data.get('password', '')
 
     if not login_name or not password:
-        return jsonify({'error': 'Nombre de usuario y contraseña requeridos'}), 400
+        return jsonify({'error': 'Nombre de usuario y contrasena requeridos'}), 400
 
     if not verify_user(login_name, password):
-        return jsonify({'error': 'Usuario o contraseña incorrectos'}), 401
-
-    shara_name = get_shara_name(login_name)
+        return jsonify({'error': 'Usuario o contrasena incorrectos'}), 401
 
     logger.info('Login successful: %s', login_name)
-    return jsonify({'loginName': login_name, 'sharaName': shara_name, 'isNewUser': False})
+    response = _disable_auth_caching(jsonify(_build_auth_payload(login_name)))
+    return _set_auth_cookie(response, login_name)
 
 
 @app.route('/api/auth/register', methods=['POST'])
@@ -88,16 +197,42 @@ def auth_register():
     password = data.get('password', '')
 
     if not login_name or not password:
-        return jsonify({'error': 'Nombre de usuario y contraseña requeridos'}), 400
+        return jsonify({'error': 'Nombre de usuario y contrasena requeridos'}), 400
 
     if len(password) < 4:
-        return jsonify({'error': 'La contraseña debe tener al menos 4 caracteres'}), 400
+        return jsonify({'error': 'La contrasena debe tener al menos 4 caracteres'}), 400
 
     if not register_user(login_name, password):
         return jsonify({'error': 'El usuario ya existe'}), 409
 
     logger.info('Registration successful: %s', login_name)
-    return jsonify({'loginName': login_name, 'isNewUser': True}), 201
+    response = _disable_auth_caching(jsonify({'loginName': login_name, 'sharaName': None, 'isNewUser': True}))
+    response.status_code = 201
+    return _set_auth_cookie(response, login_name)
+
+
+@app.route('/api/auth/me', methods=['GET'])
+def auth_me():
+    login_name = _get_authenticated_login_name()
+    if not login_name:
+        response = _disable_auth_caching(jsonify({'error': 'No authenticated session'}))
+        response.status_code = 401
+        return _clear_auth_cookie(response)
+
+    logger.info('Session restored: %s', login_name)
+    return _disable_auth_caching(jsonify(_build_auth_payload(login_name)))
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    login_name = _get_authenticated_login_name()
+    if login_name:
+        logger.info('Logout successful: %s', login_name)
+    else:
+        logger.info('Logout requested without active session')
+
+    response = _disable_auth_caching(jsonify({'ok': True}))
+    return _clear_auth_cookie(response)
 
 
 @app.route('/health')
@@ -119,9 +254,9 @@ def synthesize():
         audio_bytes = text_to_speech(text)
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
         return jsonify({'audioContent': audio_b64})
-    except Exception as e:
-        logger.error(f'TTS synthesis error: {e}')
-        return jsonify({'error': str(e)}), 500
+    except Exception as exc:
+        logger.error(f'TTS synthesis error: {exc}')
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/api/recognize-face', methods=['POST'])
@@ -164,9 +299,9 @@ def recognize_face():
             normalized_username,
         )
         return jsonify(response)
-    except Exception as e:
-        logger.error(f'Face recognition compatibility error: {e}', exc_info=True)
-        return jsonify({'error': str(e)}), 500
+    except Exception as exc:
+        logger.error(f'Face recognition compatibility error: {exc}', exc_info=True)
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/', defaults={'path': ''})

@@ -3,9 +3,13 @@ import RobotView from "./components/RobotView";
 import SessionLogin from "./components/SessionLogin";
 import UI from "./components/UI/UI";
 import { WebSocketProvider } from "./contexts/WebSocketContext";
+import { SERVER_URL } from "./config";
+import { buildAuthenticatedSessionIdentity } from "./utils/sessionIdentity";
 
 function App() {
   const [sessionIdentity, setSessionIdentity] = useState(null);
+  const [isAuthResolved, setIsAuthResolved] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [sharedStream, setSharedStream] = useState(null);
   const [isStreamReady, setIsStreamReady] = useState(false);
   const [robotState, setRobotState] = useState('neutral');
@@ -17,6 +21,83 @@ function App() {
     },
     handleConnectError: (error) => {
       console.error("Connection error:", error);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const restoreSession = async () => {
+      try {
+        const res = await fetch(`${SERVER_URL}/api/auth/me`, {
+          method: 'GET',
+          cache: 'no-store',
+          credentials: 'include',
+        });
+
+        if (!isMounted) {
+          return;
+        }
+
+        if (res.ok) {
+          const data = await res.json();
+          setSessionIdentity(buildAuthenticatedSessionIdentity({
+            loginName: data.loginName,
+            sharaName: data.sharaName,
+            isNewUser: false,
+          }));
+          return;
+        }
+
+        if (res.status !== 401) {
+          console.error('Unable to restore session:', res.status);
+        }
+      } catch (error) {
+        if (isMounted) {
+          console.error('Unable to restore session:', error);
+        }
+      } finally {
+        if (isMounted) {
+          setIsAuthResolved(true);
+        }
+      }
+    };
+
+    restoreSession();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleLogout = async () => {
+    setIsLoggingOut(true);
+
+    try {
+      const res = await fetch(`${SERVER_URL}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || 'No se pudo cerrar la sesion');
+      }
+
+      setSessionIdentity(null);
+      setRobotState('neutral');
+      return true;
+    } catch (error) {
+      console.error('Unable to logout:', error);
+      throw error;
+    } finally {
+      setIsLoggingOut(false);
     }
   };
 
@@ -79,17 +160,31 @@ function App() {
       {/* Full-screen robot image with eye animation overlay */}
       <RobotView robotState={robotState} />
 
-      {!sessionIdentity && (
+      {!isAuthResolved && (
+        <div className="session-login-shell">
+          <div className="session-login-card session-restore-card">
+            <p className="session-login-kicker">SHARA</p>
+            <h1 className="session-login-title">Recuperando sesion</h1>
+            <p className="session-login-copy">
+              Comprobando si ya hay una sesion guardada en este navegador.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {isAuthResolved && !sessionIdentity && (
         <SessionLogin onLogin={setSessionIdentity} />
       )}
 
       {/* UI overlay: chat, audio controls, status bar */}
-      {sessionIdentity && isStreamReady && (
+      {isAuthResolved && sessionIdentity && isStreamReady && (
         <UI
           sharedStream={sharedStream}
           onRobotStateChange={setRobotState}
           sessionIdentity={sessionIdentity}
           onSessionIdentityChange={setSessionIdentity}
+          onLogout={handleLogout}
+          isLoggingOut={isLoggingOut}
         />
       )}
     </WebSocketProvider>

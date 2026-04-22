@@ -32,3 +32,23 @@ export const buildSessionIdentity = ({
         userStatus: userStatus || (isKnownUser ? 'existing' : 'new_unknown'),
     };
 };
+
+export const buildAuthenticatedSessionIdentity = ({
+    loginName,
+    sharaName,
+    isNewUser = false,
+} = {}) => {
+    const cleanSharaName = typeof sharaName === 'string' ? sharaName.trim() : '';
+    const hasStoredSharaName = Boolean(cleanSharaName);
+
+    return buildSessionIdentity({
+        sessionId: createSessionId(),
+        loginName: loginName || null,
+        userName: hasStoredSharaName ? cleanSharaName : UNKNOWN_USER_NAME,
+        isNewUser,
+        needsIdentification: isNewUser || !hasStoredSharaName,
+        userStatus: hasStoredSharaName
+            ? 'existing'
+            : (isNewUser ? 'new_unknown' : 'existing_unknown'),
+    });
+};

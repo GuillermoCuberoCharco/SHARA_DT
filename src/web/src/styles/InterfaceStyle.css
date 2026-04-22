@@ -27,7 +27,35 @@ html {
   pointer-events: auto;
 }
 
+.led-legend-session-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.led-legend-session-copy {
+  min-width: 0;
+}
+
 .led-legend-kicker {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.led-legend-session-user {
+  margin: 6px 0 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #f2f8ff;
+  word-break: break-word;
+}
+
+.led-legend-section-label {
   margin: 0;
   font-size: 11px;
   letter-spacing: 0.16em;
@@ -108,6 +136,40 @@ html {
   color: rgba(242, 248, 255, 0.78);
 }
 
+.session-logout-button {
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f6f9ff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
+}
+
+.session-logout-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+.session-logout-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.session-logout-error {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(220, 53, 69, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #ffd7d7;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 @keyframes legend-led-spin {
   from {
     transform: rotate(0deg);
@@ -153,6 +215,15 @@ html {
   .led-legend-title {
     font-size: 18px;
   }
+
+  .led-legend-session-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .session-logout-button {
+    width: 100%;
+  }
 }
 
 .session-login-shell {
@@ -175,6 +246,10 @@ html {
   background: rgba(248, 245, 237, 0.96);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
   color: #1e2233;
+}
+
+.session-restore-card {
+  text-align: center;
 }
 
 .session-login-kicker {

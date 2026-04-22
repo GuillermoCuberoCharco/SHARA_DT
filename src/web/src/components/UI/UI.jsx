@@ -100,11 +100,35 @@ const getUiConsoleStatus = ({
     return 'ready';
 };
 
-const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdentityChange }) => {
+const getSessionDisplayName = (sessionIdentity) => {
+    const knownUserName = typeof sessionIdentity?.userName === 'string'
+        ? sessionIdentity.userName.trim()
+        : '';
+
+    if (knownUserName && knownUserName.toLowerCase() !== 'unknown') {
+        return knownUserName;
+    }
+
+    const loginName = typeof sessionIdentity?.loginName === 'string'
+        ? sessionIdentity.loginName.trim()
+        : '';
+
+    return loginName || 'Usuario';
+};
+
+const UI = ({
+    sharedStream,
+    onRobotStateChange,
+    sessionIdentity,
+    onSessionIdentityChange,
+    onLogout,
+    isLoggingOut,
+}) => {
     // Main states
     const [connectionError, setConnectionError] = useState(false);
     const [isWaitingResponse, setIsWaitingResponse] = useState(false);
     const [faceDetected, setFaceDetected] = useState(false);
+    const [logoutError, setLogoutError] = useState('');
     const lastUiStatusRef = useRef(null);
 
     // Context and references
@@ -182,6 +206,20 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
             stopRecording();
         }
     };
+
+    const handleLogoutClick = useCallback(async () => {
+        if (!onLogout) {
+            return;
+        }
+
+        setLogoutError('');
+
+        try {
+            await onLogout();
+        } catch (error) {
+            setLogoutError(error?.message || 'No se pudo cerrar la sesion');
+        }
+    }, [onLogout]);
 
     // Track connection status
     useEffect(() => {
@@ -262,10 +300,32 @@ const UI = ({ sharedStream, onRobotStateChange, sessionIdentity, onSessionIdenti
         }
     }, [isWaitingResponse, isRecording, isSpeaking, faceDetected, startRecording]);
 
+    const sessionDisplayName = getSessionDisplayName(sessionIdentity);
+
     return (
         <div className="ui-overlay">
             <aside className="led-legend-panel" aria-label="Leyenda LED de SHARA">
-                <p className="led-legend-kicker">ESTADOS LED</p>
+                <div className="led-legend-session-bar">
+                    <div className="led-legend-session-copy">
+                        <p className="led-legend-kicker">SESION ACTIVA</p>
+                        <p className="led-legend-session-user">{sessionDisplayName}</p>
+                    </div>
+
+                    <button
+                        className="session-logout-button"
+                        type="button"
+                        onClick={handleLogoutClick}
+                        disabled={isLoggingOut}
+                    >
+                        {isLoggingOut ? 'Cerrando...' : 'Cerrar sesion'}
+                    </button>
+                </div>
+
+                {logoutError && (
+                    <p className="session-logout-error">{logoutError}</p>
+                )}
+
+                <p className="led-legend-section-label">ESTADOS LED</p>
                 <h2 className="led-legend-title">Significado de colores</h2>
                 <ul className="led-legend-list">
                     {LED_LEGEND_ITEMS.map((item) => (
@@ -297,12 +357,15 @@ UI.propTypes = {
     onRobotStateChange: PropTypes.func,
     sessionIdentity: PropTypes.shape({
         sessionId: PropTypes.string,
+        loginName: PropTypes.string,
         userName: PropTypes.string,
         isNewUser: PropTypes.bool,
         needsIdentification: PropTypes.bool,
         userStatus: PropTypes.string,
     }),
     onSessionIdentityChange: PropTypes.func,
+    onLogout: PropTypes.func,
+    isLoggingOut: PropTypes.bool,
 };
 
 export default UI;

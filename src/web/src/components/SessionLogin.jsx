@@ -1,7 +1,7 @@
 import PropTypes from 'prop-types';
 import { useState } from 'react';
 import { SERVER_URL } from '../config';
-import { buildSessionIdentity, createSessionId } from '../utils/sessionIdentity';
+import { buildAuthenticatedSessionIdentity } from '../utils/sessionIdentity';
 
 /**
  * SessionLogin
@@ -42,6 +42,7 @@ const SessionLogin = ({ onLogin }) => {
             const res = await fetch(`${SERVER_URL}/api/auth/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({ loginName: loginName.trim(), password }),
             });
             const data = await res.json();
@@ -51,16 +52,10 @@ const SessionLogin = ({ onLogin }) => {
                 return;
             }
 
-            const sharaName = typeof data.sharaName === 'string' ? data.sharaName.trim() : '';
-            const hasStoredSharaName = Boolean(sharaName);
-
-            onLogin(buildSessionIdentity({
-                sessionId: createSessionId(),
+            onLogin(buildAuthenticatedSessionIdentity({
                 loginName: data.loginName,
-                userName: hasStoredSharaName ? sharaName : 'unknown',
+                sharaName: data.sharaName,
                 isNewUser: false,
-                needsIdentification: !hasStoredSharaName,
-                userStatus: hasStoredSharaName ? 'existing' : 'existing_unknown',
             }));
         } catch {
             setError('No se pudo conectar con el servidor');
@@ -84,6 +79,7 @@ const SessionLogin = ({ onLogin }) => {
             const res = await fetch(`${SERVER_URL}/api/auth/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({ loginName: loginName.trim(), password }),
             });
             const data = await res.json();
@@ -93,13 +89,10 @@ const SessionLogin = ({ onLogin }) => {
                 return;
             }
 
-            onLogin(buildSessionIdentity({
-                sessionId: createSessionId(),
+            onLogin(buildAuthenticatedSessionIdentity({
                 loginName: data.loginName,
-                userName: 'unknown',
+                sharaName: data.sharaName,
                 isNewUser: true,
-                needsIdentification: true,
-                userStatus: 'new_unknown',
             }));
         } catch {
             setError('No se pudo conectar con el servidor');

@@ -32,7 +32,7 @@ import state_machine
 
 logger = logging.getLogger('MessageHandler')
 
-# Track connected web clients: sid -> {username, registered}
+# Track connected web clients: sid -> {username, loginName, sessionId, registered}
 _clients: dict = {}
 
 # Per-session PCM audio buffers. Chunks are accumulated until stream_end.
@@ -43,11 +43,18 @@ class MessageNamespace(Namespace):
 
     def on_connect(self):
         logger.info(f'[/message] Client connected: {request.sid}')
-        _clients[request.sid] = {'registered': False, 'username': None}
+        _clients[request.sid] = {
+            'registered': False,
+            'username': None,
+            'loginName': None,
+            'sessionId': None,
+        }
 
     def on_disconnect(self):
         logger.info(f'[/message] Client disconnected: {request.sid}')
-        _clients.pop(request.sid, None)
+        client_data = _clients.pop(request.sid, None) or {}
+        if client_data:
+            state_machine.on_client_disconnect(client_data)
         _cleanup_audio_buffer(request.sid)
 
     def on_register_client(self, data):
@@ -64,6 +71,8 @@ class MessageNamespace(Namespace):
 
         if request.sid in _clients and isinstance(data, dict):
             _clients[request.sid]['username'] = data.get('userName')
+            _clients[request.sid]['loginName'] = data.get('loginName')
+            _clients[request.sid]['sessionId'] = data.get('sessionId')
 
         state_machine.on_session_login(data or {})
 

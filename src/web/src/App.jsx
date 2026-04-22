@@ -14,6 +14,7 @@ function App() {
   const [isStreamReady, setIsStreamReady] = useState(false);
   const [robotState, setRobotState] = useState('neutral');
   const streamRef = useRef(null);
+  const sessionIdentityRef = useRef(null);
 
   const webSocketHandlers = {
     handleRegistrationSuccess: () => {
@@ -23,6 +24,10 @@ function App() {
       console.error("Connection error:", error);
     }
   };
+
+  useEffect(() => {
+    sessionIdentityRef.current = sessionIdentity;
+  }, [sessionIdentity]);
 
   useEffect(() => {
     let isMounted = true;
@@ -76,7 +81,12 @@ function App() {
     try {
       const res = await fetch(`${SERVER_URL}/api/auth/logout`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
+        body: JSON.stringify({
+          sessionId: sessionIdentity?.sessionId || null,
+          loginName: sessionIdentity?.loginName || null,
+        }),
       });
 
       let data = null;
@@ -100,6 +110,42 @@ function App() {
       setIsLoggingOut(false);
     }
   };
+
+  useEffect(() => {
+    const flushSessionOnPageHide = () => {
+      const currentSessionIdentity = sessionIdentityRef.current;
+      if (!currentSessionIdentity?.sessionId || !currentSessionIdentity?.loginName) {
+        return;
+      }
+
+      const flushUrl = `${SERVER_URL}/api/session/flush`;
+      const payload = JSON.stringify({
+        sessionId: currentSessionIdentity.sessionId,
+        loginName: currentSessionIdentity.loginName,
+      });
+
+      if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+        const beacon = new Blob([payload], { type: 'application/json' });
+        if (navigator.sendBeacon(flushUrl, beacon)) {
+          return;
+        }
+      }
+
+      fetch(flushUrl, {
+        method: 'POST',
+        keepalive: true,
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      }).catch(() => {});
+    };
+
+    window.addEventListener('pagehide', flushSessionOnPageHide);
+
+    return () => {
+      window.removeEventListener('pagehide', flushSessionOnPageHide);
+    };
+  }, []);
 
   useEffect(() => {
     if (!sessionIdentity?.sessionId) {

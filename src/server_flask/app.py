@@ -127,6 +127,29 @@ def _disable_auth_caching(response):
     return response
 
 
+def _get_request_payload():
+    data = request.get_json(silent=True)
+    if isinstance(data, dict):
+        return data
+
+    if request.form:
+        return request.form.to_dict()
+
+    return {}
+
+
+def _build_session_payload():
+    data = _get_request_payload()
+    login_name = (data.get('loginName') or _get_authenticated_login_name() or '').strip() or None
+    session_id = data.get('sessionId') or data.get('session_id')
+
+    return {
+        **data,
+        'loginName': login_name,
+        'sessionId': session_id,
+    }
+
+
 def _set_auth_cookie(response, login_name: str):
     token = _auth_serializer.dumps({'loginName': login_name})
     response.set_cookie(
@@ -175,7 +198,7 @@ def _get_authenticated_login_name():
 
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
-    data = request.get_json(silent=True) or {}
+    data = _get_request_payload()
     login_name = (data.get('loginName') or '').strip()
     password = data.get('password', '')
 
@@ -192,7 +215,7 @@ def auth_login():
 
 @app.route('/api/auth/register', methods=['POST'])
 def auth_register():
-    data = request.get_json(silent=True) or {}
+    data = _get_request_payload()
     login_name = (data.get('loginName') or '').strip()
     password = data.get('password', '')
 
@@ -225,14 +248,31 @@ def auth_me():
 
 @app.route('/api/auth/logout', methods=['POST'])
 def auth_logout():
-    login_name = _get_authenticated_login_name()
+    session_data = _build_session_payload()
+    login_name = session_data.get('loginName')
+
+    flushed = state_machine.on_session_logout(session_data)
     if login_name:
-        logger.info('Logout successful: %s', login_name)
+        logger.info('Logout successful: %s (flushed=%s)', login_name, flushed)
     else:
         logger.info('Logout requested without active session')
 
     response = _disable_auth_caching(jsonify({'ok': True}))
     return _clear_auth_cookie(response)
+
+
+@app.route('/api/session/flush', methods=['POST'])
+def flush_session():
+    session_data = _build_session_payload()
+    flushed = state_machine.flush_session(session_data)
+
+    logger.info(
+        'Session flush requested: login=%s session=%s flushed=%s',
+        session_data.get('loginName'),
+        session_data.get('sessionId'),
+        flushed,
+    )
+    return _disable_auth_caching(jsonify({'ok': True, 'flushed': flushed}))
 
 
 @app.route('/health')
@@ -242,7 +282,7 @@ def health():
 
 @app.route('/api/synthesize', methods=['POST'])
 def synthesize():
-    data = request.get_json(silent=True) or {}
+    data = _get_request_payload()
     text = data.get('text', '').strip()
 
     if not text:

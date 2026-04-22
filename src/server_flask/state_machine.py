@@ -82,6 +82,92 @@ def _persist_current_conversation(username=None):
         logger.warning(f'Could not persist conversation history: {e}')
 
 
+def _session_matches_active_context(session_data: dict = None) -> bool:
+    session_data = session_data or {}
+
+    active_login = _normalize_username(robot_context.login_username)
+    active_session_id = robot_context.face_session_id
+    incoming_login = _normalize_username(
+        session_data.get('loginName') or session_data.get('login_name')
+    )
+    incoming_session_id = session_data.get('sessionId') or session_data.get('session_id')
+
+    if incoming_login and active_login and incoming_login != active_login:
+        return False
+
+    if incoming_session_id and active_session_id and incoming_session_id != active_session_id:
+        return False
+
+    if incoming_login and active_login:
+        return True
+
+    if incoming_session_id and active_session_id:
+        return True
+
+    return bool(active_login)
+
+
+def _reset_runtime_session_state(clear_login: bool):
+    robot_context.face_session_id = None
+    robot_context.proactive_question = ''
+    robot_context.continue_conversation = False
+    _reset_unknown_user_tracking()
+
+    if clear_login:
+        robot_context.login_username = None
+        robot_context.username = None
+        robot_context.needs_identification = False
+
+    if _proactive:
+        _proactive.cancel_timers()
+
+    if robot_context.state != 'idle':
+        robot_context.state = 'idle'
+        _emit_state_update()
+
+
+def flush_session(session_data: dict = None) -> bool:
+    session_data = session_data or {}
+    if not _session_matches_active_context(session_data):
+        logger.info('Flush skipped - session does not match active context: %s', session_data)
+        return False
+
+    login_name = _normalize_username(
+        session_data.get('loginName') or session_data.get('login_name')
+    ) or robot_context.login_username
+
+    logger.info(
+        'Flushing conversation for login=%s session=%s',
+        login_name,
+        session_data.get('sessionId') or robot_context.face_session_id,
+    )
+    _persist_current_conversation(login_name)
+    return True
+
+
+def on_client_disconnect(session_data: dict = None):
+    session_data = session_data or {}
+    if not _session_matches_active_context(session_data):
+        logger.info('Disconnect ignored - session does not match active context: %s', session_data)
+        return
+
+    flush_session(session_data)
+    _reset_runtime_session_state(clear_login=True)
+    logger.info('Client disconnect handled for session: %s', session_data)
+
+
+def on_session_logout(session_data: dict = None):
+    session_data = session_data or {}
+    if not _session_matches_active_context(session_data):
+        logger.info('Logout ignored - session does not match active context: %s', session_data)
+        return False
+
+    flush_session(session_data)
+    _reset_runtime_session_state(clear_login=True)
+    logger.info('Logout handled for session: %s', session_data)
+    return True
+
+
 def _reset_unknown_user_tracking():
     robot_context.unknown_user_interactions = 0
 

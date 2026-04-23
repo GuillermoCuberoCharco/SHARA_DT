@@ -115,21 +115,6 @@ const Login = ({ onLoginSuccess }) => {
                         />
                     </div>
 
-                    <div className="login-field">
-                        <label htmlFor="subjectCode">
-                            {isLogin ? 'Codigo de asignatura' : 'Codigo/s de asignatura'}
-                        </label>
-                        <input
-                            id="subjectCode"
-                            type="text"
-                            value={subjectCodesInput}
-                            onChange={(e) => setSubjectCodesInput(e.target.value)}
-                            placeholder={isLogin ? 'mat101' : 'mat101, mat102'}
-                            autoComplete="off"
-                            disabled={loading}
-                        />
-                    </div>
-
                     {!isLogin && (
                         <div className="login-field">
                             <label htmlFor="confirmPassword">Confirmar contrasena</label>
@@ -144,6 +129,21 @@ const Login = ({ onLoginSuccess }) => {
                             />
                         </div>
                     )}
+
+                    <div className="login-field">
+                        <label htmlFor="subjectCode">
+                            {isLogin ? 'Codigo de asignatura' : 'Codigo/s de asignatura'}
+                        </label>
+                        <input
+                            id="subjectCode"
+                            type="text"
+                            value={subjectCodesInput}
+                            onChange={(e) => setSubjectCodesInput(e.target.value)}
+                            placeholder={isLogin ? 'mat101' : 'mat101, mat102'}
+                            autoComplete="off"
+                            disabled={loading}
+                        />
+                    </div>
 
                     {error && <p className="login-error">{error}</p>}
 

@@ -74,7 +74,30 @@ export const useAuth = () => {
             body: JSON.stringify({ subject_codes: subjectCodes }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Error al anadir asignaturas');
+        if (!res.ok) throw new Error(data.error || 'Error al vincular asignaturas');
+        _storeSession(data);
+        return data;
+    };
+
+    const createSubject = async (subjectCode, maxStudents) => {
+        const token = getToken();
+        if (!token) {
+            throw new Error('Sesion no valida');
+        }
+
+        const res = await fetch(`${SERVER_URL}/auth/teacher/subjects`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+                subject_code: subjectCode,
+                max_students: maxStudents,
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error al crear la asignatura');
         _storeSession(data);
         return data;
     };
@@ -117,6 +140,7 @@ export const useAuth = () => {
         login,
         register,
         addSubjects,
+        createSubject,
         switchSubject,
         logout,
     };

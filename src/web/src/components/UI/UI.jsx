@@ -10,8 +10,17 @@ import ChatWindow from './subcomponents/ChatWindow';
 const TTS_PREFERENCE_KEY = 'shara_tts_enabled';
 
 const UI = ({ onRobotStateChange, onLogout }) => {
-    const { getUserId, getSubjectCode, getSubjectCodes, addSubjects, switchSubject } = useAuth();
+    const {
+        getUserId,
+        getUserRole,
+        getSubjectCode,
+        getSubjectCodes,
+        addSubjects,
+        createSubject,
+        switchSubject,
+    } = useAuth();
     const username = getUserId();
+    const userRole = getUserRole();
     const subjectCode = getSubjectCode();
     const displayUsername = username
         ? (subjectCode ? `${username} - ${subjectCode}` : username)
@@ -25,6 +34,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     const [conversationState, setConversationState] = useState('idle');
     const [subjectCodes, setSubjectCodes] = useState(() => getSubjectCodes());
     const [isAddingSubjects, setIsAddingSubjects] = useState(false);
+    const [isCreatingSubject, setIsCreatingSubject] = useState(false);
     const [isSwitchingSubject, setIsSwitchingSubject] = useState(false);
     const [subjectFeedback, setSubjectFeedback] = useState('');
     const [subjectFeedbackTone, setSubjectFeedbackTone] = useState('info');
@@ -161,7 +171,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
 
     const handleAddSubjects = useCallback(async (subjectCodesInput) => {
         const normalizedInput = subjectCodesInput.trim();
-        if (!normalizedInput || isAddingSubjects || isSwitchingSubject) {
+        if (!normalizedInput || isAddingSubjects || isCreatingSubject || isSwitchingSubject) {
             return null;
         }
 
@@ -178,7 +188,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
 
             if (addedSubjectCodes.length > 0) {
                 setSubjectFeedback(
-                    `Asignaturas anadidas: ${addedSubjectCodes.join(', ')}. `
+                    `Asignaturas vinculadas: ${addedSubjectCodes.join(', ')}. `
                     + 'Ya puedes pulsarlas para cambiar de contexto.',
                 );
                 setSubjectFeedbackTone('success');
@@ -189,13 +199,52 @@ const UI = ({ onRobotStateChange, onLogout }) => {
 
             return data;
         } catch (error) {
-            setSubjectFeedback(error.message || 'No se pudieron anadir las asignaturas.');
+            setSubjectFeedback(error.message || 'No se pudieron vincular las asignaturas.');
             setSubjectFeedbackTone('error');
             throw error;
         } finally {
             setIsAddingSubjects(false);
         }
-    }, [addSubjects, isAddingSubjects, isSwitchingSubject]);
+    }, [addSubjects, isAddingSubjects, isCreatingSubject, isSwitchingSubject]);
+
+    const handleCreateSubject = useCallback(async (subjectCodeInput, maxStudentsInput) => {
+        const normalizedSubjectCode = subjectCodeInput.trim();
+        const normalizedMaxStudents = maxStudentsInput.trim();
+        if (!normalizedSubjectCode || isAddingSubjects || isCreatingSubject || isSwitchingSubject) {
+            return null;
+        }
+
+        let maxStudents = null;
+        if (normalizedMaxStudents) {
+            maxStudents = Number(normalizedMaxStudents);
+            if (!Number.isInteger(maxStudents) || maxStudents < 1) {
+                setSubjectFeedback('El limite de alumnos debe ser un numero entero positivo.');
+                setSubjectFeedbackTone('error');
+                return null;
+            }
+        }
+
+        setIsCreatingSubject(true);
+        setSubjectFeedback('');
+        setSubjectFeedbackTone('info');
+
+        try {
+            const data = await createSubject(normalizedSubjectCode, maxStudents);
+            const updatedSubjectCodes = Array.isArray(data?.subject_codes) ? data.subject_codes : [];
+            const createdSubject = data?.created_subject?.code || normalizedSubjectCode;
+
+            setSubjectCodes(updatedSubjectCodes);
+            setSubjectFeedback(`Asignatura creada: ${createdSubject}.`);
+            setSubjectFeedbackTone('success');
+            return data;
+        } catch (error) {
+            setSubjectFeedback(error.message || 'No se pudo crear la asignatura.');
+            setSubjectFeedbackTone('error');
+            throw error;
+        } finally {
+            setIsCreatingSubject(false);
+        }
+    }, [createSubject, isAddingSubjects, isCreatingSubject, isSwitchingSubject]);
 
     const handleSwitchSubject = useCallback(async (nextSubjectCode) => {
         const normalizedSubjectCode = nextSubjectCode.trim().toLowerCase();
@@ -204,6 +253,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
             || normalizedSubjectCode === subjectCode
             || isSwitchingSubject
             || isAddingSubjects
+            || isCreatingSubject
             || isWaitingResponse
             || isRecording
         ) {
@@ -236,6 +286,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         }
     }, [
         isAddingSubjects,
+        isCreatingSubject,
         isRecording,
         isSwitchingSubject,
         isWaitingResponse,
@@ -312,6 +363,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
                 isRegistered={isRegistered}
                 connectionError={connectionError}
                 username={displayUsername}
+                userRole={userRole}
                 onLogout={onLogout}
                 onStartRecording={handleStartRecording}
                 onStopRecording={stopRecording}
@@ -323,8 +375,10 @@ const UI = ({ onRobotStateChange, onLogout }) => {
                 subjectCode={subjectCode}
                 subjectCodes={subjectCodes}
                 onAddSubjects={handleAddSubjects}
+                onCreateSubject={userRole === 'teacher' ? handleCreateSubject : null}
                 onSwitchSubject={handleSwitchSubject}
                 isAddingSubjects={isAddingSubjects}
+                isCreatingSubject={isCreatingSubject}
                 isSwitchingSubject={isSwitchingSubject}
                 subjectFeedback={subjectFeedback}
                 subjectFeedbackTone={subjectFeedbackTone}

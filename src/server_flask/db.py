@@ -121,8 +121,54 @@ def ensure_schema():
                     """
                     create table if not exists subjects (
                         code text primary key,
+                        created_by text references users(username) on delete set null,
+                        max_students integer,
                         created_at timestamptz not null default now()
                     )
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table subjects
+                    add column if not exists created_by text
+                    """
+                )
+                cur.execute(
+                    """
+                    alter table subjects
+                    add column if not exists max_students integer
+                    """
+                )
+                cur.execute(
+                    """
+                    do $$
+                    begin
+                        if not exists (
+                            select 1
+                            from pg_constraint
+                            where conname = 'subjects_created_by_fkey'
+                        ) then
+                            alter table subjects
+                            add constraint subjects_created_by_fkey
+                            foreign key (created_by) references users(username) on delete set null;
+                        end if;
+                    end $$;
+                    """
+                )
+                cur.execute(
+                    """
+                    do $$
+                    begin
+                        if not exists (
+                            select 1
+                            from pg_constraint
+                            where conname = 'subjects_max_students_check'
+                        ) then
+                            alter table subjects
+                            add constraint subjects_max_students_check
+                            check (max_students is null or max_students > 0);
+                        end if;
+                    end $$;
                     """
                 )
                 cur.execute(
@@ -173,6 +219,12 @@ def ensure_schema():
                     """
                     create index if not exists user_subjects_subject_user_idx
                     on user_subjects(subject_code, user_id)
+                    """
+                )
+                cur.execute(
+                    """
+                    create index if not exists subjects_created_by_idx
+                    on subjects(created_by)
                     """
                 )
 

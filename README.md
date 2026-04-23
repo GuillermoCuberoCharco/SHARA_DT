@@ -13,7 +13,7 @@ La rama `PI-ChatShara` implementa actualmente:
 - Recuperacion automatica del historial de chat de la asignatura activa al reconectar.
 - Contexto privado para profesorado con acceso a los historiales completos del alumnado de su asignatura activa, sin exponer esos chats en la UI.
 - Interfaz web de chat con estado de conexion, espera, grabacion de audio y reproduccion opcional de voz.
-- Gestion de asignaturas desde la propia interfaz para anadir nuevas asignaturas a la cuenta autenticada.
+- Gestion de asignaturas desde la propia interfaz: el alumnado solo puede vincular asignaturas existentes y el profesorado puede crear asignaturas con limite opcional de alumnos.
 - STT y TTS con Google Cloud integrados en el flujo del chat.
 - Vista visual del robot con ojos animados y anillo LED.
 
@@ -59,15 +59,16 @@ PI-ChatShara
 
 1. El usuario entra en la SPA y ve la pantalla de login/registro.
 2. En login debe indicar `username`, `password` y `subject_code`.
-3. En registro publico se crea siempre una cuenta `student` con una o varias `subject_codes`.
+3. En registro publico se crea siempre una cuenta `student` con una o varias `subject_codes` ya existentes.
 4. El frontend llama a `POST /auth/login` o `POST /auth/register`.
 5. El backend consulta o inserta usuarios en Postgres usando `DATABASE_URL`.
 6. El backend devuelve un JWT, `user_id`, `role`, `subject_code` activo y `subject_codes`.
 7. El frontend guarda esos datos en `localStorage`.
 8. Socket.IO se conecta a `/message` enviando el token en `auth`.
 9. Al conectar, el backend devuelve el historial persistido del usuario para esa asignatura activa.
-10. Desde la UI, el usuario autenticado puede anadir nuevas asignaturas con `POST /auth/subjects`.
-11. Desde ese mismo panel puede cambiar la asignatura activa pulsando una de las asignaturas disponibles; el frontend pide un nuevo JWT con `POST /auth/switch-subject` y reconecta el socket con el nuevo contexto.
+10. Desde la UI, el usuario autenticado puede vincular asignaturas existentes con `POST /auth/subjects`.
+11. El profesorado puede crear asignaturas nuevas con `POST /auth/teacher/subjects`, indicando un limite opcional de alumnos.
+12. Desde ese mismo panel puede cambiar la asignatura activa pulsando una de las asignaturas disponibles; el frontend pide un nuevo JWT con `POST /auth/switch-subject` y reconecta el socket con el nuevo contexto.
 
 ### 2. Chat
 
@@ -100,7 +101,7 @@ Usuario autenticado escribe texto o envia audio
 
 - Usuarios: se almacenan en Postgres usando la variable `DATABASE_URL`.
 - Tabla de usuarios: `users(username, password_hash, role, created_at)`.
-- Tabla de asignaturas: `subjects(code, created_at)`.
+- Tabla de asignaturas: `subjects(code, created_by, max_students, created_at)`.
 - Relacion usuario-asignatura: `user_subjects(user_id, subject_code, created_at)`.
 - Tabla de conversaciones: `chat_messages(id, user_id, subject_code, role, content, created_at)`.
 - Sesion web: el frontend guarda `auth_token`, `auth_user_id`, `auth_user_role`, `auth_subject_code` y `auth_subject_codes` en `localStorage`.
@@ -115,7 +116,8 @@ El backend crea automaticamente las tablas `users`, `subjects`, `user_subjects` 
 |---|---|---|
 | `POST` | `/auth/login` | Inicia sesion y devuelve `{ token, user_id, role, subject_code, subject_codes }` |
 | `POST` | `/auth/register` | Registra un alumno y devuelve `{ token, user_id, role, subject_code, subject_codes }` |
-| `POST` | `/auth/subjects` | Anade asignaturas al usuario autenticado y devuelve la lista actualizada |
+| `POST` | `/auth/subjects` | Vincula asignaturas existentes al usuario autenticado y devuelve la lista actualizada |
+| `POST` | `/auth/teacher/subjects` | Crea una asignatura nueva como profesor y la vincula a su cuenta |
 | `POST` | `/auth/switch-subject` | Cambia la asignatura activa del usuario autenticado y devuelve un nuevo JWT |
 | `GET` | `/health` | Devuelve `{ status, active_queries }` |
 | `GET` | `/*` | Sirve la SPA de React en produccion |
@@ -152,7 +154,7 @@ Respuesta:
 }
 ```
 
-### Ejemplo para anadir asignaturas desde la UI o HTTP
+### Ejemplo para vincular asignaturas existentes desde la UI o HTTP
 
 Cabecera:
 
@@ -165,6 +167,23 @@ Body:
 ```json
 {
   "subject_codes": ["mat103", "mat104"]
+}
+```
+
+### Ejemplo para crear una asignatura como profesor
+
+Cabecera:
+
+```http
+Authorization: Bearer <jwt>
+```
+
+Body:
+
+```json
+{
+  "subject_code": "mat105",
+  "max_students": 30
 }
 ```
 
@@ -298,8 +317,9 @@ En desarrollo:
 ### Registro web
 
 - El registro desde la interfaz web crea siempre cuentas `student`.
-- Durante el registro se pueden indicar una o varias asignaturas.
-- Una vez autenticado, cualquier usuario puede anadir nuevas asignaturas desde el panel del chat.
+- Durante el registro se pueden indicar una o varias asignaturas existentes.
+- Una vez autenticado, cualquier usuario puede vincular asignaturas existentes desde el panel del chat.
+- El profesorado puede crear asignaturas nuevas desde ese panel e indicar un limite opcional de alumnos.
 - Desde ese mismo panel se puede cambiar la asignatura activa sin cerrar sesion.
 
 ### CLI
@@ -321,7 +341,8 @@ python create_user.py alumno1 mipassword mat101
 Notas:
 
 - Si el usuario ya existe, el script actualiza su password y su rol.
-- Las nuevas asignaturas se anaden a las que ya tenia el usuario.
+- Para usuarios `student`, las asignaturas indicadas deben existir y respetar el limite de alumnos.
+- Para usuarios `teacher`, las asignaturas indicadas se crean si no existen y se vinculan a su cuenta.
 - Es el flujo recomendado para crear cuentas `teacher`.
 
 ## Migracion desde users.json

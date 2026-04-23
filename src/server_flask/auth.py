@@ -25,7 +25,7 @@ from flask import Blueprint, jsonify, request
 
 from db import ensure_schema, get_db_connection
 from subject_codes import is_valid_subject_code, normalize_subject_code, parse_subject_codes
-from user_roles import STUDENT_USER_ROLE, normalize_user_role
+from user_roles import STUDENT_USER_ROLE, is_teacher_role, normalize_user_role
 
 logger = logging.getLogger("Auth")
 
@@ -36,6 +36,13 @@ JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "8"))
 
 USERNAME_RE = re.compile(r"^[a-z0-9_-]{3,20}$")
 MIN_PASSWORD_LEN = 6
+
+
+class AuthActionError(Exception):
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
 
 
 def _issue_token(user_id: str, role: str, subject_code: str) -> str:
@@ -66,58 +73,155 @@ def _fetch_user(username: str):
             return cur.fetchone()
 
 
-def _create_user(username: str, password_hash: str, role: str = STUDENT_USER_ROLE) -> bool:
-    ensure_schema()
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
+def _parse_max_students(raw_value) -> int | None:
+    if raw_value is None:
+        return None
+
+    if isinstance(raw_value, str):
+        raw_value = raw_value.strip()
+        if not raw_value:
+            return None
+        if not raw_value.isdigit():
+            raise AuthActionError("El limite de alumnos debe ser un numero entero positivo")
+        max_students = int(raw_value)
+    elif isinstance(raw_value, bool):
+        raise AuthActionError("El limite de alumnos debe ser un numero entero positivo")
+    elif isinstance(raw_value, int):
+        max_students = raw_value
+    elif isinstance(raw_value, float) and raw_value.is_integer():
+        max_students = int(raw_value)
+    else:
+        raise AuthActionError("El limite de alumnos debe ser un numero entero positivo")
+
+    if max_students < 1:
+        raise AuthActionError("El limite de alumnos debe ser mayor que cero")
+
+    return max_students
+
+
+def _assign_existing_subjects_in_transaction(cur, username: str, subject_codes: list[str], user_role: str):
+    if not subject_codes:
+        return
+
+    normalized_role = normalize_user_role(user_role)
+
+    for subject_code in sorted(subject_codes):
+        cur.execute(
+            """
+            select code, max_students
+            from subjects
+            where code = %s
+            for update
+            """,
+            (subject_code,),
+        )
+        subject = cur.fetchone()
+        if subject is None:
+            raise AuthActionError(f"La asignatura {subject_code} no existe", 404)
+
+        cur.execute(
+            """
+            select 1
+            from user_subjects
+            where user_id = %s and subject_code = %s
+            """,
+            (username, subject_code),
+        )
+        if cur.fetchone() is not None:
+            continue
+
+        if normalized_role == STUDENT_USER_ROLE and subject["max_students"] is not None:
             cur.execute(
                 """
-                insert into users (username, password_hash, role)
-                values (%s, %s, %s)
-                on conflict (username) do nothing
-                returning username
+                select count(*) as student_count
+                from user_subjects us
+                join users u on u.username = us.user_id
+                where us.subject_code = %s and u.role = %s
                 """,
-                (username, password_hash, normalize_user_role(role)),
+                (subject_code, STUDENT_USER_ROLE),
             )
-            return cur.fetchone() is not None
-
-
-def _create_subjects(subject_codes: list[str]):
-    if not subject_codes:
-        return
-
-    ensure_schema()
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            for subject_code in subject_codes:
-                cur.execute(
-                    """
-                    insert into subjects (code)
-                    values (%s)
-                    on conflict (code) do nothing
-                    """,
-                    (subject_code,),
+            student_count = cur.fetchone()["student_count"]
+            if student_count >= subject["max_students"]:
+                raise AuthActionError(
+                    f"La asignatura {subject_code} ha alcanzado el limite de alumnos",
+                    409,
                 )
 
+        cur.execute(
+            """
+            insert into user_subjects (user_id, subject_code)
+            values (%s, %s)
+            on conflict (user_id, subject_code) do nothing
+            """,
+            (username, subject_code),
+        )
 
-def _assign_subjects(username: str, subject_codes: list[str]):
+
+def _assign_existing_subjects(username: str, subject_codes: list[str], user_role: str):
     if not subject_codes:
         return
 
-    _create_subjects(subject_codes)
-
     ensure_schema()
     with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            for subject_code in subject_codes:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _assign_existing_subjects_in_transaction(cur, username, subject_codes, user_role)
+
+
+def _register_student(username: str, password_hash: str, subject_codes: list[str]) -> bool:
+    ensure_schema()
+    with get_db_connection() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into users (username, password_hash, role)
+                    values (%s, %s, %s)
+                    on conflict (username) do nothing
+                    returning username
+                    """,
+                    (username, password_hash, STUDENT_USER_ROLE),
+                )
+                if cur.fetchone() is None:
+                    return False
+
+                _assign_existing_subjects_in_transaction(
+                    cur,
+                    username,
+                    subject_codes,
+                    STUDENT_USER_ROLE,
+                )
+                return True
+
+
+def _create_subject_for_teacher(teacher_id: str, subject_code: str, max_students: int | None):
+    ensure_schema()
+    with get_db_connection() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into subjects (code, created_by, max_students)
+                    values (%s, %s, %s)
+                    on conflict (code) do nothing
+                    returning code, max_students
+                    """,
+                    (subject_code, teacher_id, max_students),
+                )
+                subject = cur.fetchone()
+                if subject is None:
+                    raise AuthActionError(f"La asignatura {subject_code} ya existe", 409)
+
                 cur.execute(
                     """
                     insert into user_subjects (user_id, subject_code)
                     values (%s, %s)
                     on conflict (user_id, subject_code) do nothing
                     """,
-                    (username, subject_code),
+                    (teacher_id, subject_code),
                 )
+
+                return subject
 
 
 def _fetch_user_subjects(username: str) -> list[str]:
@@ -233,9 +337,9 @@ def register():
     password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
     try:
-        created = _create_user(username, password_hash, STUDENT_USER_ROLE)
-        if created:
-            _assign_subjects(username, subject_codes)
+        created = _register_student(username, password_hash, subject_codes)
+    except AuthActionError as exc:
+        return jsonify({"error": exc.message}), exc.status_code
     except psycopg.Error:
         logger.exception("[Auth] Database error during registration")
         return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
@@ -274,8 +378,10 @@ def add_subjects():
 
     try:
         previous_subjects = set(_fetch_user_subjects(user_id))
-        _assign_subjects(user_id, subject_codes)
+        _assign_existing_subjects(user_id, subject_codes, auth_context["role"])
         updated_subjects = _fetch_user_subjects(user_id)
+    except AuthActionError as exc:
+        return jsonify({"error": exc.message}), exc.status_code
     except psycopg.Error:
         logger.exception("[Auth] Database error while adding subjects")
         return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
@@ -290,6 +396,52 @@ def add_subjects():
         "subject_codes": updated_subjects,
         "added_subject_codes": added_subjects,
     })
+
+
+@auth_bp.route("/auth/teacher/subjects", methods=["POST"])
+def create_teacher_subject():
+    token = _extract_bearer_token()
+    auth_context = verify_token(token) if token else None
+    if not auth_context:
+        return jsonify({"error": "Sesion no valida"}), 401
+
+    if not is_teacher_role(auth_context["role"]):
+        return jsonify({"error": "Solo el profesorado puede crear asignaturas"}), 403
+
+    data = request.get_json(silent=True) or {}
+    subject_code = normalize_subject_code(data.get("subject_code"))
+
+    if not subject_code:
+        return jsonify({"error": "Debes indicar una asignatura"}), 400
+
+    if not is_valid_subject_code(subject_code):
+        return jsonify({"error": "Codigo de asignatura invalido"}), 400
+
+    try:
+        max_students = _parse_max_students(data.get("max_students"))
+        subject = _create_subject_for_teacher(
+            auth_context["user_id"],
+            subject_code,
+            max_students,
+        )
+        updated_subjects = _fetch_user_subjects(auth_context["user_id"])
+    except AuthActionError as exc:
+        return jsonify({"error": exc.message}), exc.status_code
+    except psycopg.Error:
+        logger.exception("[Auth] Database error while creating teacher subject")
+        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+
+    logger.info("[Auth] Teacher %s created subject: %s", auth_context["user_id"], subject_code)
+    return jsonify({
+        "user_id": auth_context["user_id"],
+        "role": auth_context["role"],
+        "subject_code": auth_context["subject_code"],
+        "subject_codes": updated_subjects,
+        "created_subject": {
+            "code": subject["code"],
+            "max_students": subject["max_students"],
+        },
+    }), 201
 
 
 @auth_bp.route("/auth/switch-subject", methods=["POST"])
@@ -341,14 +493,16 @@ def verify_token(token: str) -> dict[str, str] | None:
         if not is_valid_subject_code(subject_code):
             return None
 
-        role = payload.get("role")
-        if role is None:
-            try:
-                user = _fetch_user(user_id)
-            except psycopg.Error:
-                logger.exception("[Auth] Database error during token verification")
-                user = None
-            role = user.get("role") if user else None
+        try:
+            user = _fetch_user(user_id)
+        except psycopg.Error:
+            logger.exception("[Auth] Database error during token verification")
+            return None
+
+        if user is None:
+            return None
+
+        role = user.get("role")
 
         try:
             if not _user_has_subject(user_id, subject_code):

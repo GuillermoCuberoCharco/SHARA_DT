@@ -341,6 +341,10 @@ html {
   border-color: rgba(99, 102, 241, 0.5);
 }
 
+.subject-create-form input[type="number"] {
+  flex: 0 0 92px;
+}
+
 .subject-manager-form button {
   border: none;
   border-radius: 12px;
@@ -654,6 +658,10 @@ html {
 @media (max-width: 640px) {
   .subject-manager-form {
     flex-direction: column;
+  }
+
+  .subject-create-form input[type="number"] {
+    flex-basis: auto;
   }
 
   .subject-manager-form button {

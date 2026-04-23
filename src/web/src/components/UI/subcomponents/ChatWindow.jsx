@@ -116,6 +116,9 @@ const ChatWindow = ({
     isSwitchingSubject,
     subjectFeedback,
     subjectFeedbackTone,
+    userRole,
+    onCreateSubject,
+    isCreatingSubject,
 }) => {
     const getStatusInfo = () => {
         if (connectionError) return { dot: 'error', label: 'Sin conexion' };
@@ -130,7 +133,10 @@ const ChatWindow = ({
     const textareaRef = useRef(null);
     const [isSubjectPanelOpen, setIsSubjectPanelOpen] = useState(false);
     const [subjectInput, setSubjectInput] = useState('');
+    const [newSubjectInput, setNewSubjectInput] = useState('');
+    const [maxStudentsInput, setMaxStudentsInput] = useState('');
     const [shouldRestoreTextareaFocus, setShouldRestoreTextareaFocus] = useState(false);
+    const isTeacher = userRole === 'teacher';
 
     useEffect(() => {
         const element = textareaRef.current;
@@ -160,13 +166,31 @@ const ChatWindow = ({
     const handleSubjectSubmit = async (event) => {
         event.preventDefault();
 
-        if (!onAddSubjects || !subjectInput.trim() || isAddingSubjects) {
+        if (!onAddSubjects || !subjectInput.trim() || isAddingSubjects || isCreatingSubject) {
             return;
         }
 
         try {
             await onAddSubjects(subjectInput);
             setSubjectInput('');
+        } catch {
+            // The parent already exposes the error message in the panel.
+        }
+    };
+
+    const handleCreateSubjectSubmit = async (event) => {
+        event.preventDefault();
+
+        if (!onCreateSubject || !newSubjectInput.trim() || isCreatingSubject || isAddingSubjects) {
+            return;
+        }
+
+        try {
+            const data = await onCreateSubject(newSubjectInput, maxStudentsInput);
+            if (data) {
+                setNewSubjectInput('');
+                setMaxStudentsInput('');
+            }
         } catch {
             // The parent already exposes the error message in the panel.
         }
@@ -248,6 +272,7 @@ const ChatWindow = ({
                                         || code === subjectCode
                                         || isSwitchingSubject
                                         || isAddingSubjects
+                                        || isCreatingSubject
                                         || !isRegistered
                                         || isWaitingResponse
                                         || isRecording
@@ -264,20 +289,49 @@ const ChatWindow = ({
                             type="text"
                             value={subjectInput}
                             onChange={(event) => setSubjectInput(event.target.value)}
-                            placeholder="mat101, mat102"
+                            placeholder="codigo existente"
                             autoComplete="off"
-                            disabled={isAddingSubjects || isSwitchingSubject}
+                            disabled={isAddingSubjects || isCreatingSubject || isSwitchingSubject}
                         />
                         <button
                             type="submit"
-                            disabled={!subjectInput.trim() || isAddingSubjects || isSwitchingSubject}
+                            disabled={!subjectInput.trim() || isAddingSubjects || isCreatingSubject || isSwitchingSubject}
                         >
-                            {isAddingSubjects ? 'Anadiendo...' : 'Anadir'}
+                            {isAddingSubjects ? 'Vinculando...' : 'Vincular'}
                         </button>
                     </form>
 
+                    {isTeacher && onCreateSubject && (
+                        <form className="subject-manager-form subject-create-form" onSubmit={handleCreateSubjectSubmit}>
+                            <input
+                                type="text"
+                                value={newSubjectInput}
+                                onChange={(event) => setNewSubjectInput(event.target.value)}
+                                placeholder="nueva asignatura"
+                                autoComplete="off"
+                                disabled={isAddingSubjects || isCreatingSubject || isSwitchingSubject}
+                            />
+                            <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={maxStudentsInput}
+                                onChange={(event) => setMaxStudentsInput(event.target.value)}
+                                placeholder="limite"
+                                autoComplete="off"
+                                disabled={isAddingSubjects || isCreatingSubject || isSwitchingSubject}
+                            />
+                            <button
+                                type="submit"
+                                disabled={!newSubjectInput.trim() || isAddingSubjects || isCreatingSubject || isSwitchingSubject}
+                            >
+                                {isCreatingSubject ? 'Creando...' : 'Crear'}
+                            </button>
+                        </form>
+                    )}
+
                     <p className={`subject-manager-help ${subjectFeedbackTone}`}>
-                        {subjectFeedback || 'Pulsa una asignatura para cambiar de contexto o anade nuevas separadas por comas.'}
+                        {subjectFeedback || 'Pulsa una asignatura para cambiar de contexto o vincula un codigo existente.'}
                     </p>
                 </div>
             )}
@@ -385,9 +439,12 @@ ChatWindow.propTypes = {
     conversationState: PropTypes.string,
     subjectCode: PropTypes.string,
     subjectCodes: PropTypes.arrayOf(PropTypes.string),
+    userRole: PropTypes.string,
     onAddSubjects: PropTypes.func,
+    onCreateSubject: PropTypes.func,
     onSwitchSubject: PropTypes.func,
     isAddingSubjects: PropTypes.bool,
+    isCreatingSubject: PropTypes.bool,
     isSwitchingSubject: PropTypes.bool,
     subjectFeedback: PropTypes.string,
     subjectFeedbackTone: PropTypes.string,
@@ -408,9 +465,12 @@ ChatWindow.defaultProps = {
     conversationState: 'idle',
     subjectCode: '',
     subjectCodes: [],
+    userRole: 'student',
     onAddSubjects: null,
+    onCreateSubject: null,
     onSwitchSubject: null,
     isAddingSubjects: false,
+    isCreatingSubject: false,
     isSwitchingSubject: false,
     subjectFeedback: '',
     subjectFeedbackTone: 'info',

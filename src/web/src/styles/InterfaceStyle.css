@@ -25,6 +25,11 @@ html {
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
   color: #f2f8ff;
   pointer-events: auto;
+  transition: width 0.2s ease, padding 0.2s ease;
+}
+
+.led-legend-panel-collapsed {
+  width: min(350px, calc(100vw - 36px));
 }
 
 .led-legend-session-bar {
@@ -64,9 +69,69 @@ html {
 }
 
 .led-legend-title {
-  margin: 6px 0 12px;
+  margin: 6px 0 0;
   font-size: 22px;
   line-height: 1.1;
+}
+
+.led-legend-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.led-legend-header-copy {
+  min-width: 0;
+}
+
+.led-legend-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f6f9ff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.led-legend-toggle:hover {
+  background: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+.led-legend-toggle:focus-visible {
+  outline: 2px solid rgba(246, 249, 255, 0.55);
+  outline-offset: 2px;
+}
+
+.led-legend-toggle-icon {
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-1px);
+  transition: transform 0.2s ease;
+}
+
+.led-legend-toggle[aria-expanded="true"] .led-legend-toggle-icon {
+  transform: rotate(225deg) translateY(-1px);
+}
+
+.led-legend-content {
+  margin-top: 12px;
+}
+
+.led-legend-content[hidden] {
+  display: none;
 }
 
 .led-legend-list {
@@ -214,6 +279,10 @@ html {
 
   .led-legend-title {
     font-size: 18px;
+  }
+
+  .led-legend-header {
+    align-items: center;
   }
 
   .led-legend-session-bar {

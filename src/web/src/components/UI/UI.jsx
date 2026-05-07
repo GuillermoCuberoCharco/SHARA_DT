@@ -128,6 +128,7 @@ const UI = ({
     const [connectionError, setConnectionError] = useState(false);
     const [isWaitingResponse, setIsWaitingResponse] = useState(false);
     const [faceDetected, setFaceDetected] = useState(false);
+    const [isLedLegendOpen, setIsLedLegendOpen] = useState(true);
     const [logoutError, setLogoutError] = useState('');
     const lastUiStatusRef = useRef(null);
 
@@ -304,7 +305,10 @@ const UI = ({
 
     return (
         <div className="ui-overlay">
-            <aside className="led-legend-panel" aria-label="Leyenda LED de SHARA">
+            <aside
+                className={`led-legend-panel${isLedLegendOpen ? '' : ' led-legend-panel-collapsed'}`}
+                aria-label="Leyenda LED de SHARA"
+            >
                 <div className="led-legend-session-bar">
                     <div className="led-legend-session-copy">
                         <p className="led-legend-kicker">SESION ACTIVA</p>
@@ -325,19 +329,41 @@ const UI = ({
                     <p className="session-logout-error">{logoutError}</p>
                 )}
 
-                <p className="led-legend-section-label">ESTADOS LED</p>
-                <h2 className="led-legend-title">Significado de colores</h2>
-                <ul className="led-legend-list">
-                    {LED_LEGEND_ITEMS.map((item) => (
-                        <li key={item.id} className="led-legend-item">
-                            <span className={`led-legend-chip ${item.chipClass}`} />
-                            <div className="led-legend-copy">
-                                <span className="led-legend-item-title">{item.title}</span>
-                                <span className="led-legend-item-description">{item.description}</span>
-                            </div>
-                        </li>
-                    ))}
-                </ul>
+                <div className="led-legend-header">
+                    <div className="led-legend-header-copy">
+                        <p className="led-legend-section-label">ESTADOS LED</p>
+                        <h2 className="led-legend-title">Significado de colores</h2>
+                    </div>
+
+                    <button
+                        className="led-legend-toggle"
+                        type="button"
+                        onClick={() => { setIsLedLegendOpen((isOpen) => !isOpen); }}
+                        aria-expanded={isLedLegendOpen}
+                        aria-controls="led-legend-content"
+                    >
+                        <span>{isLedLegendOpen ? 'Ocultar' : 'Mostrar'}</span>
+                        <span className="led-legend-toggle-icon" aria-hidden="true" />
+                    </button>
+                </div>
+
+                <div
+                    id="led-legend-content"
+                    className="led-legend-content"
+                    hidden={!isLedLegendOpen}
+                >
+                    <ul className="led-legend-list">
+                        {LED_LEGEND_ITEMS.map((item) => (
+                            <li key={item.id} className="led-legend-item">
+                                <span className={`led-legend-chip ${item.chipClass}`} />
+                                <div className="led-legend-copy">
+                                    <span className="led-legend-item-title">{item.title}</span>
+                                    <span className="led-legend-item-description">{item.description}</span>
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
             </aside>
 
             {sharedStream && (

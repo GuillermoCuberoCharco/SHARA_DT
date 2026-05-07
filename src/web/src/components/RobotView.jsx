@@ -20,9 +20,46 @@ const SCREEN = { top: 0.180283, left: 0.270822, width: 0.423782, height: 0.18656
 // Adjust top/left to match the physical LED ring location on shara.png.
 const LED_RING = { top: 0.65, left: 0.48, size: 0.236 };
 
+const getContainedImageRect = (img) => {
+    const box = img.getBoundingClientRect();
+    const naturalWidth = img.naturalWidth || box.width;
+    const naturalHeight = img.naturalHeight || box.height;
+
+    if (!naturalWidth || !naturalHeight || !box.width || !box.height) {
+        return box;
+    }
+
+    const imageAspect = naturalWidth / naturalHeight;
+    const boxAspect = box.width / box.height;
+
+    if (boxAspect > imageAspect) {
+        const height = box.height;
+        const width = height * imageAspect;
+
+        return {
+            top: box.top,
+            left: box.left + (box.width - width) / 2,
+            width,
+            height,
+        };
+    }
+
+    const width = box.width;
+    const height = width / imageAspect;
+
+    return {
+        top: box.top + (box.height - height) / 2,
+        left: box.left,
+        width,
+        height,
+    };
+};
+
 const RobotView = ({ robotState }) => {
+    const containerRef = useRef(null);
     const imgRef = useRef(null);
     const canvasRef = useRef(null);
+    const overlayFrameRef = useRef(null);
 
     const { socket } = useWebSocketContext();
     const { setFace, refresh } = useEyeRenderer(canvasRef);
@@ -35,7 +72,7 @@ const RobotView = ({ robotState }) => {
         const canvas = canvasRef.current;
         if (!img || !canvas) return;
 
-        const { width: rw, height: rh, left: rl, top: rt } = img.getBoundingClientRect();
+        const { width: rw, height: rh, left: rl, top: rt } = getContainedImageRect(img);
 
         const screenTop = rt + rh * SCREEN.top;
         const screenLeft = rl + rw * SCREEN.left;
@@ -74,18 +111,50 @@ const RobotView = ({ robotState }) => {
         });
     }, [refresh]);
 
+    const scheduleOverlay = useCallback(() => {
+        if (overlayFrameRef.current) {
+            cancelAnimationFrame(overlayFrameRef.current);
+        }
+
+        overlayFrameRef.current = requestAnimationFrame(() => {
+            overlayFrameRef.current = null;
+            computeOverlay();
+        });
+    }, [computeOverlay]);
+
     useEffect(() => {
         const img = imgRef.current;
         if (!img) return;
-        computeOverlay();
-        const ro = new ResizeObserver(computeOverlay);
+        const container = containerRef.current;
+        const viewport = window.visualViewport;
+
+        scheduleOverlay();
+
+        const ro = new ResizeObserver(scheduleOverlay);
         ro.observe(img);
-        window.addEventListener('resize', computeOverlay);
+        if (container) {
+            ro.observe(container);
+        }
+
+        window.addEventListener('resize', scheduleOverlay);
+        window.addEventListener('orientationchange', scheduleOverlay);
+        viewport?.addEventListener('resize', scheduleOverlay);
+        viewport?.addEventListener('scroll', scheduleOverlay);
+
+        const settleTimer = setTimeout(scheduleOverlay, 250);
+
         return () => {
             ro.disconnect();
-            window.removeEventListener('resize', computeOverlay);
+            clearTimeout(settleTimer);
+            if (overlayFrameRef.current) {
+                cancelAnimationFrame(overlayFrameRef.current);
+            }
+            window.removeEventListener('resize', scheduleOverlay);
+            window.removeEventListener('orientationchange', scheduleOverlay);
+            viewport?.removeEventListener('resize', scheduleOverlay);
+            viewport?.removeEventListener('scroll', scheduleOverlay);
         };
-    }, [computeOverlay]);
+    }, [scheduleOverlay]);
 
     useEffect(() => {
         if (!socket) return;
@@ -106,14 +175,14 @@ const RobotView = ({ robotState }) => {
     }, [robotState, setFace]);
 
     return (
-        <div style={styles.container}>
+        <div ref={containerRef} style={styles.container}>
             <div style={styles.background} />
             <img
                 ref={imgRef}
                 src="/images/shara.png"
                 alt="SHARA Robot"
                 style={styles.robotImage}
-                onLoad={computeOverlay}
+                onLoad={scheduleOverlay}
                 onError={(e) => { e.target.style.display = 'none'; }}
             />
             <canvas ref={canvasRef} style={styles.canvas} />

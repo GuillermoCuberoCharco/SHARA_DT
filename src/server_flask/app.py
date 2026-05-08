@@ -293,7 +293,7 @@ def synthesize():
 
         audio_bytes = text_to_speech(text)
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        return jsonify({'audioContent': audio_b64})
+        return jsonify({'audioContent': audio_b64, 'audioMimeType': 'audio/wav'})
     except Exception as exc:
         logger.error(f'TTS synthesis error: {exc}')
         return jsonify({'error': str(exc)}), 500

@@ -2,6 +2,11 @@ import axios from 'axios';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AUDIO_SETTINGS, SERVER_URL } from '../../../config';
 import { useWebSocketContext } from '../../../contexts/WebSocketContext';
+import {
+    createAudioObjectUrl,
+    playAudioUrl,
+    revokeAudioObjectUrl,
+} from '../../../utils/audioPlayback';
 
 const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSubmitted) => {
     const [isRecording, setIsRecording] = useState(false);
@@ -353,44 +358,41 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
         // useEffect syncs isWaitingResponseRef.current = false.
     };
 
-    const handleSynthesize = async (text, audioB64 = null) => {
+    const handleSynthesize = async (text, audioB64 = null, audioMimeType = 'audio/wav') => {
         if (!text && !audioB64) return;
+
+        let audioSrcUrl = null;
 
         try {
             setIsSpeaking(true);
             console.log('🔊 Synthesizing speech...');
 
-            let audioSrcUrl = null;
+            let resolvedAudioMimeType = audioMimeType || 'audio/wav';
 
             if (audioB64) {
-                audioSrcUrl = `data:audio/wav;base64,${audioB64}`;
+                audioSrcUrl = createAudioObjectUrl(audioB64, resolvedAudioMimeType);
             } else if (text) {
                 // Fallback: request TTS synthesis via HTTP (only when no audio in message)
                 const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text });
                 if (response.data?.audioContent) {
-                    audioSrcUrl = `data:audio/wav;base64,${response.data.audioContent}`;
+                    resolvedAudioMimeType = response.data.audioMimeType || 'audio/wav';
+                    audioSrcUrl = createAudioObjectUrl(response.data.audioContent, resolvedAudioMimeType);
                 }
             }
 
             if (audioSrcUrl) {
                 setAudioSrc(audioSrcUrl);
 
-                await new Promise((resolve, reject) => {
-                    const audio = new Audio(audioSrcUrl);
-                    audio.onerror = (e) => {
-                        console.error('Error playing audio:', e);
-                        reject(e);
-                    };
-                    audio.onended = () => {
-                        console.log('✅ Audio playback finished');
-                        resolve();
-                    };
-                    audio.play().catch(reject);
-                });
+                await playAudioUrl(audioSrcUrl);
+                console.log('[SHARA][audio] Audio playback finished');
             }
         } catch (error) {
+            if (error?.name === 'NotAllowedError') {
+                console.warn('[SHARA][audio] Browser blocked playback until a user gesture unlocks audio.');
+            }
             console.error('❌ Error synthesizing speech:', error);
         } finally {
+            revokeAudioObjectUrl(audioSrcUrl);
             setIsSpeaking(false);
             setAudioSrc(null);
         }

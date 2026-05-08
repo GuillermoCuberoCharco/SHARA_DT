@@ -4,6 +4,7 @@ import SessionLogin from "./components/SessionLogin";
 import UI from "./components/UI/UI";
 import { WebSocketProvider } from "./contexts/WebSocketContext";
 import { SERVER_URL } from "./config";
+import { installAudioUnlockListeners } from "./utils/audioPlayback";
 import { buildAuthenticatedSessionIdentity } from "./utils/sessionIdentity";
 
 function App() {
@@ -24,6 +25,10 @@ function App() {
       console.error("Connection error:", error);
     }
   };
+
+  useEffect(() => {
+    return installAudioUnlockListeners();
+  }, []);
 
   useEffect(() => {
     sessionIdentityRef.current = sessionIdentity;

@@ -173,7 +173,11 @@ const UI = ({
 
         if (message.text?.trim()) {
             console.log('[SHARA][robot]', message.text);
-            await handleSynthesize(message.text, message.audio || null);
+            await handleSynthesize(
+                message.text,
+                message.audio || null,
+                message.audioMimeType || 'audio/wav',
+            );
         }
         emit('tts_complete', {});
         setIsWaitingResponse(false);

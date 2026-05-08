@@ -683,6 +683,7 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
         'text': response.text or '',
         'state': response.robot_mood or 'neutral',
         'audio': audio_b64,
+        'audioMimeType': 'audio/wav',
         'continue': response.continue_conversation,
     }
 

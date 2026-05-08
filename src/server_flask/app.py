@@ -289,11 +289,11 @@ def synthesize():
         return jsonify({'error': 'No text provided'}), 400
 
     try:
-        from services.cloud.google_api import text_to_speech
+        from services.cloud.google_api import TTS_AUDIO_MIME_TYPE, text_to_speech
 
         audio_bytes = text_to_speech(text)
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        return jsonify({'audioContent': audio_b64, 'audioMimeType': 'audio/wav'})
+        return jsonify({'audioContent': audio_b64, 'audioMimeType': TTS_AUDIO_MIME_TYPE})
     except Exception as exc:
         logger.error(f'TTS synthesis error: {exc}')
         return jsonify({'error': str(exc)}), 500
@@ -303,7 +303,7 @@ def synthesize():
 def recognize_face():
     """
     Compatibility endpoint for older clients.
-    Face recognition is now replaced by the initial session login.
+    Legacy recognize-face requests now resolve to the active session identity.
     """
     try:
         client_id = request.form.get('clientId') or request.headers.get('X-Client-Id') or 'client_web'
@@ -340,7 +340,7 @@ def recognize_face():
         )
         return jsonify(response)
     except Exception as exc:
-        logger.error(f'Face recognition compatibility error: {exc}', exc_info=True)
+        logger.error(f'Session identity compatibility error: {exc}', exc_info=True)
         return jsonify({'error': str(exc)}), 500
 
 

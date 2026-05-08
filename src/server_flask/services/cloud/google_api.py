@@ -9,7 +9,7 @@ STT configurations:
                           (same format as the physical robot's PyAudio stream)
 
 TTS configuration:
-    voice / tts_config  — Spanish female voice, LINEAR16 at 24kHz
+    voice / tts_config  — Spanish female voice, MP3 for mobile browser playback
 """
 
 import json
@@ -85,9 +85,11 @@ voice = texttospeech.VoiceSelectionParams(
     ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
 )
 
+TTS_AUDIO_MIME_TYPE = 'audio/mpeg'
+
+# MP3 avoids mobile browser playback issues seen with WAV/PCM blobs.
 tts_config = texttospeech.AudioConfig(
-    audio_encoding=texttospeech.AudioEncoding.LINEAR16,
-    sample_rate_hertz=24000,
+    audio_encoding=texttospeech.AudioEncoding.MP3,
     pitch=-0.4,
 )
 
@@ -255,13 +257,13 @@ def compose_streaming_fallback_speech_to_text(audio_generator):
 
 def text_to_speech(text: str) -> bytes:
     """
-    Converts text to speech audio (LINEAR16).
+    Converts text to speech audio (MP3).
 
     Args:
         text: Text to synthesize
 
     Returns:
-        Audio bytes (LINEAR16, 24000 Hz)
+        Audio bytes (MP3)
     """
     synthesis_input = texttospeech.SynthesisInput(text=text)
     response = clientTTS.synthesize_speech(

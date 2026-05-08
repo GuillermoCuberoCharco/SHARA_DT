@@ -1,4 +1,4 @@
-name: Build Face Recognition Image
+name: Build SHARA DT Image
 
 on:
   workflow_dispatch:
@@ -26,7 +26,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/shara-dt-face-recognition
+          images: ghcr.io/${{ github.repository_owner }}/shara-dt
           tags: |
             type=raw,value=latest
             type=sha
@@ -35,7 +35,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.face-recognition
+          file: ./Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -71,7 +71,7 @@ def _load_conversation_history_for(username):
 def _persist_current_conversation(username=None):
     # Always use login_username as the stable history key.
     # Fall back to the provided username only when no login session is active
-    # (legacy / face-recognition-only mode).
+    # (legacy non-login mode).
     key = robot_context.login_username or username
     if _server is None or not key:
         return
@@ -683,7 +683,7 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
         'text': response.text or '',
         'state': response.robot_mood or 'neutral',
         'audio': audio_b64,
-        'audioMimeType': 'audio/wav',
+        'audioMimeType': getattr(response, 'audio_mime_type', 'audio/mpeg'),
         'continue': response.continue_conversation,
     }
 

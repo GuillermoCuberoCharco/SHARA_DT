@@ -3,6 +3,28 @@ const SILENT_WAV_DATA_URI = 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABA
 let sharedAudioElement = null;
 let isUnlocked = false;
 let unlockPromise = null;
+const unlockListeners = new Set();
+
+const setAudioUnlocked = (nextUnlocked) => {
+    if (isUnlocked === nextUnlocked) {
+        return;
+    }
+
+    isUnlocked = nextUnlocked;
+    unlockListeners.forEach((listener) => {
+        listener(isUnlocked);
+    });
+};
+
+export const isAudioPlaybackUnlocked = () => isUnlocked;
+
+export const subscribeAudioPlaybackUnlock = (listener) => {
+    unlockListeners.add(listener);
+
+    return () => {
+        unlockListeners.delete(listener);
+    };
+};
 
 const getSharedAudioElement = () => {
     if (typeof Audio === 'undefined') {
@@ -49,7 +71,7 @@ export const unlockAudioPlayback = () => {
 
     unlockPromise = audio.play()
         .then(() => {
-            isUnlocked = true;
+            setAudioUnlocked(true);
             resetAudioElement(audio);
             audio.removeAttribute('src');
             audio.load();
@@ -97,7 +119,7 @@ export const installAudioUnlockListeners = () => {
     };
 };
 
-export const createAudioObjectUrl = (audioB64, mimeType = 'audio/wav') => {
+export const createAudioObjectUrl = (audioB64, mimeType = 'audio/mpeg') => {
     if (
         typeof window === 'undefined'
         || typeof window.atob !== 'function'
@@ -170,7 +192,7 @@ export const playAudioUrl = async (audioUrl) => {
             await playResult;
         }
 
-        isUnlocked = true;
+        setAudioUnlocked(true);
         return await playbackFinished;
     } catch (error) {
         cleanup();

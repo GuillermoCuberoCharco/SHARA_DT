@@ -12,7 +12,12 @@ import logging
 import time
 from dataclasses import dataclass
 
-from .google_api import speech_to_text, text_to_speech, compose_streaming_fallback_speech_to_text
+from .google_api import (
+    TTS_AUDIO_MIME_TYPE,
+    compose_streaming_fallback_speech_to_text,
+    speech_to_text,
+    text_to_speech,
+)
 from .openai_api import generate_response, load_conversation_history, save_conversation_history, clear_conversation_history
 
 logger = logging.getLogger('Server')
@@ -35,6 +40,7 @@ class Response:
     continue_conversation: bool
     robot_mood: str = 'neutral'
     text: str = None
+    audio_mime_type: str = TTS_AUDIO_MIME_TYPE
 
 
 def query(request: Request):

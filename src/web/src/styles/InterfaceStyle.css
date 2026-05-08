@@ -13,6 +13,28 @@ html {
   pointer-events: none;
 }
 
+.audio-unlock-button {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(12, 21, 34, 0.88);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.32);
+  color: #f6f9ff;
+  font-size: 14px;
+  font-weight: 800;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.audio-unlock-button:focus-visible {
+  outline: 2px solid rgba(246, 249, 255, 0.55);
+  outline-offset: 2px;
+}
+
 .led-legend-panel {
   position: fixed;
   top: 18px;
@@ -350,6 +372,12 @@ html {
 
   .session-logout-button {
     width: 100%;
+  }
+
+  .audio-unlock-button {
+    right: 12px;
+    bottom: 12px;
+    max-width: calc(100vw - 24px);
   }
 }
 

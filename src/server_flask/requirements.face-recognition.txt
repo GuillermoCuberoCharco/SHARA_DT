@@ -1,2 +1,0 @@
--r requirements.txt
-face-recognition==1.3.0

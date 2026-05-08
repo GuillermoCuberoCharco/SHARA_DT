@@ -1,7 +1,15 @@
 .git
 .vscode
 .claude
+.codex_dbinspect
 .env
+.npm-cache
+logs
+temp
+testing
+test_data
+coverage
+*.log
 
 **/__pycache__
 **/*.pyc

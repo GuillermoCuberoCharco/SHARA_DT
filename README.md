@@ -2,14 +2,14 @@
 
 SHARA_DT is the web-based digital twin of SHARA. It reproduces the physical robot's conversational flow with a Flask + Socket.IO + React/Vite architecture, replacing embedded sensors and actuators with browser camera, microphone, facial rendering, and audio playback.
 
-The system currently runs as a single service: Flask serves the built SPA, exposes the HTTP API, and hosts the Socket.IO channel used by the web interface for conversation, face recognition, and robot state visualization.
+The system currently runs as a single service: Flask serves the built SPA, exposes the HTTP API, and hosts the Socket.IO channel used by the web interface for conversation, session identity, presence, and robot state visualization.
 
 ## Current System Status
 
-- Main backend lives in `src/server_flask` with Flask, Socket.IO, the state machine, proactive behavior, OpenAI integration, Google Cloud STT/TTS, and face recognition.
+- Main backend lives in `src/server_flask` with Flask, Socket.IO, the state machine, proactive behavior, OpenAI integration, Google Cloud STT/TTS, and session identity.
 - Frontend lives in `src/web` with React + Vite for camera capture, audio capture, chat UI, eye rendering, and LED ring rendering.
 - Current cloud stack uses OpenAI `gpt-4o-mini`, Google batch STT at `16 kHz`, and Google TTS in Spanish (`es-ES`, LINEAR16 output).
-- Batch face recognition is operational, with local face detection in the browser and embeddings generated on the backend with `face_recognition`.
+- Face presence is detected locally in the browser with BlazeFace; identity is handled through session login and the stored SHARA name.
 - Voice flow is operational with PCM LINEAR16 capture through `AudioWorklet` and a blob-based fallback when the worklet is unavailable.
 - Contextual conversation is persisted per user, with tool calling for both `record_face` and `set_username`.
 - Deployment is prepared for Render through `Dockerfile` and `render.yaml`.
@@ -18,14 +18,11 @@ The system currently runs as a single service: Flask serves the built SPA, expos
 
 The previous README had become heavily focused on the comparison with the physical robot. The current implementation also includes these relevant improvements:
 
-- Batch face recognition with `faceBoxes` sent by the frontend to improve embedding extraction.
-- Current face confirmation semantics:
-  - known user confirmed after `3` valid recognitions,
-  - unknown user confirmed after `6` valid recognitions.
-- Real facial persistence in `encodings.csv`, with automatic migration from `face_database.json` if a legacy database exists.
+- Frontend face-presence detection with BlazeFace, wired to the shared session identity flow.
+- Login-based identity persistence through the auth/session model and stored SHARA name.
 - Operational parity for `record_face` and `set_username` inside the state machine:
-  - `record_face` persists the pending embeddings linked to the active face session,
-  - `set_username` is now connected end-to-end from `casual_ask_known_username` in the current conversational state machine.
+  - `record_face` stores the provided name for the active login/session flow,
+  - `set_username` is connected end-to-end from `casual_ask_known_username` in the current conversational state machine.
 - The tool-calling serialization fix in `src/server_flask/services/cloud/openai_api.py`, avoiding raw objects returned by `responses.parse()` from being injected back into the request flow.
 - Frontend support for rendering the robot LED ring according to the operational state (`idle`, `listening`, `recording`, `speaking`, and related modes).
 - `RobotView` uses a single Socket.IO namespace, `/message`, for both `set_face` and `state_update`; there is no active separate animation route anymore.
@@ -43,7 +40,6 @@ SHARA_DT
 |   |-- robot_context.py            # Global robot state container
 |   |-- sockets/message_handler.py  # Socket.IO events for the /message namespace
 |   |-- eyes/service.py             # Emits set_face events to the frontend
-|   |-- services/camera_service.py  # Face recognition and persistence
 |   `-- services/cloud
 |       |-- server.py               # STT -> LLM -> TTS orchestration
 |       |-- google_api.py           # Google Cloud Speech and TTS
@@ -62,14 +58,14 @@ SHARA_DT
 
 ## Current Runtime Flow
 
-### 1. Face Detection and Recognition
+### 1. Presence and Session Identity
 
 1. The browser opens the camera and runs BlazeFace locally.
-2. When it detects a valid face, it crops and normalizes the face and builds a batch of `3` frames.
-3. The frontend sends the batch to `POST /api/recognize-face` together with `clientId`, `sessionId`, and `faceBoxes`.
-4. The backend extracts embeddings with `face_recognition`, compares them against `encodings.csv`, and accumulates per-session recognition history.
-5. If a known user is confirmed, the frontend emits `user_detected` with `needsIdentification=false`.
-6. If an unknown user is confirmed, their embeddings remain temporarily available until the conversational flow triggers `record_face`.
+2. When it detects a valid face, the frontend emits `user_detected` with the current session identity.
+3. When the face is lost for long enough, the frontend emits `user_lost`.
+4. The backend restores conversation history for the login name when available.
+5. If the session has no stored SHARA name, the conversational flow asks for the user's name and persists it.
+6. `POST /api/recognize-face` remains as a compatibility endpoint for older clients, but it no longer performs backend embedding extraction.
 
 ### 2. Voice Conversation
 
@@ -85,17 +81,17 @@ SHARA_DT
 
 ### 3. Proactivity
 
-- If a known face is recognized, `ProactiveService` can trigger `ask_how_are_you`.
-- If an unknown face is detected, it can trigger `ask_who_are_you`.
+- If a known user/session is present, `ProactiveService` can trigger `ask_how_are_you`.
+- If an unknown user/session is detected, it can trigger `ask_who_are_you`.
 - The active proactive question is stored in `robot_context.proactive_question` so that the prompt and the available tools remain coherent.
 - If the conversation continues without a confirmed username, the state machine can switch into `casual_ask_known_username`, enabling the end-to-end `set_username` flow.
 
 ## Implemented Features
 
 - Text chat and voice conversation with the backend.
-- Local face detection in the browser.
-- Batch face recognition with confirmation through per-session history.
-- New user registration through the `record_face` tool flow.
+- Local face-presence detection in the browser.
+- Session-based identity with stored SHARA names.
+- New user naming through the `record_face` tool flow.
 - Username recovery through the `casual_ask_known_username -> set_username` flow.
 - Loading and storing conversation history per username.
 - Frontend face rendering with expression interpolation and automatic blinking.
@@ -175,11 +171,11 @@ The system uses a single active namespace: `/message`.
 
 ## Persistence and Data Files
 
-### Face Recognition
+### Session Identity
 
-- Current main file: `src/server_flask/files/encodings.csv`
-- Format: one embedding per row using `username;128 values`
-- If `src/server_flask/files/face_database.json` exists, the backend attempts to migrate it automatically into `encodings.csv`
+- Login/session identity is managed by the auth flow in `src/server_flask/auth.py`
+- The user's preferred SHARA name is stored and reused by the state machine when the session returns
+- `POST /api/recognize-face` remains only as a compatibility endpoint for older clients
 
 ### Conversations
 
@@ -199,19 +195,8 @@ The system uses a single active namespace: `/message`.
 - Yarn
 - OpenAI API key
 - Google Cloud credentials for Speech-to-Text and Text-to-Speech
-- Native dependencies required by `face_recognition` / `dlib`
-
-In Linux or Docker environments, the project explicitly installs:
-
-- `build-essential`
-- `cmake`
-- `g++`
-- `pkg-config`
-- `python3-dev`
-- `libopenblas-dev`
-- `liblapack-dev`
-- `libjpeg-dev`
-- `zlib1g-dev`
+- Runtime Python dependencies are listed in `src/server_flask/requirements.txt`.
+- The current web deployment uses session login and frontend face-presence detection, so `face_recognition` / `dlib` are not required.
 
 ## Environment Variables Currently Used
 
@@ -245,7 +230,7 @@ Legacy or compatibility variables that still appear in some files but do not cha
 
 ### Recommended option: Docker
 
-The main `Dockerfile` builds the frontend, installs the Python dependencies including `face_recognition`, copies the React build into the backend, and starts Flask:
+The main `Dockerfile` builds the frontend, installs the Python runtime dependencies, copies the React build into the backend, and starts Flask:
 
 ```bash
 docker build -t shara-dt .
@@ -263,7 +248,7 @@ cd src/server_flask
 python -m venv .venv
 source .venv/bin/activate  # Linux/macOS
 # or: .\.venv\Scripts\Activate.ps1  # PowerShell
-pip install -r requirements.face-recognition.txt
+pip install -r requirements.txt
 python app.py
 ```
 
@@ -289,14 +274,9 @@ In development:
 - the container uses the root `Dockerfile`
 - in production, the frontend and backend share the same origin
 
-### Alternative image for `face_recognition` validation
+### GHCR image
 
-The repository also includes:
-
-- `Dockerfile.face-recognition`
-- workflow `.github/workflows/build-face-recognition-image.yml`
-
-That pipeline builds and publishes an image focused on validating the `face_recognition` installation.
+The workflow `.github/workflows/build-shara-dt-image.yml` builds and publishes the production image from the root `Dockerfile`. It uses GitHub Actions cache for Docker layers so repeated builds do not reinstall the full dependency stack from scratch.
 
 ## Current Differences vs the Physical Robot
 
@@ -306,13 +286,9 @@ That pipeline builds and publishes an image focused on validating the `face_reco
 | Embedded audio capture | Browser capture through `AudioWorklet` and `MediaRecorder` |
 | Local Python/OpenCV eye rendering | React canvas rendering in `src/web/src/eyes` |
 | Cloud services integrated into one Python robot app | Cloud services reused from Flask + Socket.IO |
-| Dedicated robot camera | Browser camera plus face batches sent to the backend |
+| Dedicated robot camera | Browser camera with frontend face-presence detection and session login |
 
-Behavioral fidelity is high in the conversational logic and medium-high in voice and face recognition, but some adaptations are still unavoidable because this is a web-based twin rather than the embedded robot stack.
-
-Notable difference:
-
-- The web face-recognition pipeline currently confirms unknown users after `6` valid detections, while the physical robot used `8` consecutive unknown detections in its original wakeface flow.
+Behavioral fidelity is high in the conversational logic and voice flow, while identity is handled through the web session model instead of the physical robot's local face-recognition pipeline.
 
 ## Known Limitations and Remaining Work
 
@@ -320,7 +296,6 @@ Notable difference:
 - The `presence` path in `ProactiveService` exists, but it is not yet wired end-to-end from the frontend.
 - The active conversation store is `conversations_db.json`, while the repository still carries the legacy placeholder `conversation_db.json`.
 - The web state machine still simplifies some hardware-specific transitions from the physical robot.
-- Local installation of `face_recognition` can be expensive outside Docker because of the native `dlib` toolchain.
 
 ## Contributing
 

@@ -358,7 +358,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
         // useEffect syncs isWaitingResponseRef.current = false.
     };
 
-    const handleSynthesize = async (text, audioB64 = null, audioMimeType = 'audio/wav') => {
+    const handleSynthesize = async (text, audioB64 = null, audioMimeType = 'audio/mpeg') => {
         if (!text && !audioB64) return;
 
         let audioSrcUrl = null;
@@ -367,7 +367,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
             setIsSpeaking(true);
             console.log('🔊 Synthesizing speech...');
 
-            let resolvedAudioMimeType = audioMimeType || 'audio/wav';
+            let resolvedAudioMimeType = audioMimeType || 'audio/mpeg';
 
             if (audioB64) {
                 audioSrcUrl = createAudioObjectUrl(audioB64, resolvedAudioMimeType);
@@ -375,7 +375,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                 // Fallback: request TTS synthesis via HTTP (only when no audio in message)
                 const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text });
                 if (response.data?.audioContent) {
-                    resolvedAudioMimeType = response.data.audioMimeType || 'audio/wav';
+                    resolvedAudioMimeType = response.data.audioMimeType || 'audio/mpeg';
                     audioSrcUrl = createAudioObjectUrl(response.data.audioContent, resolvedAudioMimeType);
                 }
             }

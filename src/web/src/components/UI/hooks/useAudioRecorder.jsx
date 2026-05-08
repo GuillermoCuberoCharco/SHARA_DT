@@ -2,11 +2,7 @@ import axios from 'axios';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AUDIO_SETTINGS, SERVER_URL } from '../../../config';
 import { useWebSocketContext } from '../../../contexts/WebSocketContext';
-import {
-    createAudioObjectUrl,
-    playAudioUrl,
-    revokeAudioObjectUrl,
-} from '../../../utils/audioPlayback';
+import { playAudioBase64 } from '../../../utils/audioPlayback';
 
 const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSubmitted) => {
     const [isRecording, setIsRecording] = useState(false);
@@ -361,29 +357,25 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
     const handleSynthesize = async (text, audioB64 = null, audioMimeType = 'audio/mpeg') => {
         if (!text && !audioB64) return;
 
-        let audioSrcUrl = null;
+        let audioPayload = audioB64;
+        let resolvedAudioMimeType = audioMimeType || 'audio/mpeg';
 
         try {
             setIsSpeaking(true);
             console.log('🔊 Synthesizing speech...');
 
-            let resolvedAudioMimeType = audioMimeType || 'audio/mpeg';
-
-            if (audioB64) {
-                audioSrcUrl = createAudioObjectUrl(audioB64, resolvedAudioMimeType);
-            } else if (text) {
+            if (!audioPayload && text) {
                 // Fallback: request TTS synthesis via HTTP (only when no audio in message)
                 const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text });
                 if (response.data?.audioContent) {
                     resolvedAudioMimeType = response.data.audioMimeType || 'audio/mpeg';
-                    audioSrcUrl = createAudioObjectUrl(response.data.audioContent, resolvedAudioMimeType);
+                    audioPayload = response.data.audioContent;
                 }
             }
 
-            if (audioSrcUrl) {
-                setAudioSrc(audioSrcUrl);
-
-                await playAudioUrl(audioSrcUrl);
+            if (audioPayload) {
+                setAudioSrc(`audio:${resolvedAudioMimeType}`);
+                await playAudioBase64(audioPayload, resolvedAudioMimeType);
                 console.log('[SHARA][audio] Audio playback finished');
             }
         } catch (error) {
@@ -392,7 +384,6 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
             }
             console.error('❌ Error synthesizing speech:', error);
         } finally {
-            revokeAudioObjectUrl(audioSrcUrl);
             setIsSpeaking(false);
             setAudioSrc(null);
         }

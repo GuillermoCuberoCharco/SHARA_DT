@@ -1,9 +1,32 @@
 const SILENT_WAV_DATA_URI = 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAAAA==';
 
 let sharedAudioElement = null;
+let sharedAudioContext = null;
+let currentWebAudioSource = null;
 let isUnlocked = false;
 let unlockPromise = null;
 const unlockListeners = new Set();
+
+const getBrowserAudioContext = () => {
+    if (typeof window === 'undefined') {
+        return null;
+    }
+
+    return window.AudioContext || window.webkitAudioContext || null;
+};
+
+const publishAudioDiagnostic = (diagnostic) => {
+    const nextDiagnostic = {
+        at: new Date().toISOString(),
+        ...diagnostic,
+    };
+
+    if (typeof window !== 'undefined') {
+        window.__SHARA_AUDIO_LAST__ = nextDiagnostic;
+    }
+
+    console.log('[SHARA][audio]', nextDiagnostic);
+};
 
 const setAudioUnlocked = (nextUnlocked) => {
     if (isUnlocked === nextUnlocked) {
@@ -24,6 +47,22 @@ export const subscribeAudioPlaybackUnlock = (listener) => {
     return () => {
         unlockListeners.delete(listener);
     };
+};
+
+const getSharedAudioContext = () => {
+    const AudioContext = getBrowserAudioContext();
+    if (!AudioContext) {
+        return null;
+    }
+
+    if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
+        sharedAudioContext = new AudioContext();
+        sharedAudioContext.onstatechange = () => {
+            setAudioUnlocked(sharedAudioContext?.state === 'running');
+        };
+    }
+
+    return sharedAudioContext;
 };
 
 const getSharedAudioElement = () => {
@@ -50,6 +89,51 @@ const resetAudioElement = (audio) => {
     }
 };
 
+const unlockWebAudio = async () => {
+    const audioContext = getSharedAudioContext();
+    if (!audioContext) {
+        return false;
+    }
+
+    if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+    }
+
+    if (audioContext.state !== 'running') {
+        return false;
+    }
+
+    const silentBuffer = audioContext.createBuffer(1, 1, audioContext.sampleRate);
+    const source = audioContext.createBufferSource();
+    const gain = audioContext.createGain();
+    gain.gain.value = 0;
+    source.buffer = silentBuffer;
+    source.connect(gain).connect(audioContext.destination);
+    source.start(0);
+
+    setAudioUnlocked(true);
+    return true;
+};
+
+const unlockHtmlAudio = async () => {
+    const audio = getSharedAudioElement();
+    if (!audio) {
+        return false;
+    }
+
+    resetAudioElement(audio);
+    audio.muted = false;
+    audio.src = SILENT_WAV_DATA_URI;
+    audio.load();
+
+    await audio.play();
+    resetAudioElement(audio);
+    audio.removeAttribute('src');
+    audio.load();
+
+    return true;
+};
+
 export const unlockAudioPlayback = () => {
     if (isUnlocked) {
         return Promise.resolve(true);
@@ -59,26 +143,32 @@ export const unlockAudioPlayback = () => {
         return unlockPromise;
     }
 
-    const audio = getSharedAudioElement();
-    if (!audio) {
-        return Promise.resolve(false);
-    }
+    unlockPromise = Promise.allSettled([
+        unlockWebAudio(),
+        unlockHtmlAudio(),
+    ])
+        .then((results) => {
+            const webAudioUnlocked = results[0].status === 'fulfilled' && results[0].value;
+            const htmlAudioUnlocked = results[1].status === 'fulfilled' && results[1].value;
+            const hasWebAudio = Boolean(getBrowserAudioContext());
+            const unlocked = webAudioUnlocked || (!hasWebAudio && htmlAudioUnlocked);
 
-    resetAudioElement(audio);
-    audio.muted = false;
-    audio.src = SILENT_WAV_DATA_URI;
-    audio.load();
-
-    unlockPromise = audio.play()
-        .then(() => {
-            setAudioUnlocked(true);
-            resetAudioElement(audio);
-            audio.removeAttribute('src');
-            audio.load();
-            return true;
+            setAudioUnlocked(unlocked);
+            publishAudioDiagnostic({
+                event: 'unlock',
+                webAudioUnlocked,
+                htmlAudioUnlocked,
+                audioContextState: sharedAudioContext?.state || null,
+            });
+            return unlocked;
         })
         .catch((error) => {
             console.warn('[SHARA][audio] Playback unlock was blocked:', error);
+            publishAudioDiagnostic({
+                event: 'unlock_error',
+                errorName: error?.name || null,
+                errorMessage: error?.message || String(error),
+            });
             return false;
         })
         .finally(() => {
@@ -86,6 +176,105 @@ export const unlockAudioPlayback = () => {
         });
 
     return unlockPromise;
+};
+
+const base64ToUint8Array = (audioB64) => {
+    const binary = window.atob(audioB64);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+
+    return bytes;
+};
+
+const decodeAudioData = (audioContext, arrayBuffer) => new Promise((resolve, reject) => {
+    let settled = false;
+
+    const finish = (callback) => (value) => {
+        if (settled) {
+            return;
+        }
+
+        settled = true;
+        callback(value);
+    };
+
+    const decodeResult = audioContext.decodeAudioData(
+        arrayBuffer,
+        finish(resolve),
+        finish(reject),
+    );
+
+    if (decodeResult && typeof decodeResult.then === 'function') {
+        decodeResult.then(finish(resolve), finish(reject));
+    }
+});
+
+const playBytesWithWebAudio = async (audioBytes, mimeType) => {
+    const audioContext = getSharedAudioContext();
+    if (!audioContext) {
+        throw new Error('Web Audio API is not available');
+    }
+
+    if (unlockPromise) {
+        await unlockPromise;
+    }
+
+    if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+    }
+
+    if (audioContext.state !== 'running') {
+        throw new Error(`AudioContext is ${audioContext.state}`);
+    }
+
+    const audioBuffer = await decodeAudioData(
+        audioContext,
+        audioBytes.buffer.slice(audioBytes.byteOffset, audioBytes.byteOffset + audioBytes.byteLength),
+    );
+
+    if (currentWebAudioSource) {
+        try {
+            currentWebAudioSource.stop();
+        } catch {
+            // The source may have already ended.
+        }
+    }
+
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioContext.destination);
+    currentWebAudioSource = source;
+
+    publishAudioDiagnostic({
+        event: 'play_start',
+        route: 'web_audio',
+        mimeType,
+        bytes: audioBytes.byteLength,
+        duration: audioBuffer.duration,
+        audioContextState: audioContext.state,
+    });
+
+    return new Promise((resolve) => {
+        source.onended = () => {
+            if (currentWebAudioSource === source) {
+                currentWebAudioSource = null;
+            }
+
+            publishAudioDiagnostic({
+                event: 'play_end',
+                route: 'web_audio',
+                mimeType,
+                bytes: audioBytes.byteLength,
+            });
+            resolve(true);
+        };
+
+        source.start(0);
+        setAudioUnlocked(true);
+    });
 };
 
 export const installAudioUnlockListeners = () => {
@@ -197,5 +386,41 @@ export const playAudioUrl = async (audioUrl) => {
     } catch (error) {
         cleanup();
         throw error;
+    }
+};
+
+export const playAudioBase64 = async (audioB64, mimeType = 'audio/mpeg') => {
+    if (!audioB64) {
+        return false;
+    }
+
+    const audioBytes = base64ToUint8Array(audioB64);
+
+    try {
+        return await playBytesWithWebAudio(audioBytes, mimeType);
+    } catch (webAudioError) {
+        console.warn('[SHARA][audio] Web Audio playback failed, falling back to HTMLAudioElement:', webAudioError);
+        publishAudioDiagnostic({
+            event: 'web_audio_error',
+            mimeType,
+            bytes: audioBytes.byteLength,
+            errorName: webAudioError?.name || null,
+            errorMessage: webAudioError?.message || String(webAudioError),
+            audioContextState: sharedAudioContext?.state || null,
+        });
+    }
+
+    const audioUrl = URL.createObjectURL(new Blob([audioBytes], { type: mimeType }));
+
+    try {
+        publishAudioDiagnostic({
+            event: 'play_start',
+            route: 'html_audio',
+            mimeType,
+            bytes: audioBytes.byteLength,
+        });
+        return await playAudioUrl(audioUrl);
+    } finally {
+        revokeAudioObjectUrl(audioUrl);
     }
 };

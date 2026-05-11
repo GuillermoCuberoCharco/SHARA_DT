@@ -19,11 +19,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ANIMATION_MAPPINGS } from "../../config";
 import { useWebSocketContext } from '../../contexts/WebSocketContext';
 import '../../styles/InterfaceStyle.css';
-import {
-    isAudioPlaybackUnlocked,
-    subscribeAudioPlaybackUnlock,
-    unlockAudioPlayback,
-} from '../../utils/audioPlayback';
 import FaceDetection from '../FaceDetection';
 import useAudioRecorder from './hooks/useAudioRecorder';
 
@@ -141,7 +136,6 @@ const UI = ({
     const [connectionError, setConnectionError] = useState(false);
     const [isWaitingResponse, setIsWaitingResponse] = useState(false);
     const [faceDetected, setFaceDetected] = useState(false);
-    const [isAudioUnlocked, setIsAudioUnlocked] = useState(() => isAudioPlaybackUnlocked());
     const [isLedLegendOpen, setIsLedLegendOpen] = useState(() => {
         if (typeof window === 'undefined') {
             return true;
@@ -258,18 +252,10 @@ const UI = ({
         }
     }, [onLogout]);
 
-    const handleAudioUnlockClick = useCallback(() => {
-        unlockAudioPlayback().then(setIsAudioUnlocked);
-    }, []);
-
     // Track connection status
     useEffect(() => {
         setConnectionError(!isConnected);
     }, [isConnected]);
-
-    useEffect(() => {
-        return subscribeAudioPlaybackUnlock(setIsAudioUnlocked);
-    }, []);
 
     useEffect(() => {
         const nextStatus = getUiConsoleStatus({
@@ -433,16 +419,6 @@ const UI = ({
                     </>
                 )}
             </aside>
-
-            {!isAudioUnlocked && (
-                <button
-                    className="audio-unlock-button"
-                    type="button"
-                    onClick={handleAudioUnlockClick}
-                >
-                    Activar sonido
-                </button>
-            )}
 
             {sharedStream && (
                 <FaceDetection

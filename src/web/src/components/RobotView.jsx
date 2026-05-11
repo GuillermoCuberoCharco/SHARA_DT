@@ -55,7 +55,15 @@ const getContainedImageRect = (img) => {
     };
 };
 
-const RobotView = ({ robotState }) => {
+const isForCurrentSession = (payload, sessionIdentity) => {
+    if (!payload?.sessionId || !sessionIdentity?.sessionId) {
+        return true;
+    }
+
+    return payload.sessionId === sessionIdentity.sessionId;
+};
+
+const RobotView = ({ robotState, sessionIdentity }) => {
     const containerRef = useRef(null);
     const imgRef = useRef(null);
     const canvasRef = useRef(null);
@@ -158,17 +166,29 @@ const RobotView = ({ robotState }) => {
 
     useEffect(() => {
         if (!socket) return;
-        const handler = ({ face }) => setFace(face);
+        const handler = (payload) => {
+            if (!isForCurrentSession(payload, sessionIdentity)) {
+                return;
+            }
+
+            setFace(payload.face);
+        };
         socket.on('set_face', handler);
         return () => socket.off('set_face', handler);
-    }, [socket, setFace]);
+    }, [socket, setFace, sessionIdentity]);
 
     useEffect(() => {
         if (!socket) return;
-        const handler = ({ state }) => setOperationalState(state);
+        const handler = (payload) => {
+            if (!isForCurrentSession(payload, sessionIdentity)) {
+                return;
+            }
+
+            setOperationalState(payload.state);
+        };
         socket.on('state_update', handler);
         return () => socket.off('state_update', handler);
-    }, [socket]);
+    }, [socket, sessionIdentity]);
 
     useEffect(() => {
         if (robotState) setFace(robotState);
@@ -235,7 +255,12 @@ const styles = {
     },
 };
 
-RobotView.propTypes = { robotState: PropTypes.string };
+RobotView.propTypes = {
+    robotState: PropTypes.string,
+    sessionIdentity: PropTypes.shape({
+        sessionId: PropTypes.string,
+    }),
+};
 RobotView.defaultProps = { robotState: 'neutral' };
 
 export default RobotView;

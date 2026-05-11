@@ -1,55 +1,44 @@
 """
 state_machine.py
 
-State machine adapted from the physical robot's main.py.
+Socket-driven state machine for the SHARA web deployment.
 
-Hardware events → WebSocket events mapping:
-    mic start_recording       → audio_stream_start  (from useAudioRecorder)
-    mic audio chunks          → audio_chunk         (PCM LINEAR16 via AudioWorklet)
-    mic stop_recording        → audio_stream_end
-    speaker finish_speak      → tts_complete        (from frontend)
-    wakeface face_listen      → user_detected       (from FaceDetection.jsx)
-    wakeface face_not_listen  → user_lost
-
-Batch STT pipeline:
-    1. audio_stream_start → on_audio_stream_start(sid)
-       → state = 'recording'
-    2. audio_chunk events → message_handler appends bytes to buffer
-    3. audio_stream_end  → message_handler collects buffer → on_audio_stream_end(audio_bytes, sid)
-       → _executor.submit(_process_audio_stream_end, audio_bytes, sid)
-    4. _process_audio_stream_end:
-       a. server.query(audio_bytes) → STT [Google recognize, unary] + LLM + TTS
-       b. _handle_response → emit robot_message
-
-Note: batch STT (unary gRPC) is used instead of streaming_recognize to avoid
-gevent hub starvation. After monkey.patch_all(), ThreadPoolExecutor workers run
-as greenlets; gRPC's streaming C-threads calling back into a gevent queue can
-block the hub. A unary gRPC call releases the GIL cleanly during I/O.
+The physical robot has one global conversation state. The web deployment can
+have many browser clients connected at the same time, so this module keeps one
+RobotContext per Socket.IO sid and emits every user-facing event back to that
+sid only.
 """
 
 import base64
 import concurrent.futures
 import logging
+import threading
+
 import gevent
 
 from auth import get_shara_name, update_shara_name
-from robot_context import robot_context
 from proactive_service import ProactiveService
+from robot_context import RobotContext, robot_context
 
 logger = logging.getLogger('StateMachine')
 
 SERVER_QUERY_TIMEOUT = 20  # seconds
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+_query_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
 _socketio = None
 _server = None
 _eyes = None
-_proactive: ProactiveService = None
+_proactive = None  # Kept for backwards-compatible init signature.
+
+_contexts_lock = threading.RLock()
+_session_contexts: dict[str, RobotContext] = {}
+_proactive_services: dict[str, ProactiveService] = {}
 
 
-def init(socketio_instance, server_module, eyes_instance, proactive_instance):
-    """Inject dependencies — called once from app.py."""
+def init(socketio_instance, server_module, eyes_instance=None, proactive_instance=None):
+    """Inject dependencies, called once from app.py."""
     global _socketio, _server, _eyes, _proactive
     _socketio = socketio_instance
     _server = server_module
@@ -58,35 +47,122 @@ def init(socketio_instance, server_module, eyes_instance, proactive_instance):
     logger.info('StateMachine initialized')
 
 
+def register_session(sid: str):
+    """Create the per-client context as soon as the socket connects."""
+    if not sid:
+        return
+    _get_context(sid)
+    _get_proactive_service(sid)
+    logger.info('Registered runtime session: %s', sid)
+
+
+def unregister_session(sid: str):
+    """Remove all runtime state associated with a disconnected socket."""
+    if not sid:
+        return
+
+    with _contexts_lock:
+        _session_contexts.pop(sid, None)
+        proactive = _proactive_services.pop(sid, None)
+
+    if proactive:
+        proactive.cancel_timers()
+
+    logger.info('Unregistered runtime session: %s', sid)
+
+
+def get_active_sessions_count() -> int:
+    with _contexts_lock:
+        return len(_session_contexts)
+
+
+def get_session_states() -> dict:
+    with _contexts_lock:
+        return {
+            sid: {
+                'state': ctx.state,
+                'loginName': ctx.login_username,
+                'sessionId': ctx.face_session_id,
+            }
+            for sid, ctx in _session_contexts.items()
+        }
+
+
+def _get_context(sid: str) -> RobotContext:
+    if not sid:
+        return robot_context
+
+    with _contexts_lock:
+        context = _session_contexts.get(sid)
+        if context is None:
+            context = RobotContext()
+            _session_contexts[sid] = context
+        return context
+
+
+def _get_existing_context(sid: str):
+    if not sid:
+        return None
+    with _contexts_lock:
+        return _session_contexts.get(sid)
+
+
+def _context_items():
+    with _contexts_lock:
+        return list(_session_contexts.items())
+
+
+def _get_proactive_service(sid: str):
+    if not sid:
+        return None
+
+    with _contexts_lock:
+        service = _proactive_services.get(sid)
+        if service is None:
+            service = ProactiveService(
+                callback=lambda event, params=None, _sid=sid: proactive_event_handler(
+                    event,
+                    params,
+                    sid=_sid,
+                )
+            )
+            _proactive_services[sid] = service
+        return service
+
+
+def _get_existing_proactive_service(sid: str):
+    if not sid:
+        return None
+    with _contexts_lock:
+        return _proactive_services.get(sid)
+
+
 def _load_conversation_history_for(username):
-    if _server is None:
+    if _server is None or not username:
         return
 
     try:
         _server.load_conversation_db(username)
-    except Exception as e:
-        logger.warning(f'Could not load conversation history: {e}')
+    except Exception as exc:
+        logger.warning('Could not load conversation history for %s: %s', username, exc)
 
 
-def _persist_current_conversation(username=None):
-    # Always use login_username as the stable history key.
-    # Fall back to the provided username only when no login session is active
-    # (legacy non-login mode).
-    key = robot_context.login_username or username
+def _persist_current_conversation(context: RobotContext, username=None):
+    key = context.login_username or username
     if _server is None or not key:
         return
 
     try:
-        _server.dump_conversation_db(key, session_id=robot_context.face_session_id)
-    except Exception as e:
-        logger.warning(f'Could not persist conversation history: {e}')
+        _server.dump_conversation_db(key, session_id=context.face_session_id)
+    except Exception as exc:
+        logger.warning('Could not persist conversation history for %s: %s', key, exc)
 
 
-def _session_matches_active_context(session_data: dict = None) -> bool:
+def _session_matches_context(context: RobotContext, session_data: dict = None) -> bool:
     session_data = session_data or {}
 
-    active_login = _normalize_username(robot_context.login_username)
-    active_session_id = robot_context.face_session_id
+    active_login = _normalize_username(context.login_username)
+    active_session_id = context.face_session_id
     incoming_login = _normalize_username(
         session_data.get('loginName') or session_data.get('login_name')
     )
@@ -107,79 +183,112 @@ def _session_matches_active_context(session_data: dict = None) -> bool:
     return bool(active_login)
 
 
-def _reset_runtime_session_state(clear_login: bool):
-    robot_context.face_session_id = None
-    robot_context.proactive_question = ''
-    robot_context.continue_conversation = False
-    _reset_unknown_user_tracking()
+def _matching_contexts(session_data: dict = None):
+    return [
+        (sid, context)
+        for sid, context in _context_items()
+        if _session_matches_context(context, session_data)
+    ]
+
+
+def _target_contexts(session_data: dict = None, sid: str = None):
+    if sid:
+        context = _get_existing_context(sid)
+        if not context:
+            return []
+        if session_data and not _session_matches_context(context, session_data):
+            logger.info('Session data does not match sid %s: %s', sid, session_data)
+            return []
+        return [(sid, context)]
+
+    return _matching_contexts(session_data)
+
+
+def _reset_runtime_session_state(context: RobotContext, sid: str, clear_login: bool):
+    context.face_session_id = None
+    context.proactive_question = ''
+    context.continue_conversation = False
+    _reset_unknown_user_tracking(context)
 
     if clear_login:
-        robot_context.login_username = None
-        robot_context.username = None
-        robot_context.needs_identification = False
+        context.login_username = None
+        context.username = None
+        context.needs_identification = False
 
-    if _proactive:
-        _proactive.cancel_timers()
+    proactive = _get_existing_proactive_service(sid)
+    if proactive:
+        proactive.cancel_timers()
 
-    if robot_context.state != 'idle':
-        robot_context.state = 'idle'
-        _emit_state_update()
+    if context.state != 'idle':
+        context.state = 'idle'
+        _emit_state_update(sid, context)
 
 
-def flush_session(session_data: dict = None) -> bool:
-    session_data = session_data or {}
-    if not _session_matches_active_context(session_data):
-        logger.info('Flush skipped - session does not match active context: %s', session_data)
+def flush_session(session_data: dict = None, sid: str = None) -> bool:
+    targets = _target_contexts(session_data, sid=sid)
+    if not targets:
+        logger.info('Flush skipped - no matching runtime session: %s', session_data)
         return False
 
-    login_name = _normalize_username(
-        session_data.get('loginName') or session_data.get('login_name')
-    ) or robot_context.login_username
+    for target_sid, context in targets:
+        login_name = _normalize_username(
+            (session_data or {}).get('loginName') or (session_data or {}).get('login_name')
+        ) or context.login_username
 
-    logger.info(
-        'Flushing conversation for login=%s session=%s',
-        login_name,
-        session_data.get('sessionId') or robot_context.face_session_id,
-    )
-    _persist_current_conversation(login_name)
+        logger.info(
+            'Flushing conversation for sid=%s login=%s session=%s',
+            target_sid,
+            login_name,
+            (session_data or {}).get('sessionId') or context.face_session_id,
+        )
+        _persist_current_conversation(context, login_name)
+
     return True
 
 
-def on_client_disconnect(session_data: dict = None):
-    session_data = session_data or {}
-    if not _session_matches_active_context(session_data):
-        logger.info('Disconnect ignored - session does not match active context: %s', session_data)
+def on_client_disconnect(sid: str, session_data: dict = None):
+    context = _get_existing_context(sid)
+    if not context:
+        unregister_session(sid)
         return
 
-    flush_session(session_data)
-    _reset_runtime_session_state(clear_login=True)
-    logger.info('Client disconnect handled for session: %s', session_data)
+    if _session_matches_context(context, session_data):
+        flush_session(session_data, sid=sid)
+    else:
+        logger.info('Disconnect session data did not match context for %s: %s', sid, session_data)
+        _persist_current_conversation(context)
+
+    _reset_runtime_session_state(context, sid, clear_login=True)
+    unregister_session(sid)
+    logger.info('Client disconnect handled for sid=%s session=%s', sid, session_data)
 
 
-def on_session_logout(session_data: dict = None):
-    session_data = session_data or {}
-    if not _session_matches_active_context(session_data):
-        logger.info('Logout ignored - session does not match active context: %s', session_data)
+def on_session_logout(session_data: dict = None, sid: str = None):
+    targets = _target_contexts(session_data, sid=sid)
+    if not targets:
+        logger.info('Logout ignored - no matching runtime session: %s', session_data)
         return False
 
-    flush_session(session_data)
-    _reset_runtime_session_state(clear_login=True)
-    logger.info('Logout handled for session: %s', session_data)
+    for target_sid, context in targets:
+        flush_session(session_data, sid=target_sid)
+        _reset_runtime_session_state(context, target_sid, clear_login=True)
+        logger.info('Logout handled for sid=%s session=%s', target_sid, session_data)
+
     return True
 
 
-def _reset_unknown_user_tracking():
-    robot_context.unknown_user_interactions = 0
+def _reset_unknown_user_tracking(context: RobotContext):
+    context.unknown_user_interactions = 0
 
 
-def _mark_unknown_user_interaction():
-    robot_context.unknown_user_interactions += 1
+def _mark_unknown_user_interaction(context: RobotContext):
+    context.unknown_user_interactions += 1
 
-    if robot_context.unknown_user_interactions >= 1:
-        robot_context.proactive_question = 'casual_ask_known_username'
+    if context.unknown_user_interactions >= 1:
+        context.proactive_question = 'casual_ask_known_username'
         logger.info(
-            'Time to ask casual_ask_known_username '
-            f'(unknown interactions={robot_context.unknown_user_interactions})'
+            'Time to ask casual_ask_known_username (unknown interactions=%s)',
+            context.unknown_user_interactions,
         )
 
 
@@ -197,485 +306,516 @@ def _get_stored_shara_name(login_name):
     return _normalize_username(get_shara_name(clean_login))
 
 
-def _persist_shara_name_for_login(shara_name):
-    clean_login = _normalize_username(robot_context.login_username)
+def _persist_shara_name_for_login(context: RobotContext, shara_name):
+    clean_login = _normalize_username(context.login_username)
     clean_shara = _normalize_username(shara_name)
     if clean_login and clean_shara:
         update_shara_name(clean_login, clean_shara)
 
 
-# ── Proactive callback ────────────────────────────────────────────────────────
-
-def proactive_event_handler(event: str, params: dict = None):
+def proactive_event_handler(event: str, params: dict = None, sid: str = None):
     params = params or {}
-    logger.info(f'Proactive event: {event} — {params}')
+    logger.info('Proactive event for sid=%s: %s - %s', sid, event, params)
+
+    if not sid:
+        logger.warning('Ignoring proactive event without sid: %s', event)
+        return
 
     if event == 'ask_how_are_you':
         gevent.spawn(
             process_transition,
             'proactive2processingquery',
-            {'question': 'how_are_you', **params}
+            {'question': 'how_are_you', **params},
+            sid,
         )
     elif event == 'ask_who_are_you':
         gevent.spawn(
             process_transition,
             'proactive2processingquery',
-            {'question': 'who_are_you'}
+            {'question': 'who_are_you'},
+            sid,
         )
 
 
-def on_session_login(session_data: dict):
+def on_session_login(sid: str, session_data: dict):
+    context = _get_context(sid)
+    _get_proactive_service(sid)
+
     session_data = session_data or {}
     session_id = session_data.get('sessionId')
 
-    # login_name: stable key used for conversation history (e.g. "Maria Del Carmen")
     login_name = _normalize_username(session_data.get('loginName'))
-
-    # shara_name: how Shara addresses the person — may differ from login_name.
-    # For new users it starts as None so Shara asks who they are.
-    # For returning users it is restored from DB (users.shara_name).
     is_new_user = bool(session_data.get('isNewUser', False))
     incoming_username = _normalize_username(session_data.get('userName') or session_data.get('username'))
     shara_name = None if is_new_user else _get_stored_shara_name(login_name)
 
-    # Backfill DB when frontend already knows a non-login display name.
     if not shara_name and incoming_username and incoming_username != login_name:
         shara_name = incoming_username
         if login_name:
             update_shara_name(login_name, shara_name)
 
-    previous_login = robot_context.login_username
+    previous_login = context.login_username
 
     logger.info(
-        'Session login: session_id=%s login_name=%s shara_name=%s is_new=%s previous_login=%s',
-        session_id, login_name, shara_name, is_new_user, previous_login,
+        'Session login: sid=%s session_id=%s login_name=%s shara_name=%s is_new=%s previous_login=%s',
+        sid,
+        session_id,
+        login_name,
+        shara_name,
+        is_new_user,
+        previous_login,
     )
 
-    # Persist previous session's conversation before switching users
     if previous_login and previous_login != login_name:
-        _persist_current_conversation()
+        _persist_current_conversation(context)
 
-    # Always refresh history on login so in-RAM context matches DB,
-    # even when the same account re-authenticates in a new browser session.
     if login_name:
         _load_conversation_history_for(login_name)
 
-    robot_context.face_session_id = session_id
-    robot_context.login_username = login_name
-    robot_context.username = shara_name
-    robot_context.needs_identification = is_new_user or not bool(shara_name)
-    robot_context.proactive_question = ''
-    robot_context.continue_conversation = False
-    _reset_unknown_user_tracking()
+    context.face_session_id = session_id
+    context.login_username = login_name
+    context.username = shara_name
+    context.needs_identification = is_new_user or not bool(shara_name)
+    context.proactive_question = ''
+    context.continue_conversation = False
+    _reset_unknown_user_tracking(context)
 
 
-# ── WebSocket entry points (called from message_handler.py) ──────────────────
+def on_user_detected(sid: str, user_data: dict):
+    """Face detected by FaceDetection.jsx."""
+    context = _get_context(sid)
+    proactive = _get_proactive_service(sid)
+    user_data = user_data or {}
 
-def on_user_detected(user_data: dict):
-    """Face detected by FaceDetection.jsx — replaces wf_event_handler 'face_listen'."""
     incoming_username = _normalize_username(user_data.get('userName'))
-    login_name = _normalize_username(user_data.get('loginName')) or robot_context.login_username
+    login_name = _normalize_username(user_data.get('loginName')) or context.login_username
     face_session_id = user_data.get('sessionId')
     incoming_needs_identification = bool(user_data.get('needsIdentification', False))
     is_new_user = user_data.get('isNewUser', True)
-    previous_username = robot_context.username
-    previous_login = robot_context.login_username
+    previous_username = context.username
+    previous_login = context.login_username
 
     logger.info(
-        f'User detected: session_id={face_session_id}, login_name={login_name}, '
-        f'username={incoming_username}, needs_identification={incoming_needs_identification}, '
-        f'new={is_new_user}, state={robot_context.state}'
+        'User detected: sid=%s session_id=%s login_name=%s username=%s needs_identification=%s new=%s state=%s',
+        sid,
+        face_session_id,
+        login_name,
+        incoming_username,
+        incoming_needs_identification,
+        is_new_user,
+        context.state,
     )
 
     if login_name and login_name != previous_login:
         if previous_login:
-            _persist_current_conversation()
-        robot_context.login_username = login_name
+            _persist_current_conversation(context)
+        context.login_username = login_name
 
-    # Rehydrate full DB-backed history when the face is detected.
-    # This restores context after on_user_lost() persisted and cleared in-RAM history.
     if login_name:
         _load_conversation_history_for(login_name)
 
-    robot_context.face_session_id = face_session_id
+    context.face_session_id = face_session_id
 
     if login_name:
-        if not robot_context.username:
-            robot_context.username = _get_stored_shara_name(login_name)
-        username = _normalize_username(robot_context.username)
+        if not context.username:
+            context.username = _get_stored_shara_name(login_name)
+        username = _normalize_username(context.username)
         needs_identification = not bool(username)
     else:
         username = incoming_username
         needs_identification = incoming_needs_identification
 
-    robot_context.needs_identification = needs_identification
-
+    context.needs_identification = needs_identification
     is_known_user = not needs_identification and username is not None
 
     if is_known_user:
         if not login_name:
             if previous_username and previous_username != username:
-                _persist_current_conversation(previous_username)
+                _persist_current_conversation(context, previous_username)
             if previous_username != username:
                 _load_conversation_history_for(username)
-        robot_context.username = username
-        _proactive.update('sensor', 'close_face_recognized', {'username': username})
+        context.username = username
+        if proactive:
+            proactive.update('sensor', 'close_face_recognized', {'username': username})
     else:
         if not login_name and previous_username:
-            _persist_current_conversation(previous_username)
-        robot_context.username = None
-        _proactive.update('sensor', 'unknown_face')
+            _persist_current_conversation(context, previous_username)
+        context.username = None
+        if proactive:
+            proactive.update('sensor', 'unknown_face')
 
-    if robot_context.state == 'idle_presence':
-        gevent.spawn(process_transition, 'idle_presence2listening', {})
-    elif robot_context.state == 'idle':
-        gevent.spawn(process_transition, 'idle2idle_presence', {})
-        gevent.spawn(process_transition, 'idle_presence2listening', {})
-
-
-def on_user_lost(user_data: dict):
-    """Face lost — replaces wf_event_handler 'face_not_listen'."""
-    logger.info(f'User lost, state={robot_context.state}')
-    _persist_current_conversation()
-    robot_context.face_session_id = None
-    # Keep login identity so re-entering the frame can recover user context.
-    robot_context.proactive_question = ''
-    robot_context.continue_conversation = False
-    _reset_unknown_user_tracking()
-    _proactive.cancel_timers()
-
-    if robot_context.state == 'listening':
-        gevent.spawn(process_transition, 'listening2idle_presence', {})
+    if context.state == 'idle_presence':
+        gevent.spawn(process_transition, 'idle_presence2listening', {}, sid)
+    elif context.state == 'idle':
+        gevent.spawn(process_transition, 'idle2idle_presence', {}, sid)
+        gevent.spawn(process_transition, 'idle_presence2listening', {}, sid)
 
 
-def on_audio_stream_start(sid: str):
-    """
-    PCM LINEAR16 stream started from AudioWorklet.
-    Just transitions to 'recording' state; actual STT runs on stream_end.
-    """
-    logger.info(f'Audio stream start from {sid}, state={robot_context.state}')
-
-    if robot_context.state not in ('listening', 'idle_presence', 'idle'):
-        logger.warning(f'audio_stream_start in unexpected state: {robot_context.state} — ignoring')
+def on_user_lost(sid: str, user_data: dict):
+    """Face lost by FaceDetection.jsx."""
+    context = _get_existing_context(sid)
+    if not context:
         return
 
-    robot_context.state = 'recording'
-    _emit_state_update()
+    logger.info('User lost: sid=%s state=%s', sid, context.state)
+    _persist_current_conversation(context)
+    context.face_session_id = None
+    context.proactive_question = ''
+    context.continue_conversation = False
+    _reset_unknown_user_tracking(context)
+
+    proactive = _get_existing_proactive_service(sid)
+    if proactive:
+        proactive.cancel_timers()
+
+    if context.state == 'listening':
+        gevent.spawn(process_transition, 'listening2idle_presence', {}, sid)
+
+
+def on_audio_stream_start(sid: str) -> bool:
+    """PCM LINEAR16 stream started from AudioWorklet."""
+    context = _get_context(sid)
+    logger.info('Audio stream start from %s, state=%s', sid, context.state)
+
+    if context.state not in ('listening', 'idle_presence', 'idle'):
+        logger.warning('audio_stream_start in unexpected state for %s: %s', sid, context.state)
+        return False
+
+    context.state = 'recording'
+    _emit_state_update(sid, context)
+    return True
 
 
 def on_audio_stream_end(audio_bytes: bytes, sid: str):
-    """
-    PCM stream ended with all collected audio.
-    Submits batch STT → LLM → TTS pipeline.
-
-    Batch STT (clientSTT.recognize) is a unary gRPC call: releases the GIL
-    during its single network round-trip, so the gevent hub stays responsive.
-    This avoids the gRPC-streaming / gevent incompatibility that caused
-    transport close errors with the previous streaming pipeline.
-    """
-    logger.info(f'Audio stream end from {sid}, received {len(audio_bytes)} bytes')
+    """PCM stream ended with all collected audio."""
+    logger.info('Audio stream end from %s, received %s bytes', sid, len(audio_bytes))
+    if not _get_existing_context(sid):
+        logger.warning('Ignoring audio_stream_end for unknown sid: %s', sid)
+        return
     _executor.submit(_process_audio_stream_end, audio_bytes, sid)
 
 
 def on_audio_message(audio_b64: str, sid: str):
-    """
-    Legacy: full audio blob (base64 webm/opus) — used when AudioWorklet unavailable.
-    Equivalent to the old on_audio_message path.
-    """
-    logger.info(f'Legacy audio blob from {sid}, state={robot_context.state}')
+    """Legacy full audio blob path."""
+    context = _get_context(sid)
+    logger.info('Legacy audio blob from %s, state=%s', sid, context.state)
 
-    if robot_context.state not in ('listening', 'idle_presence', 'idle'):
-        logger.warning(f'Audio received in unexpected state: {robot_context.state}')
+    if context.state not in ('listening', 'idle_presence', 'idle'):
+        logger.warning('Audio received in unexpected state for %s: %s', sid, context.state)
         return
 
-    robot_context.state = 'recording'
-    _emit_state_update()
+    context.state = 'recording'
+    _emit_state_update(sid, context)
     _executor.submit(_process_audio_query, audio_b64, sid)
 
 
 def on_text_message(text: str, sid: str):
-    """Text typed in chat — bypasses STT."""
-    logger.info(f'Text message from {sid}: "{text}"')
+    """Text typed in chat, bypassing STT."""
+    context = _get_context(sid)
+    logger.info('Text message from %s: "%s"', sid, text)
 
-    if robot_context.state == 'processing_query':
-        logger.warning('Already processing a query, ignoring')
+    if context.state == 'processing_query':
+        logger.warning('Session %s is already processing a query, ignoring', sid)
         return
 
-    robot_context.state = 'processing_query'
-    _emit_state_update()
+    context.state = 'processing_query'
+    _emit_state_update(sid, context)
     _executor.submit(_process_text_query, text, sid)
 
 
 def on_tts_complete(sid: str):
     """Frontend finished playing TTS audio."""
-    logger.info(f'TTS complete from {sid}, continue={robot_context.continue_conversation}')
+    context = _get_existing_context(sid)
+    if not context:
+        return
 
-    if robot_context.continue_conversation:
-        gevent.spawn(process_transition, 'speaking2listening', {})
+    logger.info('TTS complete from %s, continue=%s', sid, context.continue_conversation)
+
+    if context.continue_conversation:
+        gevent.spawn(process_transition, 'speaking2listening', {}, sid)
     else:
-        gevent.spawn(process_transition, 'speaking2idle_presence', {})
+        gevent.spawn(process_transition, 'speaking2idle_presence', {}, sid)
 
 
-# ── Core state transitions ────────────────────────────────────────────────────
-
-def process_transition(transition: str, params: dict = None):
+def process_transition(transition: str, params: dict = None, sid: str = None):
     params = params or {}
-    current = robot_context.state
-    logger.info(f'Transition: {transition} | State: {current}')
+    context = _get_existing_context(sid)
+    if not context:
+        logger.warning('Transition %s ignored for unknown sid=%s', transition, sid)
+        return
+
+    current = context.state
+    logger.info('Transition: %s | sid=%s | State: %s', transition, sid, current)
 
     try:
         if transition == 'idle2idle_presence' and current == 'idle':
-            robot_context.state = 'idle_presence'
-            _emit_state_update()
+            context.state = 'idle_presence'
+            _emit_state_update(sid, context)
 
         elif transition == 'idle_presence2idle' and current == 'idle_presence':
-            robot_context.state = 'idle'
-            _emit_state_update()
+            context.state = 'idle'
+            _emit_state_update(sid, context)
 
         elif transition == 'idle_presence2listening' and current == 'idle_presence':
-            robot_context.state = 'listening'
-            _emit_state_update()
+            context.state = 'listening'
+            _emit_state_update(sid, context)
 
         elif transition == 'listening2idle_presence' and current == 'listening':
-            robot_context.state = 'idle_presence'
-            _emit_state_update()
+            context.state = 'idle_presence'
+            _emit_state_update(sid, context)
 
         elif transition == 'speaking2listening' and current == 'speaking':
-            robot_context.state = 'listening'
-            _emit_state_update()
+            context.state = 'listening'
+            _emit_state_update(sid, context)
 
         elif transition == 'speaking2idle_presence' and current == 'speaking':
-            robot_context.state = 'idle_presence'
-            robot_context.proactive_question = ''
-            robot_context.continue_conversation = False
-            _reset_unknown_user_tracking()
-            _emit_state_update()
+            context.state = 'idle_presence'
+            context.proactive_question = ''
+            context.continue_conversation = False
+            _reset_unknown_user_tracking(context)
+            _emit_state_update(sid, context)
 
         elif transition == 'proactive2processingquery':
-            _handle_proactive_query(params)
+            _handle_proactive_query(params, sid, context)
 
         else:
-            logger.debug(f'Transition {transition} discarded (state={current})')
+            logger.debug('Transition %s discarded for sid=%s (state=%s)', transition, sid, current)
 
-    except Exception as e:
-        logger.error(f'Error in transition {transition}: {e}', exc_info=True)
+    except Exception as exc:
+        logger.error('Error in transition %s for sid=%s: %s', transition, sid, exc, exc_info=True)
 
 
-# ── Query pipelines ───────────────────────────────────────────────────────────
+def _build_request(context: RobotContext, audio: bytes = b'', text: str = None):
+    return _server.Request(
+        audio=audio,
+        text=text,
+        username=context.username,
+        login_name=context.login_username,
+        session_id=context.face_session_id,
+        proactive_question=context.proactive_question,
+    )
+
 
 def _process_audio_stream_end(audio_bytes: bytes, sid: str):
-    """
-    Batch STT → LLM → TTS pipeline for collected PCM audio.
+    """Batch STT -> LLM -> TTS pipeline for collected PCM audio."""
+    context = _get_existing_context(sid)
+    if not context:
+        logger.warning('Audio processing abandoned for unknown sid=%s', sid)
+        return
 
-    Replaces the old _process_streaming_query. Uses clientSTT.recognize()
-    (unary gRPC) instead of streaming_recognize() (long-lived gRPC stream).
-    A unary call releases the GIL during I/O and does not require gRPC C-threads
-    to call back into the Python generator, avoiding gevent hub starvation.
-    """
     try:
-        robot_context.state = 'processing_query'
-        _emit_state_update()
+        context.state = 'processing_query'
+        _emit_state_update(sid, context)
 
         if not audio_bytes:
-            logger.warning('Empty audio buffer — nothing to transcribe')
-            robot_context.state = 'idle_presence'
-            _emit_state_update()
-            if _socketio and sid:
-                _socketio.emit('audio_empty', {}, to=sid, namespace='/message')
+            logger.warning('Empty audio buffer for sid=%s', sid)
+            context.state = 'idle_presence'
+            _emit_state_update(sid, context)
+            _emit_audio_empty(sid, context)
             return
 
-        # Batch STT + LLM + TTS in one call
-        request = _server.Request(
-            audio=audio_bytes,
-            username=robot_context.username,
-            proactive_question=robot_context.proactive_question,
-        )
-        response = _server.query(request)
+        request = _build_request(context, audio=audio_bytes)
+        future = _query_executor.submit(_server.query, request)
+        response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
         if response is None:
-            logger.warning('Empty transcription or response — returning to idle')
-            robot_context.state = 'idle_presence'
-            _emit_state_update()
-            if _socketio and sid:
-                _socketio.emit('audio_empty', {}, to=sid, namespace='/message')
+            logger.warning('Empty transcription or response for sid=%s', sid)
+            context.state = 'idle_presence'
+            _emit_state_update(sid, context)
+            _emit_audio_empty(sid, context)
             return
 
-        # Echo transcription so front-end can display what was heard
-        if _socketio and response.request.text:
-            _socketio.emit(
-                'transcription_result',
-                {'text': response.request.text},
-                to=sid,
-                namespace='/message'
-            )
+        if response.request.text:
+            _emit_transcription_result(response.request.text, sid, context)
 
-        _handle_response(response, sid)
+        _handle_response(response, sid, context)
 
-    except Exception as e:
-        logger.error(f'Error in audio stream end processing: {e}', exc_info=True)
+    except concurrent.futures.TimeoutError:
+        logger.error('Timeout in audio stream processing for sid=%s', sid)
+        _emit_error(sid)
+    except Exception as exc:
+        logger.error('Error in audio stream processing for sid=%s: %s', sid, exc, exc_info=True)
         _emit_error(sid)
 
 
 def _process_audio_query(audio_b64: str, sid: str):
-    """STT → LLM → TTS pipeline for audio input."""
+    """STT -> LLM -> TTS pipeline for legacy audio input."""
+    context = _get_existing_context(sid)
+    if not context:
+        logger.warning('Legacy audio processing abandoned for unknown sid=%s', sid)
+        return
+
     try:
-        robot_context.state = 'processing_query'
-        _emit_state_update()
+        context.state = 'processing_query'
+        _emit_state_update(sid, context)
 
         audio_bytes = base64.b64decode(audio_b64)
-        request = _server.Request(
-            audio=audio_bytes,
-            username=robot_context.username,
-            proactive_question=robot_context.proactive_question,
-        )
+        request = _build_request(context, audio=audio_bytes)
 
-        future = _executor.submit(_server.query, request)
+        future = _query_executor.submit(_server.query, request)
         response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
         if response is None:
-            logger.warning('Empty transcription or response — returning to listening silently')
-            robot_context.state = 'listening'
-            _emit_state_update()
+            logger.warning('Empty transcription or response for sid=%s', sid)
+            context.state = 'listening'
+            _emit_state_update(sid, context)
             return
 
-        _handle_response(response, sid)
+        _handle_response(response, sid, context)
 
     except concurrent.futures.TimeoutError:
-        logger.error('Timeout in audio query processing')
+        logger.error('Timeout in legacy audio processing for sid=%s', sid)
         _emit_error(sid)
-    except Exception as e:
-        logger.error(f'Error processing audio query: {e}', exc_info=True)
+    except Exception as exc:
+        logger.error('Error processing legacy audio for sid=%s: %s', sid, exc, exc_info=True)
         _emit_error(sid)
 
 
 def _process_text_query(text: str, sid: str):
-    """LLM → TTS pipeline for text input (STT already done by browser)."""
-    try:
-        request = _server.Request(
-            text=text,
-            username=robot_context.username,
-            proactive_question=robot_context.proactive_question,
-        )
+    """LLM -> TTS pipeline for text input."""
+    context = _get_existing_context(sid)
+    if not context:
+        logger.warning('Text processing abandoned for unknown sid=%s', sid)
+        return
 
-        future = _executor.submit(_server.query_with_text, request)
+    try:
+        request = _build_request(context, text=text)
+
+        future = _query_executor.submit(_server.query_with_text, request)
         response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
         if response is None:
-            logger.warning('Empty response from server.query_with_text')
+            logger.warning('Empty response for sid=%s', sid)
             _emit_error(sid)
             return
 
-        _handle_response(response, sid)
+        _handle_response(response, sid, context)
 
     except concurrent.futures.TimeoutError:
-        logger.error('Timeout in text query processing')
+        logger.error('Timeout in text processing for sid=%s', sid)
         _emit_error(sid)
-    except Exception as e:
-        logger.error(f'Error processing text query: {e}', exc_info=True)
+    except Exception as exc:
+        logger.error('Error processing text for sid=%s: %s', sid, exc, exc_info=True)
         _emit_error(sid)
 
 
-def _handle_proactive_query(params: dict):
-    """Proactive question pipeline — no STT, direct LLM → TTS."""
+def _handle_proactive_query(params: dict, sid: str, context: RobotContext):
+    """Proactive question pipeline: no STT, direct LLM -> TTS."""
     question = params.get('question')
-    username = params.get('username', robot_context.username)
+    username = params.get('username', context.username)
 
-    logger.info(f'Proactive query: {question} for {username}')
+    logger.info('Proactive query for sid=%s: %s for %s', sid, question, username)
 
     try:
-        robot_context.state = 'processing_query'
-        _emit_state_update()
+        context.state = 'processing_query'
+        _emit_state_update(sid, context)
 
         request = _server.Request(
             username=username,
+            login_name=context.login_username,
+            session_id=context.face_session_id,
             proactive_question=question or '',
         )
 
-        future = _executor.submit(_server.proactive_query, request)
+        future = _query_executor.submit(_server.proactive_query, request)
         response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
         if response is None:
-            logger.warning('Empty response from proactive_query')
-            robot_context.state = 'idle_presence'
-            _emit_state_update()
+            logger.warning('Empty proactive response for sid=%s', sid)
+            context.state = 'idle_presence'
+            _emit_state_update(sid, context)
             return
 
         next_proactive_question = 'who_are_you_response' if question == 'who_are_you' else ''
 
-        _handle_response(response, sid=None, next_proactive_question=next_proactive_question)
-        _proactive.update('confirm', question, {'username': username})
+        _handle_response(
+            response,
+            sid,
+            context,
+            next_proactive_question=next_proactive_question,
+            mark_unknown_interaction=False,
+        )
+
+        proactive = _get_existing_proactive_service(sid)
+        if proactive:
+            proactive.update('confirm', question, {'username': username})
 
     except concurrent.futures.TimeoutError:
-        logger.error('Timeout in proactive query')
-        robot_context.state = 'idle_presence'
-        _emit_state_update()
-    except Exception as e:
-        logger.error(f'Error in proactive query: {e}', exc_info=True)
-        robot_context.state = 'idle_presence'
-        _emit_state_update()
+        logger.error('Timeout in proactive query for sid=%s', sid)
+        context.state = 'idle_presence'
+        _emit_state_update(sid, context)
+    except Exception as exc:
+        logger.error('Error in proactive query for sid=%s: %s', sid, exc, exc_info=True)
+        context.state = 'idle_presence'
+        _emit_state_update(sid, context)
 
 
-def _handle_response(response, sid, next_proactive_question: str = ''):
+def _handle_response(
+    response,
+    sid: str,
+    context: RobotContext,
+    next_proactive_question: str = '',
+    mark_unknown_interaction: bool = True,
+):
     """
-    Common response handler — updates context, sets eye state,
-    emits robot_message to frontend.
+    Common response handler. Updates only this session context and emits only to
+    this socket sid.
     """
-    robot_context.state = 'speaking'
-    robot_context.continue_conversation = response.continue_conversation
-    robot_context.proactive_question = next_proactive_question or ''
+    context.state = 'speaking'
+    context.continue_conversation = response.continue_conversation
+    context.proactive_question = next_proactive_question or ''
 
     if response.action == 'record_face':
-        robot_context.username = response.username
-        robot_context.needs_identification = False
-        _persist_shara_name_for_login(response.username)
+        context.username = response.username
+        context.needs_identification = False
+        _persist_shara_name_for_login(context, response.username)
 
-        # With login-based auth, history is already loaded for login_username.
-        # Only reload if no login session is active (legacy / face-only mode).
-        if not robot_context.login_username:
+        if not context.login_username:
             _load_conversation_history_for(response.username)
 
         _emit_session_identity_updated(
             sid=sid,
-            session_id=robot_context.face_session_id,
+            session_id=context.face_session_id,
             username=response.username,
         )
 
     elif response.action == 'set_username':
         logger.info(
-            f'Updating username to {response.username} '
-            f'(proactive presence conversation - N interactions {robot_context.unknown_user_interactions})'
+            'Updating username to %s for sid=%s (unknown interactions=%s)',
+            response.username,
+            sid,
+            context.unknown_user_interactions,
         )
-        robot_context.username = response.username
-        robot_context.needs_identification = False
-        _persist_shara_name_for_login(response.username)
-        _reset_unknown_user_tracking()
+        context.username = response.username
+        context.needs_identification = False
+        _persist_shara_name_for_login(context, response.username)
+        _reset_unknown_user_tracking(context)
 
-        # Same as record_face: skip history reload when login session is active.
-        if not robot_context.login_username:
+        if not context.login_username:
             _load_conversation_history_for(response.username)
 
         _emit_session_identity_updated(
             sid=sid,
-            session_id=robot_context.face_session_id,
+            session_id=context.face_session_id,
             username=response.username,
         )
 
     elif response.username:
-        previous_username = robot_context.username
-        robot_context.username = response.username
-        robot_context.needs_identification = False
-        _persist_shara_name_for_login(response.username)
-        if not robot_context.login_username and previous_username != response.username:
+        previous_username = context.username
+        context.username = response.username
+        context.needs_identification = False
+        _persist_shara_name_for_login(context, response.username)
+        if not context.login_username and previous_username != response.username:
             _load_conversation_history_for(response.username)
 
-    if sid is not None and not robot_context.username:
-        _mark_unknown_user_interaction()
+    if mark_unknown_interaction and sid is not None and not context.username:
+        _mark_unknown_user_interaction(context)
 
     if _eyes and response.robot_mood:
         try:
-            _eyes.set(response.robot_mood)
-        except Exception as e:
-            logger.warning(f'Could not set eye state: {e}')
+            _eyes.set(response.robot_mood, sid=sid, session_id=context.face_session_id)
+        except Exception as exc:
+            logger.warning('Could not set eye state for sid=%s: %s', sid, exc)
 
     audio_b64 = base64.b64encode(response.audio).decode('utf-8') if response.audio else None
 
@@ -685,32 +825,48 @@ def _handle_response(response, sid, next_proactive_question: str = ''):
         'audio': audio_b64,
         'audioMimeType': getattr(response, 'audio_mime_type', 'audio/mpeg'),
         'continue': response.continue_conversation,
+        'sessionId': context.face_session_id,
     }
 
     _emit_robot_message(message, sid)
-    _emit_state_update()
+    _emit_state_update(sid, context)
 
-    logger.info(f'Response emitted: mood={response.robot_mood}, continue={response.continue_conversation}')
+    logger.info(
+        'Response emitted to sid=%s: mood=%s continue=%s',
+        sid,
+        response.robot_mood,
+        response.continue_conversation,
+    )
 
 
-# ── Emission helpers ──────────────────────────────────────────────────────────
-
-def _emit_robot_message(message: dict, sid=None):
+def _emit_robot_message(message: dict, sid: str = None):
     if _socketio is None:
         return
-    if sid:
-        _socketio.emit('robot_message', message, to=sid, namespace='/message')
-    else:
-        _socketio.emit('robot_message', message, namespace='/message')
+    if not sid:
+        logger.warning('robot_message without sid skipped')
+        return
+    _socketio.emit('robot_message', message, to=sid, namespace='/message')
 
 
-def _emit_state_update():
+def _emit_state_update(sid: str = None, context: RobotContext = None):
     if _socketio is None:
         return
+    if not sid:
+        logger.debug('state_update without sid skipped')
+        return
+
+    context = context or _get_existing_context(sid)
+    if not context:
+        return
+
     _socketio.emit(
         'state_update',
-        {'state': robot_context.state},
-        namespace='/message'
+        {
+            'state': context.state,
+            'sessionId': context.face_session_id,
+        },
+        to=sid,
+        namespace='/message',
     )
 
 
@@ -728,17 +884,50 @@ def _emit_session_identity_updated(sid=None, session_id=None, username=None):
             'userStatus': 'existing',
         },
         to=sid,
-        namespace='/message'
+        namespace='/message',
+    )
+
+
+def _emit_transcription_result(text: str, sid: str, context: RobotContext):
+    if not text or not sid or _socketio is None:
+        return
+
+    _socketio.emit(
+        'transcription_result',
+        {
+            'text': text,
+            'sessionId': context.face_session_id,
+        },
+        to=sid,
+        namespace='/message',
+    )
+
+
+def _emit_audio_empty(sid: str, context: RobotContext):
+    if not sid or _socketio is None:
+        return
+    _socketio.emit(
+        'audio_empty',
+        {'sessionId': context.face_session_id},
+        to=sid,
+        namespace='/message',
     )
 
 
 def _emit_error(sid=None):
-    robot_context.state = 'idle_presence'
-    _emit_state_update()
+    context = _get_existing_context(sid)
+    if context:
+        context.state = 'idle_presence'
+        _emit_state_update(sid, context)
+
     if sid and _socketio:
         _socketio.emit(
             'robot_message',
-            {'text': 'Lo siento, ha ocurrido un error. Por favor, inténtalo de nuevo.', 'state': 'neutral'},
+            {
+                'text': 'Lo siento, ha ocurrido un error. Por favor, intentalo de nuevo.',
+                'state': 'neutral',
+                'sessionId': context.face_session_id if context else None,
+            },
             to=sid,
-            namespace='/message'
+            namespace='/message',
         )

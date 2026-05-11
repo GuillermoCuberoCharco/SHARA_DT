@@ -277,7 +277,11 @@ def flush_session():
 
 @app.route('/health')
 def health():
-    return {'status': 'ok', 'robot_state': state_machine.robot_context.state}
+    return {
+        'status': 'ok',
+        'active_sessions': state_machine.get_active_sessions_count(),
+        'session_states': state_machine.get_session_states(),
+    }
 
 
 @app.route('/api/synthesize', methods=['POST'])

@@ -18,7 +18,7 @@ from .google_api import (
     speech_to_text,
     text_to_speech,
 )
-from .openai_api import generate_response, load_conversation_history, save_conversation_history, clear_conversation_history
+from .openai_api import generate_response, load_conversation_history, save_conversation_history
 
 logger = logging.getLogger('Server')
 logger.setLevel(logging.DEBUG)
@@ -29,6 +29,8 @@ class Request:
     audio: str = b''
     text: str = None
     username: str = None
+    login_name: str = None
+    session_id: str = None
     proactive_question: str = ''
 
 @dataclass
@@ -69,7 +71,12 @@ def query(request: Request):
 
     # Generate the response
     start_time = time.time()
-    text_response, robot_context = generate_response(request.text, context_variables)
+    text_response, robot_context = generate_response(
+        request.text,
+        context_variables,
+        history_key=request.login_name or request.username,
+        session_id=request.session_id,
+    )
     logger.info(f'LLM response generated in {time.time() - start_time:.2f} seconds')
     logger.info(f'Response text :: {text_response}')
     logger.info(f'Response context :: {robot_context}')
@@ -109,7 +116,12 @@ def query_with_text(request: Request):
 
     # Generate the response
     start_time = time.time()
-    text_response, robot_context = generate_response(request.text, context_variables)
+    text_response, robot_context = generate_response(
+        request.text,
+        context_variables,
+        history_key=request.login_name or request.username,
+        session_id=request.session_id,
+    )
     logger.info(f'LLM response generated in {time.time() - start_time:.2f} seconds')
     logger.info(f'Response text :: {text_response}')
     logger.info(f'Response context :: {robot_context}')
@@ -161,7 +173,12 @@ def proactive_query(request: Request):
 
     # Generate the response
     start_time = time.time()
-    text_response, robot_context = generate_response('', context_variables) # Empty input_text since it's a proactive question
+    text_response, robot_context = generate_response(
+        '',
+        context_variables,
+        history_key=request.login_name or request.username,
+        session_id=request.session_id,
+    ) # Empty input_text since it's a proactive question
     logger.info(f'LLM response generated in {time.time() - start_time:.2f} seconds')
     logger.info(f'Response text :: {text_response}')
     logger.info(f'Response context :: {robot_context}')
@@ -183,14 +200,13 @@ def proactive_query(request: Request):
     )
 
 def load_conversation_db(username):
-    # Load conversation history for the user
+    # History is now loaded per request; this call warms/logs the DB path.
     load_conversation_history(username)
 
     logger.info(f'Conversation history of {username} loaded')
 
 def dump_conversation_db(username, session_id=None):
-    # Persist conversation history for the user, then clear in-RAM state
+    # Conversations are persisted per request; keep this as a compatibility hook.
     save_conversation_history(username, session_id=session_id)
-    clear_conversation_history()
 
-    logger.info(f'Conversation history of {username} persisted to database (session={session_id})')
+    logger.info(f'Conversation history of {username} flushed (session={session_id})')

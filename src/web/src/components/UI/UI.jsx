@@ -121,6 +121,14 @@ const getSessionDisplayName = (sessionIdentity) => {
     return loginName || 'Usuario';
 };
 
+const isForCurrentSession = (payload, sessionIdentity) => {
+    if (!payload?.sessionId || !sessionIdentity?.sessionId) {
+        return true;
+    }
+
+    return payload.sessionId === sessionIdentity.sessionId;
+};
+
 const UI = ({
     sharedStream,
     onRobotStateChange,
@@ -173,6 +181,10 @@ const UI = ({
     }, [onRobotStateChange]);
 
     const handleRobotMessage = useCallback(async (message) => {
+        if (!isForCurrentSession(message, sessionIdentity)) {
+            return;
+        }
+
         if (message.state) {
             notifyRobotState(message.state);
         }
@@ -185,11 +197,15 @@ const UI = ({
                 message.audioMimeType || 'audio/mpeg',
             );
         }
-        emit('tts_complete', {});
+        emit('tts_complete', { sessionId: sessionIdentity?.sessionId || null });
         setIsWaitingResponse(false);
-    }, [notifyRobotState, handleSynthesize, emit]);
+    }, [notifyRobotState, handleSynthesize, emit, sessionIdentity]);
 
     const handleWizardMessage = useCallback(async (message) => {
+        if (!isForCurrentSession(message, sessionIdentity)) {
+            return;
+        }
+
         if (message.state) {
             notifyRobotState(message.state);
         }
@@ -199,16 +215,20 @@ const UI = ({
         }
 
         await handleSynthesize(message.text);
-        emit('tts_complete', {});
+        emit('tts_complete', { sessionId: sessionIdentity?.sessionId || null });
         setIsWaitingResponse(false);
-    }, [notifyRobotState, handleSynthesize, emit]);
+    }, [notifyRobotState, handleSynthesize, emit, sessionIdentity]);
 
     const handleClientMessage = useCallback((message) => {
+        if (!isForCurrentSession(message, sessionIdentity)) {
+            return;
+        }
+
         if (message.text?.trim()) {
             console.log('[SHARA][client]', message.text);
             setIsWaitingResponse(true);
         }
-    }, []);
+    }, [sessionIdentity]);
 
     const handleFaceDetected = () => {
         setFaceDetected(true);
@@ -295,7 +315,15 @@ const UI = ({
         socket.on('client_message', handleClientMessage);
         socket.on('transcription_result', handleClientMessage);
         socket.on('session_identity_updated', handleSessionIdentityUpdated);
-        socket.on('audio_empty', () => { setIsWaitingResponse(false); });
+        const handleAudioEmpty = (payload) => {
+            if (!isForCurrentSession(payload, sessionIdentity)) {
+                return;
+            }
+
+            setIsWaitingResponse(false);
+        };
+
+        socket.on('audio_empty', handleAudioEmpty);
 
         return () => {
             socket.off('robot_message');
@@ -303,9 +331,9 @@ const UI = ({
             socket.off('client_message');
             socket.off('transcription_result');
             socket.off('session_identity_updated', handleSessionIdentityUpdated);
-            socket.off('audio_empty');
+            socket.off('audio_empty', handleAudioEmpty);
         };
-    }, [socket, handleClientMessage, handleRobotMessage, handleWizardMessage, onSessionIdentityChange, sessionIdentity?.sessionId]);
+    }, [socket, handleClientMessage, handleRobotMessage, handleWizardMessage, onSessionIdentityChange, sessionIdentity]);
 
     useEffect(() => {
         if (!isRegistered || !sessionIdentity?.sessionId) {

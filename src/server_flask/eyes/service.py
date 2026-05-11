@@ -18,10 +18,21 @@ class Eyes:
         self.socketio = socketio_instance
         logger.info('Eyes ready (frontend rendering mode)')
 
-    def set(self, face: str):
-        if self.socketio:
-            self.socketio.emit('set_face', {'face': face}, namespace='/message')
-            logger.debug(f'set_face → {face}')
+    def set(self, face: str, sid: str = None, session_id: str = None):
+        if not self.socketio:
+            return
+
+        if not sid:
+            logger.debug('set_face without sid skipped: %s', face)
+            return
+
+        self.socketio.emit(
+            'set_face',
+            {'face': face, 'sessionId': session_id},
+            to=sid,
+            namespace='/message',
+        )
+        logger.debug('set_face -> %s (sid=%s)', face, sid)
 
     def start(self): pass
     def stop(self):  pass

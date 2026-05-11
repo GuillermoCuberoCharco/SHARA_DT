@@ -17,8 +17,8 @@ from db import get_connection
 client = OpenAI()
 logger = logging.getLogger('OpenAI')
 
-prev_conversation_history = []  # Conversation history from previous sessions (from DB)
-current_conversation_history = []  # Conversation history from current session (in-RAM)
+# Conversation history is loaded and persisted per request. Keeping it out of
+# module globals prevents concurrent browser sessions from sharing context.
 
 # Load prompt from file
 def load_prompt(filename="files/shara_prompt.txt"):
@@ -35,14 +35,11 @@ def load_tools(filename="files/tools_config.json"):
 
 def load_conversation_history(username):
     """
-    Load all past messages for *username* from the DB into prev_conversation_history.
+    Load all past messages for *username* from the DB.
     Messages are returned in chronological order (created_at ASC, id ASC).
     """
-    global prev_conversation_history
-
     if not username:
-        prev_conversation_history = []
-        return
+        return []
 
     conn = None
     try:
@@ -58,24 +55,24 @@ def load_conversation_history(username):
                 (username,),
             )
             rows = cur.fetchall()
-        prev_conversation_history = [{'role': r[0], 'content': r[1]} for r in rows]
-        logger.info('Loaded %d messages for user %s', len(prev_conversation_history), username)
+        history = [{'role': r[0], 'content': r[1]} for r in rows]
+        logger.info('Loaded %d messages for user %s', len(history), username)
+        return history
     except Exception as exc:
         logger.error('Failed to load conversation history for %s: %s', username, exc)
-        prev_conversation_history = []
+        return []
     finally:
         if conn:
             conn.close()
 
 
-def save_conversation_history(username, session_id=None):
+def _persist_conversation_messages(username, messages, session_id=None):
     """
-    Persist current_conversation_history to the DB under *username*.
+    Persist a request-local message batch to the DB under *username*.
     Each message becomes an individual row with an optional session_id
     so sessions can be reconstructed for study analysis.
-    Does nothing if username is None or there are no new messages.
     """
-    if not username or not current_conversation_history:
+    if not username or not messages:
         return
 
     conn = None
@@ -89,13 +86,13 @@ def save_conversation_history(username, session_id=None):
                 """,
                 [
                     (username, msg['role'], msg['content'], session_id)
-                    for msg in current_conversation_history
+                    for msg in messages
                 ],
             )
         conn.commit()
         logger.info(
             'Saved %d messages for user %s (session %s)',
-            len(current_conversation_history), username, session_id,
+            len(messages), username, session_id,
         )
     except Exception as exc:
         if conn:
@@ -106,14 +103,21 @@ def save_conversation_history(username, session_id=None):
             conn.close()
 
 
-def get_full_conversation_history():
-    return prev_conversation_history + current_conversation_history
+def save_conversation_history(username, session_id=None):
+    """
+    Compatibility hook for the old flush-on-logout flow.
+    Messages are now persisted during each successful query.
+    """
+    logger.debug('save_conversation_history no-op for %s (session %s)', username, session_id)
+
+
+def get_full_conversation_history(username=None):
+    return load_conversation_history(username) if username else []
 
 
 # Clear conversation history in-RAM (temporal context conversation)
 def clear_conversation_history():
-    prev_conversation_history.clear()
-    current_conversation_history.clear()
+    return
 
 
 shara_prompt = load_prompt()
@@ -207,18 +211,15 @@ def handle_tool_call(tool_call, context_data):
     return result, robot_action
 
 
-def build_messages(input_text, context_data):
+def build_messages(input_text, context_data, history_key=None):
     ''' Build messages with conversation history '''
 
-    messages = prev_conversation_history + current_conversation_history # include previous conversation history
+    messages = load_conversation_history(history_key) if history_key else []
     user_message = {"role": "user", "content": json.dumps({**context_data,
                                                            "user_input": input_text,
                                                            "timestamp": datetime.now().strftime("%d-%m-%Y %H:%M")}, ensure_ascii=False)}
 
-    messages.append(user_message)
-    current_conversation_history.append(user_message)
-
-    return messages
+    return [*messages, user_message], user_message
 
 
 def get_tools_for_context(context_data):
@@ -239,10 +240,11 @@ def get_tools_for_context(context_data):
     return tools_to_use, requireness
 
 
-def generate_response(input_text, context_data={}):
+def generate_response(input_text, context_data=None, history_key=None, session_id=None):
     ''' Generate response from user input, context data, and conversation history '''
-    
-    messages = build_messages(input_text, context_data)
+
+    context_data = context_data or {}
+    messages, user_message = build_messages(input_text, context_data, history_key=history_key)
     tools_to_use, requireness_tool = get_tools_for_context(context_data)
 
     # Create request-local completion args.
@@ -284,8 +286,14 @@ def generate_response(input_text, context_data={}):
     
     response_text = response_dict.get("response", "").translate(str.maketrans("'", '"', '*_#'))
     
-    # Add response to conversation history
-    current_conversation_history.append({"role": "assistant", "content": response_text})
+    # Persist only the user/assistant exchange. Tool call plumbing remains
+    # request-local and is not part of the user-facing conversation history.
+    assistant_message = {"role": "assistant", "content": response_text}
+    _persist_conversation_messages(
+        history_key,
+        [user_message, assistant_message],
+        session_id=session_id,
+    )
 
     # Build robot_context from parsed data (continue, robot_mood, robot_action)
     robot_context = {

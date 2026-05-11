@@ -49,12 +49,15 @@ class MessageNamespace(Namespace):
             'loginName': None,
             'sessionId': None,
         }
+        state_machine.register_session(request.sid)
 
     def on_disconnect(self):
         logger.info(f'[/message] Client disconnected: {request.sid}')
         client_data = _clients.pop(request.sid, None) or {}
         if client_data:
-            state_machine.on_client_disconnect(client_data)
+            state_machine.on_client_disconnect(request.sid, client_data)
+        else:
+            state_machine.unregister_session(request.sid)
         _cleanup_audio_buffer(request.sid)
 
     def on_register_client(self, data):
@@ -74,7 +77,7 @@ class MessageNamespace(Namespace):
             _clients[request.sid]['loginName'] = data.get('loginName')
             _clients[request.sid]['sessionId'] = data.get('sessionId')
 
-        state_machine.on_session_login(data or {})
+        state_machine.on_session_login(request.sid, data or {})
 
     def on_audio_stream_start(self, data):
         sid = request.sid
@@ -82,7 +85,9 @@ class MessageNamespace(Namespace):
 
         _cleanup_audio_buffer(sid)
         _audio_buffers[sid] = bytearray()
-        state_machine.on_audio_stream_start(sid)
+        accepted = state_machine.on_audio_stream_start(sid)
+        if not accepted:
+            _cleanup_audio_buffer(sid)
 
     def on_audio_chunk(self, data):
         sid = request.sid
@@ -112,6 +117,9 @@ class MessageNamespace(Namespace):
             state_machine.on_audio_stream_end(audio_bytes, sid)
         else:
             logger.warning(f'[/message] audio_stream_end with no buffer for {sid}')
+            emit('audio_empty', {
+                'sessionId': _clients.get(request.sid, {}).get('sessionId'),
+            })
 
     def on_client_message(self, data):
         if not isinstance(data, dict):
@@ -132,7 +140,11 @@ class MessageNamespace(Namespace):
             text = data.get('text', '').strip()
             if text:
                 logger.info(f'[/message] Text received from {request.sid}: "{text}"')
-                emit('client_message', {'text': text, 'sender': 'client'}, broadcast=True)
+                emit('client_message', {
+                    'text': text,
+                    'sender': 'client',
+                    'sessionId': _clients.get(request.sid, {}).get('sessionId'),
+                })
                 state_machine.on_text_message(text, request.sid)
 
         else:
@@ -142,11 +154,11 @@ class MessageNamespace(Namespace):
 
     def on_user_detected(self, data):
         logger.info(f'[/message] user_detected from {request.sid}: {data}')
-        state_machine.on_user_detected(data or {})
+        state_machine.on_user_detected(request.sid, data or {})
 
     def on_user_lost(self, data):
         logger.info(f'[/message] user_lost from {request.sid}')
-        state_machine.on_user_lost(data or {})
+        state_machine.on_user_lost(request.sid, data or {})
 
     def on_tts_complete(self, data):
         logger.info(f'[/message] tts_complete from {request.sid}')
@@ -156,7 +168,11 @@ class MessageNamespace(Namespace):
         text = data.get('text', '').strip() if isinstance(data, dict) else str(data).strip()
         if text:
             logger.info(f'[/message] transcription_result: "{text}"')
-            emit('client_message', {'text': text, 'sender': 'client'}, broadcast=True)
+            emit('client_message', {
+                'text': text,
+                'sender': 'client',
+                'sessionId': _clients.get(request.sid, {}).get('sessionId'),
+            })
             state_machine.on_text_message(text, request.sid)
 
 

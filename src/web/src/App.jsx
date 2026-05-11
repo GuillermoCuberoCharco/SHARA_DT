@@ -209,7 +209,7 @@ function App() {
   return (
     <WebSocketProvider handlers={webSocketHandlers}>
       {/* Full-screen robot image with eye animation overlay */}
-      <RobotView robotState={robotState} />
+      <RobotView robotState={robotState} sessionIdentity={sessionIdentity} />
 
       {!isAuthResolved && (
         <div className="session-login-shell">

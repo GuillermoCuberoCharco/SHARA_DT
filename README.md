@@ -1,258 +1,254 @@
-# SHARA_DT: Digital Twin of SHARA
+# SHARA_DT: gemelo digital web de SHARA
 
-SHARA_DT is the web-based digital twin of SHARA. It reproduces the physical robot's conversational flow with a Flask + Socket.IO + React/Vite architecture, replacing embedded sensors and actuators with browser camera, microphone, facial rendering, and audio playback.
+SHARA_DT es el gemelo digital web de SHARA. Reproduce el flujo conversacional del robot fisico con una arquitectura Flask + Socket.IO + React/Vite, sustituyendo sensores y actuadores embebidos por camara, microfono, renderizado facial, anillo LED y reproduccion de audio en el navegador.
 
-The system currently runs as a single service: Flask serves the built SPA, exposes the HTTP API, and hosts the Socket.IO channel used by the web interface for conversation, session identity, presence, and robot state visualization.
+En el estado actual, el sistema se despliega como un unico servicio: Flask sirve la SPA compilada, expone la API HTTP, mantiene el canal Socket.IO `/message` y orquesta autenticacion, sesiones, presencia, conversacion, STT, LLM y TTS.
 
-## Current System Status
+## Estado Actual
 
-- Main backend lives in `src/server_flask` with Flask, Socket.IO, the state machine, proactive behavior, OpenAI integration, Google Cloud STT/TTS, and session identity.
-- Frontend lives in `src/web` with React + Vite for camera capture, audio capture, chat UI, eye rendering, and LED ring rendering.
-- Current cloud stack uses OpenAI `gpt-4o-mini`, Google batch STT at `16 kHz`, and Google TTS in Spanish (`es-ES`, LINEAR16 output).
-- Face presence is detected locally in the browser with BlazeFace; identity is handled through session login and the stored SHARA name.
-- Voice flow is operational with PCM LINEAR16 capture through `AudioWorklet` and a blob-based fallback when the worklet is unavailable.
-- Contextual conversation is persisted per user, with tool calling for both `record_face` and `set_username`.
-- Deployment is prepared for Render through `Dockerfile` and `render.yaml`.
+- Backend en `src/server_flask`, con Flask, Flask-SocketIO, maquina de estados por cliente, autenticacion, PostgreSQL, OpenAI Responses API y Google Cloud Speech/Text-to-Speech.
+- Frontend en `src/web`, con React + Vite, login de sesion, deteccion local de presencia facial con BlazeFace, captura de audio, renderizado de ojos y anillo LED.
+- Persistencia actual en PostgreSQL mediante `DATABASE_URL`; los historiales ya no se guardan en JSON.
+- Identidad basada en cuenta de usuario y cookie `shara_auth`; el nombre con el que SHARA se dirige al usuario se guarda como `shara_name`.
+- La presencia facial se detecta localmente en el navegador; `/api/recognize-face` queda como endpoint de compatibilidad y no calcula embeddings.
+- Audio principal por `AudioWorklet`: PCM LINEAR16 mono a 16 kHz, enviado por Socket.IO y procesado con Google STT batch.
+- TTS actual con Google Cloud en espanol (`es-ES`) y salida MP3 (`audio/mpeg`).
+- LLM actual: OpenAI `gpt-4o-mini`, salida estructurada con `response`, `robot_mood` y `continue`.
+- Herramientas activas del modelo: `record_face` y `set_username`, usadas para registrar o recuperar el nombre preferido del usuario.
+- Despliegue preparado con `Dockerfile`, `render.yaml` y workflow manual de GHCR.
 
-## Changes Already Incorporated
-
-The previous README had become heavily focused on the comparison with the physical robot. The current implementation also includes these relevant improvements:
-
-- Frontend face-presence detection with BlazeFace, wired to the shared session identity flow.
-- Login-based identity persistence through the auth/session model and stored SHARA name.
-- Operational parity for `record_face` and `set_username` inside the state machine:
-  - `record_face` stores the provided name for the active login/session flow,
-  - `set_username` is connected end-to-end from `casual_ask_known_username` in the current conversational state machine.
-- The tool-calling serialization fix in `src/server_flask/services/cloud/openai_api.py`, avoiding raw objects returned by `responses.parse()` from being injected back into the request flow.
-- Frontend support for rendering the robot LED ring according to the operational state (`idle`, `listening`, `recording`, `speaking`, and related modes).
-- `RobotView` uses a single Socket.IO namespace, `/message`, for both `set_face` and `state_update`; there is no active separate animation route anymore.
-- Legacy comments that still referred to old namespaces or old socket paths have been cleaned up in the active modules.
-- Unified deployment: in production, the built frontend is served directly by Flask and shares origin with Socket.IO and the HTTP API.
-
-## Current Architecture
+## Arquitectura
 
 ```text
 SHARA_DT
+|-- Dockerfile
+|-- render.yaml
+|-- .github/workflows/build-shara-dt-image.yml
 |-- src/server_flask
-|   |-- app.py                      # Flask, Socket.IO, HTTP API, and SPA serving
-|   |-- state_machine.py            # Conversational logic and state transitions
-|   |-- proactive_service.py        # Proactive triggers and cooldown logic
-|   |-- robot_context.py            # Global robot state container
-|   |-- sockets/message_handler.py  # Socket.IO events for the /message namespace
-|   |-- eyes/service.py             # Emits set_face events to the frontend
-|   `-- services/cloud
-|       |-- server.py               # STT -> LLM -> TTS orchestration
-|       |-- google_api.py           # Google Cloud Speech and TTS
-|       `-- openai_api.py           # Prompt, tools, and conversation history
+|   |-- app.py                      # Flask, Socket.IO, auth HTTP API y SPA serving
+|   |-- auth.py                     # Login, registro y shara_name en PostgreSQL
+|   |-- db.py                       # Conexion y schema PostgreSQL
+|   |-- state_machine.py            # Estado conversacional por Socket.IO sid
+|   |-- proactive_service.py        # Preguntas proactivas y cooldowns
+|   |-- robot_context.py            # Contenedor de estado por sesion
+|   |-- sockets/message_handler.py  # Eventos Socket.IO del namespace /message
+|   |-- eyes/service.py             # Emision de set_face hacia el frontend
+|   |-- services/cloud
+|   |   |-- server.py               # STT -> LLM -> TTS
+|   |   |-- google_api.py           # Google Speech-to-Text y Text-to-Speech
+|   |   `-- openai_api.py           # Prompt, tools e historial PostgreSQL
+|   `-- files
+|       |-- shara_prompt.txt
+|       |-- tools_config.json
+|       `-- conversation_db.json    # Placeholder legado, no usado como store activo
 `-- src/web
-    |-- src/App.jsx
-    |-- src/components/FaceDetection.jsx
-    |-- src/components/RobotView.jsx
-    |-- src/components/LedCircle.jsx
-    |-- src/components/UI
-    |   |-- UI.jsx
-    |   |-- hooks/useAudioRecorder.jsx
-    |   `-- subcomponents/*
-    `-- src/eyes/*                  # Face rendering, interpolation, and blinking
+    |-- package.json
+    |-- public
+    |   |-- pcm-processor.js        # AudioWorklet PCM LINEAR16
+    |   `-- images/shara.png
+    `-- src
+        |-- App.jsx
+        |-- config.js
+        |-- contexts/WebSocketContext.jsx
+        |-- components
+        |   |-- SessionLogin.jsx
+        |   |-- FaceDetection.jsx
+        |   |-- RobotView.jsx
+        |   |-- LedCircle.jsx
+        |   `-- UI/UI.jsx
+        `-- eyes/*                 # Renderizado de cara, interpolacion y parpadeo
 ```
 
-## Current Runtime Flow
+## Flujo de Ejecucion
 
-### 1. Presence and Session Identity
+### 1. Autenticacion y sesion
 
-1. The browser opens the camera and runs BlazeFace locally.
-2. When it detects a valid face, the frontend emits `user_detected` with the current session identity.
-3. When the face is lost for long enough, the frontend emits `user_lost`.
-4. The backend restores conversation history for the login name when available.
-5. If the session has no stored SHARA name, the conversational flow asks for the user's name and persists it.
-6. `POST /api/recognize-face` remains as a compatibility endpoint for older clients, but it no longer performs backend embedding extraction.
+1. Al cargar la app, `App.jsx` llama a `GET /api/auth/me` para restaurar una sesion existente.
+2. Si no hay cookie valida, `SessionLogin.jsx` muestra login o registro.
+3. Login y registro crean una cookie HTTP-only `shara_auth`.
+4. Al conectarse Socket.IO, el frontend emite `register_client`.
+5. Cuando la conexion queda registrada, el frontend emite `set_login_identity` con `loginName`, `sessionId`, `userName` y estado de identificacion.
+6. El backend crea un `RobotContext` por `sid`, carga el historial de `loginName` desde PostgreSQL y marca si falta `shara_name`.
 
-### 2. Voice Conversation
+### 2. Presencia facial
 
-1. When a user is present and the system is free, the frontend can start audio capture automatically.
-2. `useAudioRecorder.jsx` captures mono audio at `16 kHz` with `AudioWorklet` and sends PCM chunks through Socket.IO (`audio_stream_start`, `audio_chunk`, `audio_stream_end`).
-3. Recording stops automatically after `2` seconds of silence or after the configured hard limit.
-4. Once the stream closes, `state_machine.py` executes a batch pipeline:
-   - Google Cloud STT,
-   - response generation with OpenAI,
-   - Google Cloud TTS.
-5. The backend answers with `robot_message`, `state_update`, and, when needed, `set_face`.
-6. The frontend plays the audio, updates the robot visuals, and notifies `tts_complete`.
+1. Tras autenticarse, el navegador solicita camara si hay dispositivo disponible.
+2. `FaceDetection.jsx` carga BlazeFace y evalua la presencia localmente cada `250 ms`.
+3. Con dos detecciones consecutivas validas, emite `user_detected`.
+4. Si la cara se pierde durante suficiente tiempo, emite `user_lost`.
+5. SHARA usa la presencia para pasar de `idle` a `idle_presence` y despues a `listening`.
+6. Si el usuario no tiene `shara_name`, el flujo proactivo puede preguntar quien es y registrar el nombre mediante `record_face`.
 
-### 3. Proactivity
+### 3. Conversacion por voz
 
-- If a known user/session is present, `ProactiveService` can trigger `ask_how_are_you`.
-- If an unknown user/session is detected, it can trigger `ask_who_are_you`.
-- The active proactive question is stored in `robot_context.proactive_question` so that the prompt and the available tools remain coherent.
-- If the conversation continues without a confirmed username, the state machine can switch into `casual_ask_known_username`, enabling the end-to-end `set_username` flow.
+1. Cuando hay presencia y el sistema esta libre, el frontend inicia grabacion automaticamente.
+2. `useAudioRecorder.jsx` usa `AudioWorklet` (`public/pcm-processor.js`) para convertir audio a PCM LINEAR16 mono a `16 kHz`.
+3. El frontend envia `audio_stream_start`, multiples `audio_chunk` en base64 y `audio_stream_end`.
+4. La grabacion se detiene tras `2 s` de silencio o al alcanzar el limite duro de `50 s`.
+5. `state_machine.py` pasa a `processing_query` y ejecuta la cadena en `services/cloud/server.py`:
+   - Google Speech-to-Text,
+   - OpenAI Responses API,
+   - Google Text-to-Speech.
+6. El backend emite `transcription_result`, `robot_message`, `set_face` y `state_update`.
+7. El frontend reproduce el MP3 recibido, actualiza ojos/anillo LED y emite `tts_complete`.
 
-## Implemented Features
+### 4. Proactividad
 
-- Text chat and voice conversation with the backend.
-- Local face-presence detection in the browser.
-- Session-based identity with stored SHARA names.
-- New user naming through the `record_face` tool flow.
-- Username recovery through the `casual_ask_known_username -> set_username` flow.
-- Loading and storing conversation history per username.
-- Frontend face rendering with expression interpolation and automatic blinking.
-- LED ring visualization with `off`, `static`, `loop`, and `breath` effects.
-- Distributed operational state updates between backend and frontend through `state_update`.
-- HTTP speech synthesis fallback endpoint (`/api/synthesize`).
-- Service health endpoint (`/health`).
+- Usuario conocido: `ProactiveService` puede disparar `ask_how_are_you`.
+- Usuario desconocido o sin `shara_name`: puede disparar `ask_who_are_you`.
+- Tras una interaccion sin nombre confirmado, la maquina puede activar `casual_ask_known_username`, que habilita `set_username`.
+- El cooldown de preguntas proactivas es de `120 s`.
 
-## Robot States
+## Estados del Robot
 
-The current state machine uses these main states:
-
-| State | Meaning |
+| Estado | Significado |
 |---|---|
-| `idle` | No user is currently present. |
-| `idle_presence` | A user is present, but there is no active interaction yet. |
-| `listening` | The robot is waiting for user input. |
-| `recording` | The frontend is currently capturing audio. |
-| `processing_query` | The backend is running STT, LLM, and/or TTS work. |
-| `speaking` | The frontend is playing the robot response. |
+| `idle` | No hay usuario activo. |
+| `idle_presence` | Hay presencia, pero no interaccion activa. |
+| `listening` | SHARA espera entrada del usuario. |
+| `recording` | El frontend esta capturando audio. |
+| `processing_query` | El backend esta ejecutando STT, LLM o TTS. |
+| `speaking` | El frontend esta reproduciendo la respuesta de SHARA. |
 
-## Current HTTP API
+El anillo LED replica estos estados: apagado para `idle`/`processing_query`, morado fijo en `idle_presence`, azul giratorio en `listening`, blanco giratorio en `recording` y azul respirando en `speaking`.
 
-| Method | Route | Current usage |
+## API HTTP
+
+| Metodo | Ruta | Uso actual |
 |---|---|---|
-| `GET` | `/health` | Returns `status` and `robot_state`. |
-| `POST` | `/api/synthesize` | Synthesizes text to audio if the frontend needs fallback audio generation. |
-| `POST` | `/api/recognize-face` | Processes a face batch sent as `multipart/form-data`. |
-| `GET` | `/*` | Serves the built SPA in production. |
+| `POST` | `/api/auth/login` | Verifica `loginName` y `password`; crea cookie `shara_auth`. |
+| `POST` | `/api/auth/register` | Crea usuario con password minimo de 4 caracteres; crea cookie. |
+| `GET` | `/api/auth/me` | Restaura la sesion desde cookie. |
+| `POST` | `/api/auth/logout` | Fuerza flush de sesion runtime y limpia la cookie. |
+| `POST` | `/api/session/flush` | Flush explicito al cerrar o abandonar pagina. |
+| `GET` | `/health` | Devuelve `status`, `active_sessions` y `session_states`. |
+| `POST` | `/api/synthesize` | Convierte texto a audio MP3 base64 como fallback TTS. |
+| `POST` | `/api/recognize-face` | Compatibilidad con clientes antiguos; resuelve identidad por sesion, no por embeddings. |
+| `GET` | `/*` | Sirve la SPA compilada desde `src/server_flask/static` en produccion. |
 
-### `POST /api/recognize-face`
+### `/api/recognize-face`
 
-Expected fields:
+Este endpoint acepta campos legacy como `faces`, `clientId`, `sessionId`, `userName` o `username`, pero en el sistema actual no hace reconocimiento facial real. Responde con `recognitionBackend: "session_login"` y datos derivados de la sesion recibida.
 
-- `faces`: list of JPEG/PNG images in the batch.
-- `clientId`: web client identifier.
-- `sessionId`: face-session identifier.
-- `faceBoxes`: JSON list of bounding boxes for each frame.
+## Contrato Socket.IO
 
-Main response fields:
+Namespace activo: `/message`.
 
-- `userName`
-- `recognitionBackend`
-- `isNewUser`
-- `needsIdentification`
-- `userStatus`
-- `pendingRecognition`
-- `isConfirmed`
-- `historyCount`
-- `detectionProgress`
-- `totalRequired`
-
-## Current Socket.IO Contract
-
-The system uses a single active namespace: `/message`.
-
-### Events sent by the frontend
+Eventos enviados por el frontend:
 
 - `register_client`
-- `client_message`
+- `set_login_identity`
+- `user_detected`
+- `user_lost`
 - `audio_stream_start`
 - `audio_chunk`
 - `audio_stream_end`
-- `user_detected`
-- `user_lost`
+- `client_message` para texto o audio blob legacy
+- `transcription_result` como ruta de texto fallback
 - `tts_complete`
 
-### Events emitted by the backend
+Eventos emitidos por el backend:
 
 - `registration_success`
-- `robot_message`
 - `client_message`
 - `transcription_result`
+- `robot_message`
 - `state_update`
 - `set_face`
+- `session_identity_updated`
 - `audio_empty`
 
-## Persistence and Data Files
+`RobotView` y `UI` escuchan el mismo namespace `/message`; ya no hay una ruta Socket.IO separada para animacion.
 
-### Session Identity
+## Persistencia
 
-- Login/session identity is managed by the auth flow in `src/server_flask/auth.py`
-- The user's preferred SHARA name is stored and reused by the state machine when the session returns
-- `POST /api/recognize-face` remains only as a compatibility endpoint for older clients
+La base de datos activa es PostgreSQL:
 
-### Conversations
+- `users`
+  - `login_name`: identificador estable de login.
+  - `password_hash`: password con hash de Werkzeug.
+  - `shara_name`: nombre preferido que SHARA usa al hablar.
+  - `created_at`.
+- `conversation_messages`
+  - `login_name`.
+  - `role`: `user` o `assistant`.
+  - `content`.
+  - `session_id`.
+  - `created_at`.
 
-- The backend loads and stores conversation history in `src/server_flask/files/conversations_db.json`
-- Unknown-user testing traces may be written to `src/server_flask/files/conversations_unknown_db.json`
-- The repository still contains `src/server_flask/files/conversation_db.json` as a legacy placeholder, but it is not the file used by `openai_api.py`
+`openai_api.py` carga el historial por `login_name` en cada peticion y persiste cada intercambio exitoso usuario/asistente como filas nuevas. El antiguo flujo de volcado a JSON queda como compatibilidad; `src/server_flask/files/conversation_db.json` no es el store activo.
 
-### Prompt and Tools
+## Variables de Entorno
 
-- Main prompt: `src/server_flask/files/shara_prompt.txt`
-- Tool definitions: `src/server_flask/files/tools_config.json`
-
-## Requirements
-
-- Python `3.10` or `3.11`
-- Node.js `20+`
-- Yarn
-- OpenAI API key
-- Google Cloud credentials for Speech-to-Text and Text-to-Speech
-- Runtime Python dependencies are listed in `src/server_flask/requirements.txt`.
-- The current web deployment uses session login and frontend face-presence detection, so `face_recognition` / `dlib` are not required.
-
-## Environment Variables Currently Used
-
-Variables actually consumed by the code:
+Obligatorias para un arranque funcional:
 
 ```env
+DATABASE_URL=postgresql://user:password@host/db?sslmode=require
 OPENAI_API_KEY=...
+
+# Opcion recomendada en Render:
 GOOGLE_CLIENT_EMAIL=...
 GOOGLE_PRIVATE_KEY=...
 GOOGLE_PROJECT_ID=...
+
+# Alternativa local/legacy:
 GOOGLE_APPLICATION_CREDENTIALS=...
-FLASK_SECRET_KEY=...
-PORT=8081
 ```
 
-Notes:
+Recomendadas u opcionales:
 
-- `GOOGLE_CLIENT_EMAIL` + `GOOGLE_PRIVATE_KEY` + `GOOGLE_PROJECT_ID` is the preferred setup for deployments such as Render.
-- `GOOGLE_APPLICATION_CREDENTIALS` can be either a JSON string or a local path to a credentials file.
-- `FLASK_SECRET_KEY` falls back to `shara-woz-secret` if it is not defined.
-- `PORT` falls back to `8081`.
+```env
+FLASK_SECRET_KEY=...
+PORT=8081
+FRONTEND_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+AUTH_COOKIE_MAX_AGE_SECONDS=2592000
+AUTH_COOKIE_SAMESITE=Lax
+AUTH_COOKIE_SECURE=auto
+```
 
-Legacy or compatibility variables that still appear in some files but do not change the current behavior:
+Notas:
 
-- `ALLOWED_ORIGINS`
-- `FACE_DESCRIPTOR_BACKEND`
-- `EYES_WIDTH`
-- `EYES_HEIGHT`
+- `DATABASE_URL` es obligatorio: `db.init_schema()` se ejecuta al iniciar Flask.
+- `GOOGLE_CLIENT_EMAIL` + `GOOGLE_PRIVATE_KEY` + `GOOGLE_PROJECT_ID` tienen prioridad sobre `GOOGLE_APPLICATION_CREDENTIALS`.
+- `GOOGLE_APPLICATION_CREDENTIALS` puede ser un JSON de credenciales o una ruta local.
+- `FLASK_SECRET_KEY` tiene fallback de desarrollo, pero en despliegue debe definirse.
+- `AUTH_COOKIE_SECURE=auto` activa cookie segura cuando detecta HTTPS o un host no local.
+- `EYES_WIDTH` y `EYES_HEIGHT` aparecen en `render.yaml`, pero el codigo actual no los consume.
 
-## Local Development
+## Desarrollo Local
 
-### Recommended option: Docker
-
-The main `Dockerfile` builds the frontend, installs the Python runtime dependencies, copies the React build into the backend, and starts Flask:
+### Opcion Docker
 
 ```bash
 docker build -t shara-dt .
 docker run --env-file .env -p 8081:8081 shara-dt
 ```
 
-Once started, the application is available at `http://localhost:8081`.
+La app queda disponible en `http://localhost:8081`.
 
-### Local development with two processes
+### Opcion con dos procesos
 
-#### 1. Flask backend
+Backend Flask:
 
 ```bash
 cd src/server_flask
 python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# or: .\.venv\Scripts\Activate.ps1  # PowerShell
+source .venv/bin/activate
 pip install -r requirements.txt
 python app.py
 ```
 
-#### 2. Vite frontend
+En PowerShell:
+
+```powershell
+cd src/server_flask
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python app.py
+```
+
+Frontend Vite:
 
 ```bash
 cd src/web
@@ -260,67 +256,63 @@ yarn install
 yarn dev
 ```
 
-In development:
+En desarrollo, Vite sirve la interfaz normalmente en `http://localhost:5173` y el backend escucha en `http://localhost:8081`. `src/web/src/config.js` usa origen vacio en produccion y `http://localhost:8081` en desarrollo.
 
-- the frontend is usually served at `http://localhost:5173`
-- the backend listens at `http://localhost:8081`
-- `src/web/src/config.js` uses `http://localhost:8081` when `import.meta.env.PROD` is false
-
-## Deployment
+## Despliegue
 
 ### Render
 
-- `render.yaml` defines a single Docker web service called `shara-dt`
-- the container uses the root `Dockerfile`
-- in production, the frontend and backend share the same origin
+`render.yaml` define un unico servicio web Docker llamado `shara-dt` que usa el `Dockerfile` de la raiz. En produccion, Flask sirve la SPA compilada y comparte origen con la API HTTP y Socket.IO.
 
-### GHCR image
+Configura en Render las variables obligatorias, especialmente `DATABASE_URL`, `OPENAI_API_KEY` y credenciales de Google. El `render.yaml` actual no provisiona la base de datos por si mismo.
 
-The workflow `.github/workflows/build-shara-dt-image.yml` builds and publishes the production image from the root `Dockerfile`. It uses GitHub Actions cache for Docker layers so repeated builds do not reinstall the full dependency stack from scratch.
+### GHCR
 
-## Current Differences vs the Physical Robot
+`.github/workflows/build-shara-dt-image.yml` ejecuta manualmente (`workflow_dispatch`) la construccion y publicacion de la imagen en GHCR con tags `latest` y `sha`.
 
-| Physical robot | Current SHARA_DT |
+## Diferencias con el Robot Fisico
+
+| Robot fisico | SHARA_DT actual |
 |---|---|
-| Hardware sensors (`wakeface`, presence, microphone, speaker, LEDs, display) | Browser events and web rendering |
-| Embedded audio capture | Browser capture through `AudioWorklet` and `MediaRecorder` |
-| Local Python/OpenCV eye rendering | React canvas rendering in `src/web/src/eyes` |
-| Cloud services integrated into one Python robot app | Cloud services reused from Flask + Socket.IO |
-| Dedicated robot camera | Browser camera with frontend face-presence detection and session login |
+| Sensores, microfono, altavoz, LEDs y pantalla embebidos | Camara/microfono del navegador, audio web, canvas de ojos y LED renderizado |
+| Identificacion por pipeline local del robot | Login web + presencia facial local con BlazeFace |
+| Estado conversacional global | `RobotContext` por cliente Socket.IO |
+| Captura de audio PyAudio | `AudioWorklet` PCM LINEAR16 en navegador |
+| Visualizacion de ojos en Python/OpenCV | React canvas en `src/web/src/eyes` |
+| Persistencia local/legacy | PostgreSQL por `login_name` |
 
-Behavioral fidelity is high in the conversational logic and voice flow, while identity is handled through the web session model instead of the physical robot's local face-recognition pipeline.
+La fidelidad principal esta en el flujo conversacional, proactividad, estados operativos, voz y expresividad visual. La identidad se ha adaptado al modelo web con cuenta, cookie y nombre preferido.
 
-## Known Limitations and Remaining Work
+## Limitaciones Conocidas
 
-- There are still no automated parity tests between the physical robot and the digital twin.
-- The `presence` path in `ProactiveService` exists, but it is not yet wired end-to-end from the frontend.
-- The active conversation store is `conversations_db.json`, while the repository still carries the legacy placeholder `conversation_db.json`.
-- The web state machine still simplifies some hardware-specific transitions from the physical robot.
+- No hay tests automatizados de paridad con el robot fisico.
+- La ruta principal de audio es batch STT con PCM acumulado; los helpers de streaming STT existen, pero no estan conectados al flujo activo.
+- El componente `ChatWindow` y el path de texto por Socket.IO existen, pero la UI activa esta centrada en voz, presencia y visualizacion del robot.
+- `/api/recognize-face` es solo compatibilidad legacy.
+- `render.yaml` no crea ni enlaza una base de datos; `DATABASE_URL` debe configurarse aparte.
+- El repositorio no incluye actualmente un archivo `LICENSE`.
 
-## Contributing
+## Requisitos
 
-Contributions are welcome:
+- Python `3.10` recomendado.
+- Node.js `20+`.
+- Yarn.
+- PostgreSQL accesible por `DATABASE_URL`.
+- Cuenta/API key de OpenAI.
+- Credenciales de Google Cloud con Speech-to-Text y Text-to-Speech habilitados.
 
-1. Fork the repository.
-2. Create a branch for your change (`git checkout -b feature/new-feature`).
-3. Make your changes and commit them.
-4. Push the branch to your fork.
-5. Open a Pull Request.
+Las dependencias Python estan en `src/server_flask/requirements.txt`; las dependencias web estan en `src/web/package.json`.
 
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## Contact
+## Contacto
 
 Guillermo Cubero Charco  
 Guillermo.Cubero@uclm.es
 
-This project is part of a Master's Thesis carried out at ESI (UCLM), Ciudad Real, Spain.
+Proyecto realizado como parte de un Trabajo Fin de Master en la ESI (UCLM), Ciudad Real, Espana.
 
-## Acknowledgments
+## Agradecimientos
 
 - Ramon Hervas Lucas (advisor)
 - Laura Villa Fernandez-Arroyo (co-advisor)
 - MAmI Research Lab
-- The international panel of HRI experts for their evaluation and feedback
+- Panel internacional de expertos HRI por su evaluacion y feedback

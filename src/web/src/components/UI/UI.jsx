@@ -73,12 +73,12 @@ const getUiConsoleStatus = ({
     isSpeaking,
     faceDetected,
 }) => {
-    if (connectionError) {
-        return 'connection_error';
-    }
-
     if (!isRegistered) {
         return 'connecting';
+    }
+
+    if (connectionError) {
+        return 'connection_error';
     }
 
     if (isRecording) {

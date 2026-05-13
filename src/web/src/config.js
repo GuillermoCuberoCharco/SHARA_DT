@@ -16,7 +16,6 @@ export const AUDIO_SETTINGS = {
     sampleRate: 16000,          // Hz — same as robot mic
     silenceThreshold: 30,       // Higher RMS threshold so low ambient noise still counts as silence
     silenceDuration: 1500,      // ms of silence before auto-stop
-    preSpeechBufferMs: 600,     // ms of PCM kept before speech starts
     maxRecordingTime: 50000,    // ms hard cap per utterance
 };
 

@@ -2,10 +2,9 @@
     services/cloud/server.py
 Main server module for cloud services. Handles the main query flow: receiving audio input,
 performing STT, generating LLM response, converting to TTS, and returning the response.
-Also includes a separate function for streaming STT to get quick transcripts with proper state synchronization.
 
 Same code as the original server module on the robot, but adapted to be used as a service module in the Flask server.
-The web Socket.IO pipeline starts streaming_stt as soon as recording starts, mirroring the physical robot.
+The web Socket.IO pipeline buffers PCM chunks and sends them through batch STT when recording stops.
 """
 
 import logging
@@ -14,7 +13,6 @@ from dataclasses import dataclass
 
 from .google_api import (
     TTS_AUDIO_MIME_TYPE,
-    compose_streaming_fallback_speech_to_text,
     speech_to_text,
     text_to_speech,
 )
@@ -106,7 +104,7 @@ def query_with_text(request: Request):
     if not request.text:
         return None
 
-    logger.info(f"Processing query with streaming STT text: '{request.text}'")
+    logger.info(f"Processing query with pre-transcribed text: '{request.text}'")
 
     # Set context variables
     context_variables = {}
@@ -145,23 +143,6 @@ def query_with_text(request: Request):
         robot_context['robot_mood'] if 'robot_mood' in robot_context and robot_context['robot_mood'] else 'neutral',
         text_response
     )
-
-
-def streaming_stt(audio_generator):
-    """
-    Perform only streaming STT
-    This is used to get the transcript quickly while maintaining proper state synchronization
-    
-    Args:
-        audio_generator: Generator that yields audio chunks from the microphone
-        
-    Returns:
-        str: Transcript from streaming STT, or empty string if no speech detected
-    """
-    transcript, silence_time = compose_streaming_fallback_speech_to_text(audio_generator)
-    logger.info(f"Streaming STT result: ({silence_time}s): '{transcript}'")
-    return transcript
-
 
 def proactive_query(request: Request):
     # Same as query but with empty input_text and without STT

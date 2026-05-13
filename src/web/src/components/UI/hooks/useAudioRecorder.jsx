@@ -4,11 +4,6 @@ import { AUDIO_SETTINGS, SERVER_URL } from '../../../config';
 import { useWebSocketContext } from '../../../contexts/WebSocketContext';
 import { playAudioBase64 } from '../../../utils/audioPlayback';
 
-const PCM_CHUNK_DURATION_MS = 100;
-const MAX_PRE_SPEECH_CHUNKS = Math.ceil(
-    (AUDIO_SETTINGS.preSpeechBufferMs || 600) / PCM_CHUNK_DURATION_MS
-);
-
 const encodePcmBase64 = (pcmBuffer) => {
     const uint8 = new Uint8Array(pcmBuffer);
     let binary = '';
@@ -41,38 +36,9 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
     const workletNodeRef = useRef(null);
     const startInProgressRef = useRef(false);
-    const serverStreamStartedRef = useRef(false);
-    const speechDetectedRef = useRef(false);
-    const pendingPcmChunksRef = useRef([]);
+    const audioStreamStartedRef = useRef(false);
 
     const { socket, emit } = useWebSocketContext();
-
-    const resetServerStreamState = useCallback(() => {
-        serverStreamStartedRef.current = false;
-        speechDetectedRef.current = false;
-        pendingPcmChunksRef.current = [];
-    }, []);
-
-    const startServerAudioStream = useCallback(() => {
-        if (serverStreamStartedRef.current) {
-            return true;
-        }
-
-        const started = emit('audio_stream_start', {});
-        if (!started) {
-            console.error('Unable to start server audio stream');
-            return false;
-        }
-
-        serverStreamStartedRef.current = true;
-        console.log('audio_stream_start sent after speech detection');
-
-        for (const chunk of pendingPcmChunksRef.current) {
-            emit('audio_chunk', { data: chunk });
-        }
-        pendingPcmChunksRef.current = [];
-        return true;
-    }, [emit]);
 
     const initializeAudioContext = useCallback(() => {
         if (!audioContextRef.current) {
@@ -109,7 +75,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
         const recorder = mediaRecorderRef.current;
         if (recorder && (isRecordingRef.current || recorder.state === 'recording')) {
             console.log('🛑 Stopping recording...');
-            const shouldSubmitToServer = serverStreamStartedRef.current;
+            const shouldSubmitToServer = audioStreamStartedRef.current;
             isRecordingRef.current = false;
             if (recorder.state !== 'inactive') {
                 recorder.stop();
@@ -141,9 +107,9 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                 onTranscriptionComplete?.();
             }
 
-            resetServerStreamState();
+            audioStreamStartedRef.current = false;
         }
-    }, [emit, onAudioSubmitted, onTranscriptionComplete, resetServerStreamState]);
+    }, [emit, onAudioSubmitted, onTranscriptionComplete]);
 
     const detectSilence = useCallback((stream) => {
 
@@ -191,7 +157,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                         console.log(`⏱️  Silence: ${(silenceDuration / 1000).toFixed(1)}s / ${(silenceDurationRef.current / 1000).toFixed(1)}s ( ${(remainingTime / 1000).toFixed(1)}s remaining)`);
                     }
 
-                    if (speechDetectedRef.current && silenceDuration >= silenceDurationRef.current) {
+                    if (silenceDuration >= silenceDurationRef.current) {
                         console.log(`✅ SILENCE THRESHOLD REACHED - Stopping recording (${(silenceDuration / 1000).toFixed(1)}s of silence)`);
                         stopRecording();
                         return;
@@ -199,8 +165,6 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                 }
             } else {
                 consecutiveAudioFramesRef.current++;
-                speechDetectedRef.current = true;
-                startServerAudioStream();
 
                 if (silenceStartTimeRef.current !== null) {
                     const interruptedAfter = Date.now() - silenceStartTimeRef.current;
@@ -218,7 +182,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
         console.log('Starting silence detection...');
         silenceTimerRef.current = requestAnimationFrame(checkSilence);
-    }, [stopRecording, initializeAudioContext, startServerAudioStream]);
+    }, [stopRecording, initializeAudioContext]);
 
     const startRecording = useCallback(async () => {
         if (startInProgressRef.current || isWaitingResponseRef.current || isRecordingRef.current || isSpeaking) {
@@ -243,7 +207,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
             console.log('🎤 Starting recording...');
             audioChunksRef.current = [];
-            resetServerStreamState();
+            audioStreamStartedRef.current = false;
             silenceStartTimeRef.current = null;
             consecutiveSilenceFramesRef.current = 0;
             consecutiveAudioFramesRef.current = 0;
@@ -301,19 +265,17 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                 workletNodeRef.current = workletNode;
                 workletSource.connect(workletNode);
 
+                const started = emit('audio_stream_start', {});
+                if (!started) {
+                    throw new Error('Socket not connected for audio_stream_start');
+                }
+                audioStreamStartedRef.current = true;
+                console.log('audio_stream_start sent');
+
                 workletNode.port.onmessage = (event) => {
                     if (!isRecordingRef.current) return;
                     const pcmChunk = encodePcmBase64(event.data.pcm);
-
-                    if (serverStreamStartedRef.current) {
-                        emit('audio_chunk', { data: pcmChunk });
-                        return;
-                    }
-
-                    pendingPcmChunksRef.current.push(pcmChunk);
-                    if (pendingPcmChunksRef.current.length > MAX_PRE_SPEECH_CHUNKS) {
-                        pendingPcmChunksRef.current.shift();
-                    }
+                    emit('audio_chunk', { data: pcmChunk });
                 };
             } catch (workletError) {
                 console.warn('⚠️ AudioWorklet unavailable, falling back to blob STT:', workletError);
@@ -342,7 +304,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
         } finally {
             startInProgressRef.current = false;
         }
-    }, [detectSilence, stopRecording, isSpeaking, resetServerStreamState]);
+    }, [detectSilence, emit, stopRecording, isSpeaking]);
 
     useEffect(() => {
         return () => {

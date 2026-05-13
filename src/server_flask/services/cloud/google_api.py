@@ -15,6 +15,7 @@ TTS configuration:
 import json
 import logging
 import os
+import time
 
 from google.cloud import speech, texttospeech
 from google.oauth2 import service_account

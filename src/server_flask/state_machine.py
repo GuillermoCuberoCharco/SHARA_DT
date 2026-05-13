@@ -12,6 +12,8 @@ sid only.
 import base64
 import concurrent.futures
 import logging
+import queue
+import re
 import threading
 
 import gevent
@@ -23,9 +25,11 @@ from robot_context import RobotContext, robot_context
 logger = logging.getLogger('StateMachine')
 
 SERVER_QUERY_TIMEOUT = 20  # seconds
+AUDIO_STREAM_QUEUE_MAX_CHUNKS = 300
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 _query_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+_AUDIO_STREAM_END = object()
 
 _socketio = None
 _server = None
@@ -33,8 +37,56 @@ _eyes = None
 _proactive = None  # Kept for backwards-compatible init signature.
 
 _contexts_lock = threading.RLock()
+_audio_streams_lock = threading.RLock()
 _session_contexts: dict[str, RobotContext] = {}
 _proactive_services: dict[str, ProactiveService] = {}
+_audio_streams: dict[str, '_AudioStream'] = {}
+
+
+class _AudioStream:
+    """Live PCM stream feeding Google streaming STT while chunks arrive."""
+
+    def __init__(self):
+        self.queue = queue.Queue(maxsize=AUDIO_STREAM_QUEUE_MAX_CHUNKS)
+        self.buffer = bytearray()
+        self.future = None
+        self.closed = False
+        self.lock = threading.RLock()
+
+    def append(self, audio_bytes: bytes):
+        with self.lock:
+            if self.closed:
+                return False
+            self.buffer.extend(audio_bytes)
+
+        try:
+            self.queue.put_nowait(audio_bytes)
+            return True
+        except queue.Full:
+            logger.warning('Audio stream STT queue full; dropping live chunk')
+            return False
+
+    def snapshot_audio(self) -> bytes:
+        with self.lock:
+            return bytes(self.buffer)
+
+    def close(self):
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+
+        try:
+            self.queue.put_nowait(_AUDIO_STREAM_END)
+        except queue.Full:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.queue.put_nowait(_AUDIO_STREAM_END)
+            except queue.Full:
+                logger.warning('Could not signal audio stream end; STT queue stayed full')
 
 
 def init(socketio_instance, server_module, eyes_instance=None, proactive_instance=None):
@@ -67,6 +119,8 @@ def unregister_session(sid: str):
 
     if proactive:
         proactive.cancel_timers()
+
+    _discard_audio_stream(sid)
 
     logger.info('Unregistered runtime session: %s', sid)
 
@@ -135,6 +189,46 @@ def _get_existing_proactive_service(sid: str):
         return None
     with _contexts_lock:
         return _proactive_services.get(sid)
+
+
+def _audio_stream_generator(audio_stream: _AudioStream):
+    while True:
+        chunk = audio_stream.queue.get()
+        if chunk is _AUDIO_STREAM_END:
+            break
+        if chunk:
+            yield chunk
+
+
+def _discard_audio_stream(sid: str):
+    if not sid:
+        return
+
+    with _audio_streams_lock:
+        audio_stream = _audio_streams.pop(sid, None)
+
+    if not audio_stream:
+        return
+
+    audio_stream.close()
+    if audio_stream.future and not audio_stream.future.done():
+        audio_stream.future.cancel()
+    logger.debug('Discarded audio stream for sid=%s', sid)
+
+
+def _start_streaming_stt(audio_stream: _AudioStream, sid: str):
+    if _server is None or not hasattr(_server, 'streaming_stt'):
+        logger.info('Streaming STT unavailable; will fall back to batch STT for sid=%s', sid)
+        return
+
+    try:
+        audio_stream.future = _query_executor.submit(
+            _server.streaming_stt,
+            _audio_stream_generator(audio_stream),
+        )
+        logger.info('Streaming STT started for sid=%s', sid)
+    except Exception as exc:
+        logger.warning('Could not start streaming STT for sid=%s: %s', sid, exc, exc_info=True)
 
 
 def _load_conversation_history_for(username):
@@ -219,6 +313,8 @@ def _reset_runtime_session_state(context: RobotContext, sid: str, clear_login: b
     if proactive:
         proactive.cancel_timers()
 
+    _discard_audio_stream(sid)
+
     if context.state != 'idle':
         context.state = 'idle'
         _emit_state_update(sid, context)
@@ -299,6 +395,83 @@ def _normalize_username(username):
     return clean_username
 
 
+_NEGATED_NAME_CHANGE_RE = re.compile(r'\b(?:no|nunca)\s+(?:me\s+)?llames\b', re.IGNORECASE)
+_NAME_CHANGE_PATTERNS = (
+    re.compile(
+        r'\b(?:ll[aá]mame|puedes llamarme|puede llamarme|me puedes llamar|'
+        r'me puede llamar|quiero que me llames|prefiero que me llames)\s+'
+        r'([^,.!?;:\n]+)',
+        re.IGNORECASE,
+    ),
+    re.compile(r'\b(?:me llamo|mi nombre es)\s+([^,.!?;:\n]+)', re.IGNORECASE),
+    re.compile(
+        r'\b(?:mi nuevo nombre es|ahora me llamo|de ahora en adelante me llamo|'
+        r'cambia mi nombre a|cambiar mi nombre a)\s+([^,.!?;:\n]+)',
+        re.IGNORECASE,
+    ),
+)
+_NAME_CANDIDATE_STOP_RE = re.compile(
+    r'\b(?:por favor|gracias|porque|pero|aunque|y|a partir de ahora)\b.*$',
+    re.IGNORECASE,
+)
+_INVALID_NAME_STARTS = {'el', 'la', 'lo', 'los', 'las', 'un', 'una', 'que', 'como'}
+
+
+def _extract_requested_shara_name(text: str):
+    if not text or _NEGATED_NAME_CHANGE_RE.search(text):
+        return None
+
+    for pattern in _NAME_CHANGE_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+
+        candidate = _NAME_CANDIDATE_STOP_RE.sub('', match.group(1))
+        candidate = re.sub(r'\s+', ' ', candidate).strip(' "\'()[]{}')
+        candidate = candidate.strip('.,;:!?')
+
+        words = candidate.split()
+        if not words or len(words) > 4 or len(candidate) > 80:
+            return None
+        if words[0].lower() in _INVALID_NAME_STARTS:
+            return None
+
+        return _normalize_username(candidate)
+
+    return None
+
+
+def _maybe_update_shara_name_from_text(context: RobotContext, text: str, sid: str = None):
+    requested_name = _extract_requested_shara_name(text)
+    if not requested_name:
+        return
+
+    previous_username = context.username
+    if previous_username == requested_name:
+        _persist_shara_name_for_login(context, requested_name)
+        return
+
+    logger.info(
+        'User requested shara_name update for login=%s: %s -> %s',
+        context.login_username,
+        previous_username,
+        requested_name,
+    )
+    context.username = requested_name
+    context.needs_identification = False
+    _reset_unknown_user_tracking(context)
+    _persist_shara_name_for_login(context, requested_name)
+
+    if not context.login_username and previous_username != requested_name:
+        _load_conversation_history_for(requested_name)
+
+    _emit_session_identity_updated(
+        sid=sid,
+        session_id=context.face_session_id,
+        username=requested_name,
+    )
+
+
 def _get_stored_shara_name(login_name):
     clean_login = _normalize_username(login_name)
     if not clean_login:
@@ -310,7 +483,8 @@ def _persist_shara_name_for_login(context: RobotContext, shara_name):
     clean_login = _normalize_username(context.login_username)
     clean_shara = _normalize_username(shara_name)
     if clean_login and clean_shara:
-        update_shara_name(clean_login, clean_shara)
+        if not update_shara_name(clean_login, clean_shara):
+            logger.warning('Could not persist shara_name for login=%s', clean_login)
 
 
 def proactive_event_handler(event: str, params: dict = None, sid: str = None):
@@ -349,12 +523,23 @@ def on_session_login(sid: str, session_data: dict):
     incoming_username = _normalize_username(session_data.get('userName') or session_data.get('username'))
     shara_name = None if is_new_user else _get_stored_shara_name(login_name)
 
-    if not shara_name and incoming_username and incoming_username != login_name:
+    if not shara_name and incoming_username:
         shara_name = incoming_username
         if login_name:
-            update_shara_name(login_name, shara_name)
+            if not update_shara_name(login_name, shara_name):
+                logger.warning('Could not persist incoming shara_name for login=%s', login_name)
 
     previous_login = context.login_username
+    previous_session_id = context.face_session_id
+    preserve_runtime_flags = (
+        context.state in ('recording', 'processing_query', 'speaking')
+        and previous_login == login_name
+        and (
+            not session_id
+            or not previous_session_id
+            or previous_session_id == session_id
+        )
+    )
 
     logger.info(
         'Session login: sid=%s session_id=%s login_name=%s shara_name=%s is_new=%s previous_login=%s',
@@ -376,9 +561,11 @@ def on_session_login(sid: str, session_data: dict):
     context.login_username = login_name
     context.username = shara_name
     context.needs_identification = is_new_user or not bool(shara_name)
-    context.proactive_question = ''
-    context.continue_conversation = False
-    _reset_unknown_user_tracking(context)
+
+    if not preserve_runtime_flags:
+        context.proactive_question = ''
+        context.continue_conversation = False
+        _reset_unknown_user_tracking(context)
 
 
 def on_user_detected(sid: str, user_data: dict):
@@ -483,16 +670,49 @@ def on_audio_stream_start(sid: str) -> bool:
 
     context.state = 'recording'
     _emit_state_update(sid, context)
+
+    _discard_audio_stream(sid)
+    audio_stream = _AudioStream()
+    with _audio_streams_lock:
+        _audio_streams[sid] = audio_stream
+    _start_streaming_stt(audio_stream, sid)
+
     return True
 
 
-def on_audio_stream_end(audio_bytes: bytes, sid: str):
-    """PCM stream ended with all collected audio."""
-    logger.info('Audio stream end from %s, received %s bytes', sid, len(audio_bytes))
+def on_audio_chunk(audio_bytes: bytes, sid: str) -> bool:
+    """PCM LINEAR16 chunk received from AudioWorklet."""
+    if not audio_bytes:
+        return False
+
+    with _audio_streams_lock:
+        audio_stream = _audio_streams.get(sid)
+
+    if not audio_stream:
+        logger.warning('Ignoring audio_chunk for sid=%s with no active stream', sid)
+        return False
+
+    return audio_stream.append(audio_bytes)
+
+
+def on_audio_stream_end(sid: str) -> bool:
+    """PCM stream ended; finish live STT and continue with LLM + TTS."""
+    logger.info('Audio stream end from %s', sid)
     if not _get_existing_context(sid):
         logger.warning('Ignoring audio_stream_end for unknown sid: %s', sid)
-        return
-    _executor.submit(_process_audio_stream_end, audio_bytes, sid)
+        _discard_audio_stream(sid)
+        return False
+
+    with _audio_streams_lock:
+        audio_stream = _audio_streams.pop(sid, None)
+
+    if not audio_stream:
+        logger.warning('Ignoring audio_stream_end for sid=%s with no active stream', sid)
+        return False
+
+    audio_stream.close()
+    _executor.submit(_process_audio_stream_end, audio_stream, sid)
+    return True
 
 
 def on_audio_message(audio_b64: str, sid: str):
@@ -596,8 +816,8 @@ def _build_request(context: RobotContext, audio: bytes = b'', text: str = None):
     )
 
 
-def _process_audio_stream_end(audio_bytes: bytes, sid: str):
-    """Batch STT -> LLM -> TTS pipeline for collected PCM audio."""
+def _process_audio_stream_end(audio_stream: _AudioStream, sid: str):
+    """Streaming STT -> LLM -> TTS pipeline for live PCM audio."""
     context = _get_existing_context(sid)
     if not context:
         logger.warning('Audio processing abandoned for unknown sid=%s', sid)
@@ -607,6 +827,9 @@ def _process_audio_stream_end(audio_bytes: bytes, sid: str):
         context.state = 'processing_query'
         _emit_state_update(sid, context)
 
+        audio_bytes = audio_stream.snapshot_audio()
+        logger.info('Audio stream collected from %s: %s bytes', sid, len(audio_bytes))
+
         if not audio_bytes:
             logger.warning('Empty audio buffer for sid=%s', sid)
             context.state = 'idle_presence'
@@ -614,9 +837,36 @@ def _process_audio_stream_end(audio_bytes: bytes, sid: str):
             _emit_audio_empty(sid, context)
             return
 
-        request = _build_request(context, audio=audio_bytes)
-        future = _query_executor.submit(_server.query, request)
-        response = future.result(timeout=SERVER_QUERY_TIMEOUT)
+        transcript = None
+        streaming_error = None
+        if audio_stream.future:
+            try:
+                transcript = audio_stream.future.result(timeout=SERVER_QUERY_TIMEOUT)
+            except concurrent.futures.TimeoutError as exc:
+                streaming_error = exc
+                logger.error('Timeout in streaming STT for sid=%s', sid)
+            except Exception as exc:
+                streaming_error = exc
+                logger.warning('Streaming STT failed for sid=%s: %s', sid, exc, exc_info=True)
+
+        if transcript:
+            _maybe_update_shara_name_from_text(context, transcript, sid=sid)
+            _emit_transcription_result(transcript, sid, context)
+
+            request = _build_request(context, text=transcript)
+            future = _query_executor.submit(_server.query_with_text, request)
+            response = future.result(timeout=SERVER_QUERY_TIMEOUT)
+        elif audio_stream.future and streaming_error is None:
+            logger.warning('Empty streaming transcription for sid=%s', sid)
+            context.state = 'idle_presence'
+            _emit_state_update(sid, context)
+            _emit_audio_empty(sid, context)
+            return
+        else:
+            logger.info('Falling back to batch STT for sid=%s', sid)
+            request = _build_request(context, audio=audio_bytes)
+            future = _query_executor.submit(_server.query, request)
+            response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
         if response is None:
             logger.warning('Empty transcription or response for sid=%s', sid)
@@ -625,7 +875,8 @@ def _process_audio_stream_end(audio_bytes: bytes, sid: str):
             _emit_audio_empty(sid, context)
             return
 
-        if response.request.text:
+        if response.request.text and not transcript:
+            _maybe_update_shara_name_from_text(context, response.request.text, sid=sid)
             _emit_transcription_result(response.request.text, sid, context)
 
         _handle_response(response, sid, context)
@@ -661,6 +912,9 @@ def _process_audio_query(audio_b64: str, sid: str):
             _emit_state_update(sid, context)
             return
 
+        if response.request.text:
+            _maybe_update_shara_name_from_text(context, response.request.text, sid=sid)
+
         _handle_response(response, sid, context)
 
     except concurrent.futures.TimeoutError:
@@ -679,6 +933,7 @@ def _process_text_query(text: str, sid: str):
         return
 
     try:
+        _maybe_update_shara_name_from_text(context, text, sid=sid)
         request = _build_request(context, text=text)
 
         future = _query_executor.submit(_server.query_with_text, request)
@@ -879,6 +1134,7 @@ def _emit_session_identity_updated(sid=None, session_id=None, username=None):
         {
             'sessionId': session_id,
             'userName': username,
+            'sharaName': username,
             'isNewUser': False,
             'needsIdentification': False,
             'userStatus': 'existing',

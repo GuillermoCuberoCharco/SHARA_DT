@@ -27,31 +27,31 @@ const LED_LEGEND_ITEMS = [
         id: 'presence',
         chipClass: 'led-legend-chip-presence',
         title: 'Morado fijo',
-        description: 'Presencia detectada. Shara esta atenta.',
+        description: 'Presencia detectada. Shara está atenta.',
     },
     {
         id: 'listening',
         chipClass: 'led-legend-chip-listening',
         title: 'Azul girando',
-        description: 'Shara esta escuchando.',
+        description: 'Shara está escuchando.',
     },
     {
         id: 'recording',
         chipClass: 'led-legend-chip-recording',
         title: 'Blanco girando',
-        description: 'Audio en grabacion.',
+        description: 'Audio en grabación.',
     },
     {
         id: 'speaking',
         chipClass: 'led-legend-chip-speaking',
         title: 'Azul respirando',
-        description: 'Shara esta hablando.',
+        description: 'Shara está hablando.',
     },
     {
         id: 'off',
         chipClass: 'led-legend-chip-off',
         title: 'Apagado tenue',
-        description: 'Sin interaccion activa o procesando.',
+        description: 'Sin interacción activa o procesando.',
     },
 ];
 
@@ -248,7 +248,7 @@ const UI = ({
         try {
             await onLogout();
         } catch (error) {
-            setLogoutError(error?.message || 'No se pudo cerrar la sesion');
+            setLogoutError(error?.message || 'No se pudo cerrar la sesión');
         }
     }, [onLogout]);
 
@@ -364,7 +364,7 @@ const UI = ({
                     <>
                         <div className="led-legend-session-bar">
                             <div className="led-legend-session-copy">
-                                <p className="led-legend-kicker">SESION ACTIVA</p>
+                                <p className="led-legend-kicker">SESIÓN ACTIVA</p>
                                 <p className="led-legend-session-user">{sessionDisplayName}</p>
                             </div>
 
@@ -374,7 +374,7 @@ const UI = ({
                                 onClick={handleLogoutClick}
                                 disabled={isLoggingOut}
                             >
-                                {isLoggingOut ? 'Cerrando...' : 'Cerrar sesion'}
+                                {isLoggingOut ? 'Cerrando...' : 'Cerrar sesión'}
                             </button>
                         </div>
 

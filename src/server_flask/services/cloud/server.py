@@ -5,7 +5,7 @@ performing STT, generating LLM response, converting to TTS, and returning the re
 Also includes a separate function for streaming STT to get quick transcripts with proper state synchronization.
 
 Same code as the original server module on the robot, but adapted to be used as a service module in the Flask server.
-The function streaming_stt is currently not used but can be integrated in the future for improved responsiveness while maintaining state synchronization.
+The web Socket.IO pipeline starts streaming_stt as soon as recording starts, mirroring the physical robot.
 """
 
 import logging

@@ -112,7 +112,7 @@ def get_shara_name(login_name: str):
             conn.close()
 
 
-def update_shara_name(login_name: str, shara_name: str) -> None:
+def update_shara_name(login_name: str, shara_name: str) -> bool:
     """
     Persist the Shara display name for this user.
     Called when the user introduces themselves to Shara during conversation.
@@ -125,12 +125,19 @@ def update_shara_name(login_name: str, shara_name: str) -> None:
                 'UPDATE users SET shara_name = %s WHERE login_name = %s',
                 (shara_name, login_name.strip()),
             )
+            updated_rows = cur.rowcount
         conn.commit()
-        logger.info('shara_name updated: %s → %s', login_name, shara_name)
+        if updated_rows:
+            logger.info('shara_name updated: %s -> %s', login_name, shara_name)
+            return True
+
+        logger.warning('shara_name update skipped; login_name not found: %s', login_name)
+        return False
     except Exception as exc:
         if conn:
             conn.rollback()
         logger.error('Error updating shara_name for %s: %s', login_name, exc)
+        return False
     finally:
         if conn:
             conn.close()

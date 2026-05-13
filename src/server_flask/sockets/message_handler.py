@@ -9,7 +9,7 @@ Events received from frontend:
     client_message      - audio (base64 webm/opus blob, legacy) or text from user
     audio_stream_start  - PCM LINEAR16 stream begins
     audio_chunk         - PCM LINEAR16 chunk (base64 Int16 bytes)
-    audio_stream_end    - PCM stream finished, trigger batch STT
+    audio_stream_end    - PCM stream finished, finalise streaming STT
     user_detected       - face detected by FaceDetection.jsx
     user_lost           - face lost
     tts_complete        - frontend finished playing TTS audio
@@ -35,10 +35,6 @@ logger = logging.getLogger('MessageHandler')
 # Track connected web clients: sid -> {username, loginName, sessionId, registered}
 _clients: dict = {}
 
-# Per-session PCM audio buffers. Chunks are accumulated until stream_end.
-_audio_buffers: dict = {}  # sid -> bytearray
-
-
 class MessageNamespace(Namespace):
 
     def on_connect(self):
@@ -58,7 +54,6 @@ class MessageNamespace(Namespace):
             state_machine.on_client_disconnect(request.sid, client_data)
         else:
             state_machine.unregister_session(request.sid)
-        _cleanup_audio_buffer(request.sid)
 
     def on_register_client(self, data):
         client_type = data if isinstance(data, str) else data.get('client', 'web')
@@ -83,26 +78,21 @@ class MessageNamespace(Namespace):
         sid = request.sid
         logger.info(f'[/message] audio_stream_start from {sid}')
 
-        _cleanup_audio_buffer(sid)
-        _audio_buffers[sid] = bytearray()
         accepted = state_machine.on_audio_stream_start(sid)
         if not accepted:
-            _cleanup_audio_buffer(sid)
+            emit('audio_empty', {
+                'sessionId': _clients.get(request.sid, {}).get('sessionId'),
+            })
 
     def on_audio_chunk(self, data):
         sid = request.sid
-        buf = _audio_buffers.get(sid)
-        if buf is None:
-            logger.warning(f'[/message] audio_chunk from {sid} with no active buffer - ignoring')
-            return
-
         b64_data = data.get('data', '') if isinstance(data, dict) else ''
         if not b64_data:
             return
 
         try:
             raw_bytes = base64.b64decode(b64_data)
-            buf.extend(raw_bytes)
+            state_machine.on_audio_chunk(raw_bytes, sid)
         except Exception as e:
             logger.warning(f'[/message] Failed to decode audio_chunk: {e}')
 
@@ -110,13 +100,9 @@ class MessageNamespace(Namespace):
         sid = request.sid
         logger.info(f'[/message] audio_stream_end from {sid}')
 
-        buf = _audio_buffers.pop(sid, None)
-        if buf:
-            audio_bytes = bytes(buf)
-            logger.info(f'[/message] Collected {len(audio_bytes)} PCM bytes, submitting to state machine')
-            state_machine.on_audio_stream_end(audio_bytes, sid)
-        else:
-            logger.warning(f'[/message] audio_stream_end with no buffer for {sid}')
+        accepted = state_machine.on_audio_stream_end(sid)
+        if not accepted:
+            logger.warning(f'[/message] audio_stream_end with no active stream for {sid}')
             emit('audio_empty', {
                 'sessionId': _clients.get(request.sid, {}).get('sessionId'),
             })
@@ -174,9 +160,3 @@ class MessageNamespace(Namespace):
                 'sessionId': _clients.get(request.sid, {}).get('sessionId'),
             })
             state_machine.on_text_message(text, request.sid)
-
-
-def _cleanup_audio_buffer(sid: str):
-    buf = _audio_buffers.pop(sid, None)
-    if buf:
-        logger.debug(f'Audio buffer cleaned up for {sid}')

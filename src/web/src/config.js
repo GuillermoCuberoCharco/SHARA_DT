@@ -15,7 +15,7 @@ export const AUDIO_SETTINGS = {
     // PCM LINEAR16 via AudioWorklet — matches the physical robot's PyAudio config
     sampleRate: 16000,          // Hz — same as robot mic
     silenceThreshold: 30,       // Higher RMS threshold so low ambient noise still counts as silence
-    silenceDuration: 2000,      // ms of silence before auto-stop
+    silenceDuration: 1500,      // ms of silence before auto-stop
     maxRecordingTime: 50000,    // ms hard cap per utterance
 };
 

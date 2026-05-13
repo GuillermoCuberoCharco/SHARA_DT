@@ -13,8 +13,8 @@ from dataclasses import dataclass
 
 from .google_api import (
     TTS_AUDIO_MIME_TYPE,
-    compose_streaming_fallback_speech_to_text,
     speech_to_text,
+    streaming_speech_to_text,
     text_to_speech,
 )
 from .openai_api import generate_response, load_conversation_history, save_conversation_history
@@ -146,14 +146,17 @@ def query_with_text(request: Request):
     )
 
 
-def streaming_stt(audio_generator):
+def streaming_stt(audio_generator, on_transcript=None):
     """
     Perform only streaming STT.
 
     This mirrors the physical robot: the microphone/VAD layer feeds chunks,
     and the response generation starts from the already transcribed text.
     """
-    transcript, silence_detection_time = compose_streaming_fallback_speech_to_text(audio_generator)
+    transcript, silence_detection_time, _ = streaming_speech_to_text(
+        audio_generator,
+        on_transcript=on_transcript,
+    )
 
     if silence_detection_time is not None:
         logger.info(

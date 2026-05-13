@@ -12,6 +12,7 @@ sid only.
 import base64
 import concurrent.futures
 import logging
+import os
 import queue
 import re
 import threading
@@ -24,8 +25,7 @@ from robot_context import RobotContext, robot_context
 
 logger = logging.getLogger('StateMachine')
 
-SERVER_QUERY_TIMEOUT = 20  # seconds
-STREAMING_STT_FINAL_TIMEOUT = 2.5  # seconds after browser stream_end before batch fallback
+SERVER_QUERY_TIMEOUT = float(os.getenv('SERVER_QUERY_TIMEOUT_SECONDS', '45'))  # seconds
 AUDIO_STREAM_QUEUE_MAX_CHUNKS = 600
 _AUDIO_STREAM_END = object()
 
@@ -53,6 +53,9 @@ class _AudioStream:
         self.buffer = bytearray()
         self.future = None
         self.closed = False
+        self.streaming_transcript = ''
+        self.streaming_is_final = False
+        self.streaming_silence_detection_time = None
         self.lock = threading.RLock()
 
     def append(self, audio_bytes: bytes) -> bool:
@@ -74,6 +77,26 @@ class _AudioStream:
     def snapshot_audio(self) -> bytes:
         with self.lock:
             return bytes(self.buffer)
+
+    def update_streaming_result(
+        self,
+        transcript: str,
+        is_final: bool = False,
+        silence_detection_time=None,
+    ):
+        clean_transcript = (transcript or '').strip()
+        if not clean_transcript:
+            return
+
+        with self.lock:
+            self.streaming_transcript = clean_transcript
+            self.streaming_is_final = bool(is_final)
+            if silence_detection_time is not None:
+                self.streaming_silence_detection_time = silence_detection_time
+
+    def latest_streaming_transcript(self) -> str:
+        with self.lock:
+            return self.streaming_transcript
 
     def close(self):
         with self.lock:
@@ -226,10 +249,18 @@ def _start_streaming_stt(audio_stream: _AudioStream, sid: str):
         logger.info('Streaming STT unavailable; will use batch STT for sid=%s', sid)
         return
 
+    def _on_streaming_update(transcript, is_final=False, silence_detection_time=None):
+        audio_stream.update_streaming_result(
+            transcript,
+            is_final=is_final,
+            silence_detection_time=silence_detection_time,
+        )
+
     try:
         audio_stream.future = _stt_executor.submit(
             _server.streaming_stt,
             _audio_stream_generator(audio_stream),
+            _on_streaming_update,
         )
         logger.info('Streaming STT started for sid=%s', sid)
     except Exception as exc:
@@ -857,19 +888,23 @@ def _process_audio_stream_end(audio_stream: _AudioStream, sid: str):
         transcript = ''
         streaming_error = None
         if audio_stream.future:
-            try:
-                transcript = audio_stream.future.result(timeout=STREAMING_STT_FINAL_TIMEOUT)
-            except concurrent.futures.TimeoutError as exc:
-                streaming_error = exc
+            if audio_stream.future.done():
+                try:
+                    transcript = audio_stream.future.result()
+                except Exception as exc:
+                    streaming_error = exc
+                    logger.warning('Streaming STT failed for sid=%s: %s', sid, exc, exc_info=True)
+            else:
                 audio_stream.future.cancel()
+                transcript = audio_stream.latest_streaming_transcript()
                 logger.warning(
-                    'Streaming STT did not finish within %.1fs for sid=%s; falling back to batch STT',
-                    STREAMING_STT_FINAL_TIMEOUT,
+                    'Streaming STT final result not ready at stream_end for sid=%s; %s',
                     sid,
+                    'using latest interim transcript' if transcript else 'falling back to batch STT',
                 )
-            except Exception as exc:
-                streaming_error = exc
-                logger.warning('Streaming STT failed for sid=%s: %s', sid, exc, exc_info=True)
+
+        if not transcript:
+            transcript = audio_stream.latest_streaming_transcript()
 
         if transcript:
             logger.info('Using streaming STT transcript for sid=%s: %s', sid, transcript)

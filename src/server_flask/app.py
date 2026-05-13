@@ -6,7 +6,9 @@ Flask serves both the React frontend build and the WebSocket API.
 """
 
 from gevent import monkey
-monkey.patch_all()
+# Keep native threads/queues for ThreadPoolExecutor. Google gRPC/OpenAI calls
+# are blocking and must not run on gevent's cooperative thread patch.
+monkey.patch_all(thread=False, queue=False)
 
 import base64
 import logging

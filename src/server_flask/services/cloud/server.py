@@ -4,7 +4,7 @@ Main server module for cloud services. Handles the main query flow: receiving au
 performing STT, generating LLM response, converting to TTS, and returning the response.
 
 Same code as the original server module on the robot, but adapted to be used as a service module in the Flask server.
-The web Socket.IO pipeline buffers PCM chunks and sends them through batch STT when recording stops.
+The web Socket.IO pipeline can stream PCM chunks to Google STT and then process the transcribed text.
 """
 
 import logging
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from .google_api import (
     TTS_AUDIO_MIME_TYPE,
+    compose_streaming_fallback_speech_to_text,
     speech_to_text,
     text_to_speech,
 )
@@ -143,6 +144,28 @@ def query_with_text(request: Request):
         robot_context['robot_mood'] if 'robot_mood' in robot_context and robot_context['robot_mood'] else 'neutral',
         text_response
     )
+
+
+def streaming_stt(audio_generator):
+    """
+    Perform only streaming STT.
+
+    This mirrors the physical robot: the microphone/VAD layer feeds chunks,
+    and the response generation starts from the already transcribed text.
+    """
+    transcript, silence_detection_time = compose_streaming_fallback_speech_to_text(audio_generator)
+
+    if silence_detection_time is not None:
+        logger.info(
+            "Streaming STT result (silence detection: %.3f seconds) :: '%s'",
+            silence_detection_time,
+            transcript,
+        )
+    else:
+        logger.info("Streaming STT result (no final result) :: '%s'", transcript)
+
+    return transcript
+
 
 def proactive_query(request: Request):
     # Same as query but with empty input_text and without STT

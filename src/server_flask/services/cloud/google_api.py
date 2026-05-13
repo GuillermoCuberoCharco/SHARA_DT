@@ -171,7 +171,7 @@ def streaming_speech_to_text(audio_generator):
     """
     # Create requests and collect audio for potential fallback
     requests, collected_audio = create_streaming_requests_with_collection(audio_generator)
-    responses = clientSTT.streaming_recognize(streaming_config, requests)
+    responses = clientSTT.streaming_recognize(streaming_config, requests, timeout=15)
     
     transcript = ""
     silence_detection_time = None
@@ -253,9 +253,9 @@ def compose_streaming_fallback_speech_to_text(audio_generator):
                     silence_time += fallback_time
                 else:
                     silence_time = fallback_time
-        except Exception:
+        except Exception as exc:
             # Fallback failed, keep original transcript
-            pass
+            logger.warning('Streaming STT fallback batch recognition failed: %s', exc)
     
     return transcript, silence_time
 

@@ -12,6 +12,7 @@ sid only.
 import base64
 import concurrent.futures
 import logging
+import queue
 import re
 import threading
 
@@ -24,9 +25,13 @@ from robot_context import RobotContext, robot_context
 logger = logging.getLogger('StateMachine')
 
 SERVER_QUERY_TIMEOUT = 20  # seconds
+STREAMING_STT_FINAL_TIMEOUT = 2.5  # seconds after browser stream_end before batch fallback
+AUDIO_STREAM_QUEUE_MAX_CHUNKS = 600
+_AUDIO_STREAM_END = object()
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 _query_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+_stt_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
 _socketio = None
 _server = None
@@ -34,8 +39,59 @@ _eyes = None
 _proactive = None  # Kept for backwards-compatible init signature.
 
 _contexts_lock = threading.RLock()
+_audio_streams_lock = threading.RLock()
 _session_contexts: dict[str, RobotContext] = {}
 _proactive_services: dict[str, ProactiveService] = {}
+_audio_streams: dict[str, '_AudioStream'] = {}
+
+
+class _AudioStream:
+    """Live PCM stream feeding Google streaming STT while keeping a batch fallback."""
+
+    def __init__(self):
+        self.queue = queue.Queue(maxsize=AUDIO_STREAM_QUEUE_MAX_CHUNKS)
+        self.buffer = bytearray()
+        self.future = None
+        self.closed = False
+        self.lock = threading.RLock()
+
+    def append(self, audio_bytes: bytes) -> bool:
+        if not audio_bytes:
+            return False
+
+        with self.lock:
+            if self.closed:
+                return False
+            self.buffer.extend(audio_bytes)
+
+        try:
+            self.queue.put_nowait(audio_bytes)
+            return True
+        except queue.Full:
+            logger.warning('Audio stream STT queue full; live chunk dropped but kept for fallback')
+            return False
+
+    def snapshot_audio(self) -> bytes:
+        with self.lock:
+            return bytes(self.buffer)
+
+    def close(self):
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+
+        try:
+            self.queue.put_nowait(_AUDIO_STREAM_END)
+        except queue.Full:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.queue.put_nowait(_AUDIO_STREAM_END)
+            except queue.Full:
+                logger.warning('Could not signal audio stream end; STT queue stayed full')
 
 
 def init(socketio_instance, server_module, eyes_instance=None, proactive_instance=None):
@@ -68,6 +124,8 @@ def unregister_session(sid: str):
 
     if proactive:
         proactive.cancel_timers()
+
+    _discard_audio_stream(sid)
 
     logger.info('Unregistered runtime session: %s', sid)
 
@@ -136,6 +194,46 @@ def _get_existing_proactive_service(sid: str):
         return None
     with _contexts_lock:
         return _proactive_services.get(sid)
+
+
+def _audio_stream_generator(audio_stream: _AudioStream):
+    while True:
+        chunk = audio_stream.queue.get()
+        if chunk is _AUDIO_STREAM_END:
+            break
+        if chunk:
+            yield chunk
+
+
+def _discard_audio_stream(sid: str):
+    if not sid:
+        return
+
+    with _audio_streams_lock:
+        audio_stream = _audio_streams.pop(sid, None)
+
+    if not audio_stream:
+        return
+
+    audio_stream.close()
+    if audio_stream.future and not audio_stream.future.done():
+        audio_stream.future.cancel()
+    logger.debug('Discarded audio stream for sid=%s', sid)
+
+
+def _start_streaming_stt(audio_stream: _AudioStream, sid: str):
+    if _server is None or not hasattr(_server, 'streaming_stt'):
+        logger.info('Streaming STT unavailable; will use batch STT for sid=%s', sid)
+        return
+
+    try:
+        audio_stream.future = _stt_executor.submit(
+            _server.streaming_stt,
+            _audio_stream_generator(audio_stream),
+        )
+        logger.info('Streaming STT started for sid=%s', sid)
+    except Exception as exc:
+        logger.warning('Could not start streaming STT for sid=%s: %s', sid, exc, exc_info=True)
 
 
 def _load_conversation_history_for(username):
@@ -219,6 +317,8 @@ def _reset_runtime_session_state(context: RobotContext, sid: str, clear_login: b
     proactive = _get_existing_proactive_service(sid)
     if proactive:
         proactive.cancel_timers()
+
+    _discard_audio_stream(sid)
 
     if context.state != 'idle':
         context.state = 'idle'
@@ -580,7 +680,7 @@ def on_user_lost(sid: str, user_data: dict):
 
 
 def on_audio_stream_start(sid: str) -> bool:
-    """PCM LINEAR16 collection started from AudioWorklet."""
+    """PCM LINEAR16 stream started after browser-side VAD detected speech."""
     context = _get_context(sid)
     logger.info('Audio stream start from %s, state=%s', sid, context.state)
 
@@ -591,21 +691,44 @@ def on_audio_stream_start(sid: str) -> bool:
     context.state = 'recording'
     _emit_state_update(sid, context)
 
+    _discard_audio_stream(sid)
+    audio_stream = _AudioStream()
+    with _audio_streams_lock:
+        _audio_streams[sid] = audio_stream
+    _start_streaming_stt(audio_stream, sid)
+
     return True
 
 
-def on_audio_stream_end(audio_bytes: bytes, sid: str) -> bool:
-    """PCM stream ended; process the collected audio through batch STT."""
-    logger.info('Audio stream end from %s (%s bytes)', sid, len(audio_bytes or b''))
+def on_audio_chunk(audio_bytes: bytes, sid: str) -> bool:
+    """PCM LINEAR16 chunk received from AudioWorklet."""
+    with _audio_streams_lock:
+        audio_stream = _audio_streams.get(sid)
+
+    if not audio_stream:
+        logger.debug('Ignoring audio_chunk for sid=%s with no active stream', sid)
+        return False
+
+    return audio_stream.append(audio_bytes)
+
+
+def on_audio_stream_end(sid: str) -> bool:
+    """PCM stream ended; finish live STT or fall back to batch STT."""
+    logger.info('Audio stream end from %s', sid)
     if not _get_existing_context(sid):
         logger.warning('Ignoring audio_stream_end for unknown sid: %s', sid)
+        _discard_audio_stream(sid)
         return False
 
-    if not audio_bytes:
-        logger.warning('Ignoring audio_stream_end for sid=%s with empty audio', sid)
+    with _audio_streams_lock:
+        audio_stream = _audio_streams.pop(sid, None)
+
+    if not audio_stream:
+        logger.warning('Ignoring audio_stream_end for sid=%s with no active stream', sid)
         return False
 
-    _executor.submit(_process_audio_stream_end, audio_bytes, sid)
+    audio_stream.close()
+    _executor.submit(_process_audio_stream_end, audio_stream, sid)
     return True
 
 
@@ -710,8 +833,8 @@ def _build_request(context: RobotContext, audio: bytes = b'', text: str = None):
     )
 
 
-def _process_audio_stream_end(audio_bytes: bytes, sid: str):
-    """Batch STT -> LLM -> TTS pipeline for collected PCM audio."""
+def _process_audio_stream_end(audio_stream: _AudioStream, sid: str):
+    """Streaming STT -> LLM -> TTS pipeline with batch STT fallback."""
     context = _get_existing_context(sid)
     if not context:
         logger.warning('Audio processing abandoned for unknown sid=%s', sid)
@@ -721,6 +844,7 @@ def _process_audio_stream_end(audio_bytes: bytes, sid: str):
         context.state = 'processing_query'
         _emit_state_update(sid, context)
 
+        audio_bytes = audio_stream.snapshot_audio()
         logger.info('Audio stream collected from %s: %s bytes', sid, len(audio_bytes))
 
         if not audio_bytes:
@@ -730,9 +854,37 @@ def _process_audio_stream_end(audio_bytes: bytes, sid: str):
             _emit_audio_empty(sid, context)
             return
 
-        request = _build_request(context, audio=audio_bytes)
-        future = _query_executor.submit(_server.query, request)
-        response = future.result(timeout=SERVER_QUERY_TIMEOUT)
+        transcript = ''
+        streaming_error = None
+        if audio_stream.future:
+            try:
+                transcript = audio_stream.future.result(timeout=STREAMING_STT_FINAL_TIMEOUT)
+            except concurrent.futures.TimeoutError as exc:
+                streaming_error = exc
+                audio_stream.future.cancel()
+                logger.warning(
+                    'Streaming STT did not finish within %.1fs for sid=%s; falling back to batch STT',
+                    STREAMING_STT_FINAL_TIMEOUT,
+                    sid,
+                )
+            except Exception as exc:
+                streaming_error = exc
+                logger.warning('Streaming STT failed for sid=%s: %s', sid, exc, exc_info=True)
+
+        if transcript:
+            logger.info('Using streaming STT transcript for sid=%s: %s', sid, transcript)
+            _maybe_update_shara_name_from_text(context, transcript, sid=sid)
+            _emit_transcription_result(transcript, sid, context)
+
+            request = _build_request(context, text=transcript)
+            future = _query_executor.submit(_server.query_with_text, request)
+            response = future.result(timeout=SERVER_QUERY_TIMEOUT)
+        else:
+            if streaming_error is None:
+                logger.info('Streaming STT returned empty for sid=%s; falling back to batch STT', sid)
+            request = _build_request(context, audio=audio_bytes)
+            future = _query_executor.submit(_server.query, request)
+            response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
         if response is None:
             logger.warning('Empty transcription or response for sid=%s', sid)
@@ -741,7 +893,7 @@ def _process_audio_stream_end(audio_bytes: bytes, sid: str):
             _emit_audio_empty(sid, context)
             return
 
-        if response.request.text:
+        if response.request.text and not transcript:
             _maybe_update_shara_name_from_text(context, response.request.text, sid=sid)
             _emit_transcription_result(response.request.text, sid, context)
 

@@ -13,6 +13,39 @@ const encodePcmBase64 = (pcmBuffer) => {
     return btoa(binary);
 };
 
+const clampNoiseFloor = (value) => Math.max(0.0008, Math.min(value, 0.05));
+
+const analyzePcmBuffer = (pcmBuffer) => {
+    const samples = new Int16Array(pcmBuffer);
+    if (!samples.length) {
+        return { rms: 0, peak: 0, zcr: 0 };
+    }
+
+    let sumSquares = 0;
+    let peak = 0;
+    let zeroCrossings = 0;
+    let previousSign = 0;
+
+    for (let i = 0; i < samples.length; i++) {
+        const sample = samples[i] / 32768;
+        const abs = Math.abs(sample);
+        sumSquares += sample * sample;
+        if (abs > peak) peak = abs;
+
+        const sign = sample >= 0 ? 1 : -1;
+        if (i > 0 && previousSign !== sign) {
+            zeroCrossings++;
+        }
+        previousSign = sign;
+    }
+
+    return {
+        rms: Math.sqrt(sumSquares / samples.length),
+        peak,
+        zcr: zeroCrossings / Math.max(1, samples.length - 1),
+    };
+};
+
 const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSubmitted) => {
     const [isRecording, setIsRecording] = useState(false);
     const [audioSrc, setAudioSrc] = useState(null);
@@ -37,8 +70,24 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
     const workletNodeRef = useRef(null);
     const startInProgressRef = useRef(false);
     const audioStreamStartedRef = useRef(false);
+    const pendingPcmChunksRef = useRef([]);
+    const observedChunksRef = useRef(0);
+    const speechRunChunksRef = useRef(0);
+    const silenceRunChunksRef = useRef(0);
+    const hasSpeechRef = useRef(false);
+    const noiseFloorRef = useRef(0.006);
 
     const { socket, emit } = useWebSocketContext();
+
+    const resetStreamingVadState = useCallback(() => {
+        audioStreamStartedRef.current = false;
+        pendingPcmChunksRef.current = [];
+        observedChunksRef.current = 0;
+        speechRunChunksRef.current = 0;
+        silenceRunChunksRef.current = 0;
+        hasSpeechRef.current = false;
+        noiseFloorRef.current = 0.006;
+    }, []);
 
     const initializeAudioContext = useCallback(() => {
         if (!audioContextRef.current) {
@@ -107,9 +156,113 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                 onTranscriptionComplete?.();
             }
 
-            audioStreamStartedRef.current = false;
+            resetStreamingVadState();
         }
-    }, [emit, onAudioSubmitted, onTranscriptionComplete]);
+    }, [emit, onAudioSubmitted, onTranscriptionComplete, resetStreamingVadState]);
+
+    const updateNoiseFloor = useCallback((rms) => {
+        noiseFloorRef.current = clampNoiseFloor((noiseFloorRef.current * 0.94) + (rms * 0.06));
+    }, []);
+
+    const isSpeechLikeChunk = useCallback((metrics) => {
+        const dynamicThreshold = Math.max(
+            AUDIO_SETTINGS.vadMinRms,
+            noiseFloorRef.current * AUDIO_SETTINGS.vadNoiseMultiplier,
+        );
+        const zcrInVoiceRange = (
+            metrics.zcr >= AUDIO_SETTINGS.vadMinZcr
+            && metrics.zcr <= AUDIO_SETTINGS.vadMaxZcr
+        );
+
+        return (
+            metrics.rms >= dynamicThreshold
+            && metrics.peak >= AUDIO_SETTINGS.vadMinPeak
+            && zcrInVoiceRange
+        );
+    }, []);
+
+    const handlePcmChunk = useCallback((pcmBuffer) => {
+        if (!isRecordingRef.current || isWaitingResponseRef.current) {
+            return;
+        }
+
+        const pcmChunk = encodePcmBase64(pcmBuffer);
+        const metrics = analyzePcmBuffer(pcmBuffer);
+        const isSpeechLike = isSpeechLikeChunk(metrics);
+        observedChunksRef.current += 1;
+        const maxPreSpeechChunks = Math.max(
+            1,
+            Math.ceil(AUDIO_SETTINGS.preSpeechBufferMs / AUDIO_SETTINGS.pcmChunkDurationMs),
+        );
+
+        if (!audioStreamStartedRef.current) {
+            pendingPcmChunksRef.current.push(pcmChunk);
+            if (pendingPcmChunksRef.current.length > maxPreSpeechChunks) {
+                pendingPcmChunksRef.current.shift();
+            }
+
+            if (observedChunksRef.current <= AUDIO_SETTINGS.vadWarmupChunks) {
+                if (!isSpeechLike) {
+                    updateNoiseFloor(metrics.rms);
+                }
+                return;
+            }
+
+            if (isSpeechLike) {
+                speechRunChunksRef.current += 1;
+            } else {
+                speechRunChunksRef.current = 0;
+                updateNoiseFloor(metrics.rms);
+            }
+
+            if (speechRunChunksRef.current < AUDIO_SETTINGS.vadStartChunks) {
+                return;
+            }
+
+            const started = emit('audio_stream_start', {});
+            if (!started) {
+                console.error('Unable to start server audio stream');
+                resetStreamingVadState();
+                return;
+            }
+
+            audioStreamStartedRef.current = true;
+            hasSpeechRef.current = true;
+            silenceRunChunksRef.current = 0;
+
+            for (const bufferedChunk of pendingPcmChunksRef.current) {
+                emit('audio_chunk', { data: bufferedChunk });
+            }
+            pendingPcmChunksRef.current = [];
+
+            console.log(
+                `[SHARA][vad] voice start rms=${metrics.rms.toFixed(4)} peak=${metrics.peak.toFixed(3)} zcr=${metrics.zcr.toFixed(3)} noise=${noiseFloorRef.current.toFixed(4)}`,
+            );
+            return;
+        }
+
+        emit('audio_chunk', { data: pcmChunk });
+
+        if (isSpeechLike) {
+            hasSpeechRef.current = true;
+            silenceRunChunksRef.current = 0;
+            speechRunChunksRef.current += 1;
+            return;
+        }
+
+        silenceRunChunksRef.current += 1;
+        updateNoiseFloor(metrics.rms);
+
+        if (
+            hasSpeechRef.current
+            && silenceRunChunksRef.current >= AUDIO_SETTINGS.vadSilenceChunks
+        ) {
+            console.log(
+                `[SHARA][vad] voice end after ${silenceRunChunksRef.current * AUDIO_SETTINGS.pcmChunkDurationMs}ms silence`,
+            );
+            stopRecording();
+        }
+    }, [emit, isSpeechLikeChunk, resetStreamingVadState, stopRecording, updateNoiseFloor]);
 
     const detectSilence = useCallback((stream) => {
 
@@ -207,7 +360,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
             console.log('🎤 Starting recording...');
             audioChunksRef.current = [];
-            audioStreamStartedRef.current = false;
+            resetStreamingVadState();
             silenceStartTimeRef.current = null;
             consecutiveSilenceFramesRef.current = 0;
             consecutiveAudioFramesRef.current = 0;
@@ -265,17 +418,9 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                 workletNodeRef.current = workletNode;
                 workletSource.connect(workletNode);
 
-                const started = emit('audio_stream_start', {});
-                if (!started) {
-                    throw new Error('Socket not connected for audio_stream_start');
-                }
-                audioStreamStartedRef.current = true;
-                console.log('audio_stream_start sent');
-
                 workletNode.port.onmessage = (event) => {
                     if (!isRecordingRef.current) return;
-                    const pcmChunk = encodePcmBase64(event.data.pcm);
-                    emit('audio_chunk', { data: pcmChunk });
+                    handlePcmChunk(event.data.pcm);
                 };
             } catch (workletError) {
                 console.warn('⚠️ AudioWorklet unavailable, falling back to blob STT:', workletError);
@@ -289,6 +434,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                     }
                     stream.getTracks().forEach(track => track.stop());
                 };
+                detectSilence(stream);
             }
 
             isRecordingRef.current = true;
@@ -297,14 +443,13 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
             console.log('✅ Successfully started recording');
 
-            detectSilence(stream);
         } catch (error) {
             console.error('❌ Error starting recording:', error);
             return;
         } finally {
             startInProgressRef.current = false;
         }
-    }, [detectSilence, emit, stopRecording, isSpeaking]);
+    }, [detectSilence, handlePcmChunk, resetStreamingVadState, stopRecording, isSpeaking]);
 
     useEffect(() => {
         return () => {

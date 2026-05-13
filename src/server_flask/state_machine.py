@@ -521,6 +521,23 @@ def on_session_login(sid: str, session_data: dict):
     login_name = _normalize_username(session_data.get('loginName'))
     is_new_user = bool(session_data.get('isNewUser', False))
     incoming_username = _normalize_username(session_data.get('userName') or session_data.get('username'))
+    previous_login = context.login_username
+    previous_session_id = context.face_session_id
+    previous_username = _normalize_username(context.username)
+
+    if (
+        context.state in ('recording', 'processing_query', 'speaking')
+        and previous_login == login_name
+        and previous_session_id == session_id
+        and previous_username == incoming_username
+    ):
+        logger.debug(
+            'Ignoring unchanged session identity refresh while state=%s sid=%s',
+            context.state,
+            sid,
+        )
+        return
+
     shara_name = None if is_new_user else _get_stored_shara_name(login_name)
 
     if not shara_name and incoming_username:
@@ -529,8 +546,6 @@ def on_session_login(sid: str, session_data: dict):
             if not update_shara_name(login_name, shara_name):
                 logger.warning('Could not persist incoming shara_name for login=%s', login_name)
 
-    previous_login = context.login_username
-    previous_session_id = context.face_session_id
     preserve_runtime_flags = (
         context.state in ('recording', 'processing_query', 'speaking')
         and previous_login == login_name
@@ -689,7 +704,7 @@ def on_audio_chunk(audio_bytes: bytes, sid: str) -> bool:
         audio_stream = _audio_streams.get(sid)
 
     if not audio_stream:
-        logger.warning('Ignoring audio_chunk for sid=%s with no active stream', sid)
+        logger.debug('Ignoring audio_chunk for sid=%s with no active stream', sid)
         return False
 
     return audio_stream.append(audio_bytes)

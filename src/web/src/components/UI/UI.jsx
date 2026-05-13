@@ -124,6 +124,8 @@ const isForCurrentSession = (payload, sessionIdentity) => {
     return payload.sessionId === sessionIdentity.sessionId;
 };
 
+const SERVER_RECORDING_READY_STATE = 'listening';
+
 const UI = ({
     sharedStream,
     onRobotStateChange,
@@ -136,6 +138,7 @@ const UI = ({
     const [connectionError, setConnectionError] = useState(false);
     const [isWaitingResponse, setIsWaitingResponse] = useState(false);
     const [faceDetected, setFaceDetected] = useState(false);
+    const [serverConversationState, setServerConversationState] = useState('idle');
     const [isLedLegendOpen, setIsLedLegendOpen] = useState(() => {
         if (typeof window === 'undefined') {
             return true;
@@ -224,19 +227,18 @@ const UI = ({
         }
     }, [sessionIdentity]);
 
-    const handleFaceDetected = () => {
-        setFaceDetected(true);
-        if (!isRecording && !isWaitingResponse && !isSpeaking) {
-            startRecording();
-        }
-    };
+    const canStartRecording = serverConversationState === SERVER_RECORDING_READY_STATE;
 
-    const handleFaceLost = () => {
+    const handleFaceDetected = useCallback(() => {
+        setFaceDetected(true);
+    }, []);
+
+    const handleFaceLost = useCallback(() => {
         setFaceDetected(false);
         if (isRecording) {
             stopRecording();
         }
-    };
+    }, [isRecording, stopRecording]);
 
     const handleLogoutClick = useCallback(async () => {
         if (!onLogout) {
@@ -256,6 +258,11 @@ const UI = ({
     useEffect(() => {
         setConnectionError(!isConnected);
     }, [isConnected]);
+
+    useEffect(() => {
+        setServerConversationState('idle');
+        setIsWaitingResponse(false);
+    }, [sessionIdentity?.sessionId]);
 
     useEffect(() => {
         const nextStatus = getUiConsoleStatus({
@@ -296,11 +303,27 @@ const UI = ({
             }));
         };
 
+        const handleStateUpdate = (payload) => {
+            if (!isForCurrentSession(payload, sessionIdentity)) {
+                return;
+            }
+
+            const nextState = payload?.state || 'idle';
+            setServerConversationState(nextState);
+
+            if (nextState === 'processing_query') {
+                setIsWaitingResponse(true);
+            } else if (nextState === 'idle' || nextState === 'idle_presence' || nextState === 'listening') {
+                setIsWaitingResponse(false);
+            }
+        };
+
         socket.on('robot_message', handleRobotMessage);
         socket.on('wizard_message', handleWizardMessage);
         socket.on('client_message', handleClientMessage);
         socket.on('transcription_result', handleClientMessage);
         socket.on('session_identity_updated', handleSessionIdentityUpdated);
+        socket.on('state_update', handleStateUpdate);
         const handleAudioEmpty = (payload) => {
             if (!isForCurrentSession(payload, sessionIdentity)) {
                 return;
@@ -317,6 +340,7 @@ const UI = ({
             socket.off('client_message');
             socket.off('transcription_result');
             socket.off('session_identity_updated', handleSessionIdentityUpdated);
+            socket.off('state_update', handleStateUpdate);
             socket.off('audio_empty', handleAudioEmpty);
         };
     }, [socket, handleClientMessage, handleRobotMessage, handleWizardMessage, onSessionIdentityChange, sessionIdentity]);
@@ -329,15 +353,15 @@ const UI = ({
         emit('set_login_identity', sessionIdentity);
     }, [emit, isRegistered, sessionIdentity]);
 
-    // Auto-restart recording when face is present and system is idle
+    // Auto-restart recording only when the backend state machine is listening.
     useEffect(() => {
-        if (!isWaitingResponse && !isRecording && !isSpeaking && faceDetected) {
+        if (canStartRecording && !isWaitingResponse && !isRecording && !isSpeaking && faceDetected) {
             const timer = setTimeout(() => {
                 startRecording();
-            }, 1000);
+            }, 150);
             return () => clearTimeout(timer);
         }
-    }, [isWaitingResponse, isRecording, isSpeaking, faceDetected, startRecording]);
+    }, [canStartRecording, isWaitingResponse, isRecording, isSpeaking, faceDetected, startRecording]);
 
     const sessionDisplayName = getSessionDisplayName(sessionIdentity);
 

@@ -4,7 +4,7 @@
  * Connects to the Flask-SocketIO server /message namespace.
  */
 
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import { SERVER_URL } from "../config";
 
@@ -106,23 +106,25 @@ export const WebSocketProvider = ({ children, handlers }) => {
         };
     }, []);
 
-    const emit = (event, data) => {
+    const emit = useCallback((event, data) => {
         if (socketRef.current?.connected) {
             socketRef.current.emit(event, data);
             return true;
         }
         console.error('[WebSocket] Cannot emit — not connected');
         return false;
-    };
+    }, []);
+
+    const value = useMemo(() => ({
+        socket: socketRef.current,
+        isConnected,
+        isRegistered,
+        emit,
+        id: socketRef.current?.id,
+    }), [emit, isConnected, isRegistered]);
 
     return (
-        <WebSocketContext.Provider value={{
-            socket: socketRef.current,
-            isConnected,
-            isRegistered,
-            emit,
-            id: socketRef.current?.id,
-        }}>
+        <WebSocketContext.Provider value={value}>
             {children}
         </WebSocketContext.Provider>
     );

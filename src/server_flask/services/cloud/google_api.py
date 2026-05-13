@@ -205,10 +205,14 @@ def streaming_speech_to_text(audio_generator):
                     transcript = last_interim_transcript
 
                 break  # We got the final result
+
+        if not transcript and last_interim_transcript:
+            transcript = last_interim_transcript
     
     except Exception as e:
         # If the stream ends or there's an error, return what we have
         # Use last interim result if available
+        logger.warning('Streaming STT ended with partial result after error: %s', e)
         if not transcript and last_interim_transcript:
             transcript = last_interim_transcript
     

@@ -25,6 +25,7 @@ from robot_context import RobotContext, robot_context
 logger = logging.getLogger('StateMachine')
 
 SERVER_QUERY_TIMEOUT = 20  # seconds
+STREAMING_STT_FINAL_TIMEOUT = 4  # seconds after browser stream_end
 AUDIO_STREAM_QUEUE_MAX_CHUNKS = 300
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -856,10 +857,15 @@ def _process_audio_stream_end(audio_stream: _AudioStream, sid: str):
         streaming_error = None
         if audio_stream.future:
             try:
-                transcript = audio_stream.future.result(timeout=SERVER_QUERY_TIMEOUT)
+                transcript = audio_stream.future.result(timeout=STREAMING_STT_FINAL_TIMEOUT)
             except concurrent.futures.TimeoutError as exc:
                 streaming_error = exc
-                logger.error('Timeout in streaming STT for sid=%s', sid)
+                audio_stream.future.cancel()
+                logger.warning(
+                    'Streaming STT did not finish within %.1fs for sid=%s; falling back to batch STT',
+                    STREAMING_STT_FINAL_TIMEOUT,
+                    sid,
+                )
             except Exception as exc:
                 streaming_error = exc
                 logger.warning('Streaming STT failed for sid=%s: %s', sid, exc, exc_info=True)
@@ -871,14 +877,11 @@ def _process_audio_stream_end(audio_stream: _AudioStream, sid: str):
             request = _build_request(context, text=transcript)
             future = _query_executor.submit(_server.query_with_text, request)
             response = future.result(timeout=SERVER_QUERY_TIMEOUT)
-        elif audio_stream.future and streaming_error is None:
-            logger.warning('Empty streaming transcription for sid=%s', sid)
-            context.state = 'idle_presence'
-            _emit_state_update(sid, context)
-            _emit_audio_empty(sid, context)
-            return
         else:
-            logger.info('Falling back to batch STT for sid=%s', sid)
+            if audio_stream.future and streaming_error is None:
+                logger.info('Streaming STT returned empty for sid=%s; falling back to batch STT', sid)
+            else:
+                logger.info('Falling back to batch STT for sid=%s', sid)
             request = _build_request(context, audio=audio_bytes)
             future = _query_executor.submit(_server.query, request)
             response = future.result(timeout=SERVER_QUERY_TIMEOUT)

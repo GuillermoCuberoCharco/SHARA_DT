@@ -8,13 +8,14 @@ Same code as the original OpenAI API wrapper.
 """
 import json
 import logging
+import os
 from datetime import datetime
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from db import get_connection
 
-client = OpenAI()
+client = OpenAI(timeout=float(os.getenv('OPENAI_REQUEST_TIMEOUT_SECONDS', '40')))
 logger = logging.getLogger('OpenAI')
 
 # Conversation history is loaded and persisted per request. Keeping it out of

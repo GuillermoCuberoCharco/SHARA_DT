@@ -17,7 +17,7 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, sessionIdentity }) 
     const consecutiveLossesRef = useRef(0);
     const lastDetectionTimeRef = useRef(null);
 
-    const { emit } = useWebSocketContext();
+    const { emit, isConnected, isRegistered } = useWebSocketContext();
 
     const loadBlazeFaceModels = async () => {
         try {
@@ -96,7 +96,9 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, sessionIdentity }) 
     }, [stream]);
 
     useEffect(() => {
-        if (!isModelLoaded || !isStreamReady || !videoRef.current) {
+        const canEmitPresence = isConnected && isRegistered && sessionIdentity?.sessionId;
+
+        if (!isModelLoaded || !isStreamReady || !videoRef.current || !canEmitPresence) {
             return;
         }
 
@@ -156,7 +158,18 @@ const FaceDetection = ({ onFaceDetected, onFaceLost, stream, sessionIdentity }) 
                 clearInterval(detectionRef.current);
             }
         };
-    }, [isModelLoaded, stream, onFaceDetected, onFaceLost, isStreamReady, isFaceDetected, emit, sessionIdentity]);
+    }, [
+        isModelLoaded,
+        stream,
+        onFaceDetected,
+        onFaceLost,
+        isStreamReady,
+        isFaceDetected,
+        emit,
+        isConnected,
+        isRegistered,
+        sessionIdentity,
+    ]);
 
     return (
         <div style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}>

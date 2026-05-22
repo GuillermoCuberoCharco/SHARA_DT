@@ -988,6 +988,13 @@ def _build_request(context: RobotContext, audio: bytes = b'', text: str = None):
     )
 
 
+def _return_to_listening_after_empty_audio(sid: str, context: RobotContext, reason: str):
+    logger.info('Empty audio input for sid=%s (%s); returning to listening', sid, reason)
+    context.state = 'listening'
+    _emit_state_update(sid, context)
+    _emit_audio_empty(sid, context)
+
+
 def _process_audio_stream_end(audio_stream: _AudioStream, sid: str):
     """Streaming STT -> LLM -> TTS pipeline with batch STT fallback."""
     context = _get_existing_context(sid)
@@ -1003,10 +1010,7 @@ def _process_audio_stream_end(audio_stream: _AudioStream, sid: str):
         logger.info('Audio stream collected from %s: %s bytes', sid, len(audio_bytes))
 
         if not audio_bytes:
-            logger.warning('Empty audio buffer for sid=%s', sid)
-            context.state = 'idle_presence'
-            _emit_state_update(sid, context)
-            _emit_audio_empty(sid, context)
+            _return_to_listening_after_empty_audio(sid, context, 'empty audio buffer')
             return
 
         transcript = ''
@@ -1046,10 +1050,7 @@ def _process_audio_stream_end(audio_stream: _AudioStream, sid: str):
             response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
         if response is None:
-            logger.warning('Empty transcription or response for sid=%s', sid)
-            context.state = 'idle_presence'
-            _emit_state_update(sid, context)
-            _emit_audio_empty(sid, context)
+            _return_to_listening_after_empty_audio(sid, context, 'empty transcription')
             return
 
         if response.request.text and not transcript:
@@ -1084,9 +1085,7 @@ def _process_audio_query(audio_b64: str, sid: str):
         response = future.result(timeout=SERVER_QUERY_TIMEOUT)
 
         if response is None:
-            logger.warning('Empty transcription or response for sid=%s', sid)
-            context.state = 'listening'
-            _emit_state_update(sid, context)
+            _return_to_listening_after_empty_audio(sid, context, 'empty legacy transcription')
             return
 
         if response.request.text:

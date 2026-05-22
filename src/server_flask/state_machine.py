@@ -446,14 +446,97 @@ _NAME_CHANGE_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+_IDENTIFICATION_NAME_PATTERNS = (
+    re.compile(r'\bsoy\s+([^,.!?;:\n]+)', re.IGNORECASE),
+)
+_NAME_RESPONSE_QUESTIONS = {'who_are_you_response', 'casual_ask_known_username'}
+_STANDALONE_NAME_RESPONSE_QUESTIONS = {'who_are_you_response'}
 _NAME_CANDIDATE_STOP_RE = re.compile(
     r'\b(?:por favor|gracias|porque|pero|aunque|y|a partir de ahora)\b.*$',
     re.IGNORECASE,
 )
-_INVALID_NAME_STARTS = {'el', 'la', 'lo', 'los', 'las', 'un', 'una', 'que', 'como'}
+_INVALID_NAME_STARTS = {
+    'de',
+    'el',
+    'la',
+    'lo',
+    'los',
+    'las',
+    'me',
+    'mi',
+    'que',
+    'como',
+    'soy',
+    'tu',
+    'un',
+    'una',
+    'yo',
+}
+_INVALID_NAME_VALUES = {
+    'claro',
+    'adios',
+    'buenas',
+    'de acuerdo',
+    'desconocido',
+    'gracias',
+    'hola',
+    'mi nombre',
+    'no',
+    'ok',
+    'okay',
+    'si',
+    'unknown',
+    'vale',
+    'yo',
+}
 
 
-def _extract_requested_shara_name(text: str):
+def _fold_name_text(text: str):
+    return (
+        str(text or '')
+        .lower()
+        .replace('á', 'a')
+        .replace('é', 'e')
+        .replace('í', 'i')
+        .replace('ó', 'o')
+        .replace('ú', 'u')
+        .replace('ü', 'u')
+    )
+
+
+def _clean_name_candidate(candidate: str):
+    candidate = _NAME_CANDIDATE_STOP_RE.sub('', str(candidate or ''))
+    candidate = re.sub(r'\s+', ' ', candidate).strip(' "\'()[]{}')
+    candidate = candidate.strip('.,;:!?')
+
+    words = candidate.split()
+    if not words or len(words) > 4 or len(candidate) > 80:
+        return None
+    if not re.search(r'[^\W\d_]', candidate, re.UNICODE):
+        return None
+
+    folded_candidate = _fold_name_text(candidate)
+    if folded_candidate in _INVALID_NAME_VALUES:
+        return None
+    if _fold_name_text(words[0]) in _INVALID_NAME_STARTS:
+        return None
+
+    return _normalize_username(candidate)
+
+
+def _is_identification_context(context: RobotContext):
+    if not context:
+        return False
+    return context.needs_identification or context.proactive_question in _NAME_RESPONSE_QUESTIONS
+
+
+def _accepts_standalone_name_response(context: RobotContext):
+    if not context:
+        return False
+    return context.proactive_question in _STANDALONE_NAME_RESPONSE_QUESTIONS
+
+
+def _extract_requested_shara_name(text: str, context: RobotContext = None):
     if not text or _NEGATED_NAME_CHANGE_RE.search(text):
         return None
 
@@ -462,49 +545,85 @@ def _extract_requested_shara_name(text: str):
         if not match:
             continue
 
-        candidate = _NAME_CANDIDATE_STOP_RE.sub('', match.group(1))
-        candidate = re.sub(r'\s+', ' ', candidate).strip(' "\'()[]{}')
-        candidate = candidate.strip('.,;:!?')
+        return _clean_name_candidate(match.group(1))
 
-        words = candidate.split()
-        if not words or len(words) > 4 or len(candidate) > 80:
-            return None
-        if words[0].lower() in _INVALID_NAME_STARTS:
-            return None
+    if _is_identification_context(context):
+        for pattern in _IDENTIFICATION_NAME_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                return _clean_name_candidate(match.group(1))
 
-        return _normalize_username(candidate)
+    if _accepts_standalone_name_response(context):
+        return _clean_name_candidate(text)
 
     return None
 
 
+def _set_shara_name_for_session(
+    context: RobotContext,
+    shara_name,
+    sid: str = None,
+    source: str = 'unknown',
+    emit_update: bool = True,
+):
+    clean_shara = _clean_name_candidate(shara_name)
+    if not clean_shara:
+        logger.warning('Rejected invalid shara_name from %s: %r', source, shara_name)
+        return False
+
+    clean_login = _normalize_username(context.login_username)
+    previous_username = _normalize_username(context.username)
+
+    if clean_login:
+        if not update_shara_name(clean_login, clean_shara):
+            logger.warning(
+                'Rejected runtime shara_name update after DB failure for login=%s source=%s',
+                clean_login,
+                source,
+            )
+            return False
+    else:
+        logger.info('No login_name available; storing shara_name runtime-only from %s', source)
+
+    if previous_username != clean_shara:
+        logger.info(
+            'shara_name accepted from %s for login=%s: %s -> %s',
+            source,
+            clean_login,
+            previous_username,
+            clean_shara,
+        )
+
+    context.username = clean_shara
+    context.needs_identification = False
+    if context.proactive_question in _NAME_RESPONSE_QUESTIONS:
+        context.proactive_question = ''
+    _reset_unknown_user_tracking(context)
+
+    if not clean_login and previous_username != clean_shara:
+        _load_conversation_history_for(clean_shara)
+
+    if emit_update:
+        _emit_session_identity_updated(
+            sid=sid,
+            session_id=context.face_session_id,
+            username=clean_shara,
+            login_name=clean_login,
+        )
+
+    return True
+
+
 def _maybe_update_shara_name_from_text(context: RobotContext, text: str, sid: str = None):
-    requested_name = _extract_requested_shara_name(text)
+    requested_name = _extract_requested_shara_name(text, context=context)
     if not requested_name:
         return
 
-    previous_username = context.username
-    if previous_username == requested_name:
-        _persist_shara_name_for_login(context, requested_name)
-        return
-
-    logger.info(
-        'User requested shara_name update for login=%s: %s -> %s',
-        context.login_username,
-        previous_username,
+    _set_shara_name_for_session(
+        context,
         requested_name,
-    )
-    context.username = requested_name
-    context.needs_identification = False
-    _reset_unknown_user_tracking(context)
-    _persist_shara_name_for_login(context, requested_name)
-
-    if not context.login_username and previous_username != requested_name:
-        _load_conversation_history_for(requested_name)
-
-    _emit_session_identity_updated(
         sid=sid,
-        session_id=context.face_session_id,
-        username=requested_name,
+        source='user_text',
     )
 
 
@@ -512,15 +631,16 @@ def _get_stored_shara_name(login_name):
     clean_login = _normalize_username(login_name)
     if not clean_login:
         return None
-    return _normalize_username(get_shara_name(clean_login))
+    return _clean_name_candidate(get_shara_name(clean_login))
 
 
 def _persist_shara_name_for_login(context: RobotContext, shara_name):
-    clean_login = _normalize_username(context.login_username)
-    clean_shara = _normalize_username(shara_name)
-    if clean_login and clean_shara:
-        if not update_shara_name(clean_login, clean_shara):
-            logger.warning('Could not persist shara_name for login=%s', clean_login)
+    _set_shara_name_for_session(
+        context,
+        shara_name,
+        source='legacy_persist_helper',
+        emit_update=False,
+    )
 
 
 def proactive_event_handler(event: str, params: dict = None, sid: str = None):
@@ -556,7 +676,7 @@ def on_session_login(sid: str, session_data: dict):
 
     login_name = _normalize_username(session_data.get('loginName'))
     is_new_user = bool(session_data.get('isNewUser', False))
-    incoming_username = _normalize_username(session_data.get('userName') or session_data.get('username'))
+    incoming_username = _clean_name_candidate(session_data.get('userName') or session_data.get('username'))
     previous_login = context.login_username
     previous_session_id = context.face_session_id
     previous_username = _normalize_username(context.username)
@@ -577,10 +697,13 @@ def on_session_login(sid: str, session_data: dict):
     shara_name = None if is_new_user else _get_stored_shara_name(login_name)
 
     if not shara_name and incoming_username:
-        shara_name = incoming_username
         if login_name:
-            if not update_shara_name(login_name, shara_name):
+            if update_shara_name(login_name, incoming_username):
+                shara_name = incoming_username
+            else:
                 logger.warning('Could not persist incoming shara_name for login=%s', login_name)
+        else:
+            shara_name = incoming_username
 
     preserve_runtime_flags = (
         context.state in ('recording', 'processing_query', 'speaking')
@@ -625,7 +748,7 @@ def on_user_detected(sid: str, user_data: dict):
     proactive = _get_proactive_service(sid)
     user_data = user_data or {}
 
-    incoming_username = _normalize_username(user_data.get('userName'))
+    incoming_username = _clean_name_candidate(user_data.get('userName'))
     login_name = _normalize_username(user_data.get('loginName')) or context.login_username
     face_session_id = user_data.get('sessionId')
     incoming_needs_identification = bool(user_data.get('needsIdentification', False))
@@ -838,7 +961,8 @@ def process_transition(transition: str, params: dict = None, sid: str = None):
 
         elif transition == 'speaking2idle_presence' and current == 'speaking':
             context.state = 'idle_presence'
-            context.proactive_question = ''
+            if context.proactive_question not in _NAME_RESPONSE_QUESTIONS:
+                context.proactive_question = ''
             context.continue_conversation = False
             _reset_unknown_user_tracking(context)
             _emit_state_update(sid, context)
@@ -1035,6 +1159,8 @@ def _handle_proactive_query(params: dict, sid: str, context: RobotContext):
             return
 
         next_proactive_question = 'who_are_you_response' if question == 'who_are_you' else ''
+        if next_proactive_question:
+            response.continue_conversation = True
 
         _handle_response(
             response,
@@ -1074,17 +1200,11 @@ def _handle_response(
     context.proactive_question = next_proactive_question or ''
 
     if response.action == 'record_face':
-        context.username = response.username
-        context.needs_identification = False
-        _persist_shara_name_for_login(context, response.username)
-
-        if not context.login_username:
-            _load_conversation_history_for(response.username)
-
-        _emit_session_identity_updated(
+        _set_shara_name_for_session(
+            context,
+            response.username,
             sid=sid,
-            session_id=context.face_session_id,
-            username=response.username,
+            source='record_face_tool',
         )
 
     elif response.action == 'set_username':
@@ -1094,27 +1214,20 @@ def _handle_response(
             sid,
             context.unknown_user_interactions,
         )
-        context.username = response.username
-        context.needs_identification = False
-        _persist_shara_name_for_login(context, response.username)
-        _reset_unknown_user_tracking(context)
-
-        if not context.login_username:
-            _load_conversation_history_for(response.username)
-
-        _emit_session_identity_updated(
+        _set_shara_name_for_session(
+            context,
+            response.username,
             sid=sid,
-            session_id=context.face_session_id,
-            username=response.username,
+            source='set_username_tool',
         )
 
     elif response.username:
-        previous_username = context.username
-        context.username = response.username
-        context.needs_identification = False
-        _persist_shara_name_for_login(context, response.username)
-        if not context.login_username and previous_username != response.username:
-            _load_conversation_history_for(response.username)
+        _set_shara_name_for_session(
+            context,
+            response.username,
+            sid=sid,
+            source='response_username',
+        )
 
     if mark_unknown_interaction and sid is not None and not context.username:
         _mark_unknown_user_interaction(context)
@@ -1178,20 +1291,24 @@ def _emit_state_update(sid: str = None, context: RobotContext = None):
     )
 
 
-def _emit_session_identity_updated(sid=None, session_id=None, username=None):
+def _emit_session_identity_updated(sid=None, session_id=None, username=None, login_name=None):
     if _socketio is None or sid is None or not session_id:
         return
 
+    payload = {
+        'sessionId': session_id,
+        'userName': username,
+        'sharaName': username,
+        'isNewUser': False,
+        'needsIdentification': False,
+        'userStatus': 'existing',
+    }
+    if login_name:
+        payload['loginName'] = login_name
+
     _socketio.emit(
         'session_identity_updated',
-        {
-            'sessionId': session_id,
-            'userName': username,
-            'sharaName': username,
-            'isNewUser': False,
-            'needsIdentification': False,
-            'userStatus': 'existing',
-        },
+        payload,
         to=sid,
         namespace='/message',
     )

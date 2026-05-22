@@ -463,6 +463,7 @@ UI.propTypes = {
         sessionId: PropTypes.string,
         loginName: PropTypes.string,
         userName: PropTypes.string,
+        sharaName: PropTypes.string,
         isNewUser: PropTypes.bool,
         needsIdentification: PropTypes.bool,
         userStatus: PropTypes.string,

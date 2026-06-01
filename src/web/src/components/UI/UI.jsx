@@ -8,8 +8,6 @@ import '../../styles/InterfaceStyle.css';
 import useAudioRecorder from './hooks/useAudioRecorder';
 import ChatWindow from './subcomponents/ChatWindow';
 
-const TTS_PREFERENCE_KEY = 'shara_tts_enabled';
-
 const UI = ({ onRobotStateChange, onLogout }) => {
     const {
         getUserId,
@@ -39,10 +37,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     const [isSwitchingSubject, setIsSwitchingSubject] = useState(false);
     const [subjectFeedback, setSubjectFeedback] = useState('');
     const [subjectFeedbackTone, setSubjectFeedbackTone] = useState('info');
-    const [isTtsEnabled, setIsTtsEnabled] = useState(() => {
-        const stored = localStorage.getItem(TTS_PREFERENCE_KEY);
-        return stored === null ? false : stored === 'true';
-    });
+    const [isTtsEnabled, setIsTtsEnabled] = useState(false);
 
     const { isConnected, isRegistered, emit, refreshConnection, socket } = useWebSocketContext();
     const messagesContainerRef = useRef(null);
@@ -318,8 +313,6 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     }, [isConnected]);
 
     useEffect(() => {
-        localStorage.setItem(TTS_PREFERENCE_KEY, String(isTtsEnabled));
-
         if (!isTtsEnabled) {
             stopPlayback();
         }

@@ -80,6 +80,12 @@ class MessageNamespace(Namespace):
 
         client['tts_enabled'] = enabled
         state_machine.set_tts_enabled(request.sid, enabled)
+        logger.info(
+            '[/message] TTS preference from %s (%s): enabled=%s',
+            client['user_id'],
+            request.sid,
+            enabled,
+        )
 
     def on_audio_stream_start(self, data):
         client = _clients.get(request.sid)

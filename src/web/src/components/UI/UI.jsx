@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ANIMATION_MAPPINGS } from '../../config';
 import { useAuth } from '../../auth/useAuth';
 import { useWebSocketContext } from '../../contexts/WebSocketContext';
+import { unlockAudioPlayback } from '../../utils/audioPlayback';
 import '../../styles/InterfaceStyle.css';
 import useAudioRecorder from './hooks/useAudioRecorder';
 import ChatWindow from './subcomponents/ChatWindow';
@@ -166,8 +167,20 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     }, [startRecording, stopPlayback]);
 
     const handleToggleTts = useCallback(() => {
-        setIsTtsEnabled((prev) => !prev);
-    }, []);
+        const nextEnabled = !isTtsEnabled;
+
+        if (nextEnabled) {
+            unlockAudioPlayback();
+        } else {
+            stopPlayback();
+        }
+
+        setIsTtsEnabled(nextEnabled);
+
+        if (isConnected && isRegistered) {
+            emit('tts_preference', { enabled: nextEnabled });
+        }
+    }, [emit, isConnected, isRegistered, isTtsEnabled, stopPlayback]);
 
     const handleAddSubjects = useCallback(async (subjectCodesInput) => {
         const normalizedInput = subjectCodesInput.trim();

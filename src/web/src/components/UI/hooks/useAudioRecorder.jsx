@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AUDIO_SETTINGS } from '../../../config';
 import { useWebSocketContext } from '../../../contexts/WebSocketContext';
+import { playAudioBase64, stopAudioPlayback } from '../../../utils/audioPlayback';
 
 const arrayBufferToBase64 = (buffer) => {
     const bytes = new Uint8Array(buffer);
@@ -34,7 +35,6 @@ const useAudioRecorder = ({ isWaitingResponse, onAudioSubmitted, onAudioError })
     const startInProgressRef = useRef(false);
     const isRecordingRef = useRef(false);
     const audioStreamStartedRef = useRef(false);
-    const audioElementRef = useRef(null);
 
     const releaseRecordingResources = useCallback(() => {
         if (silenceFrameRef.current) {
@@ -78,14 +78,7 @@ const useAudioRecorder = ({ isWaitingResponse, onAudioSubmitted, onAudioError })
     }, []);
 
     const stopPlayback = useCallback(() => {
-        const audio = audioElementRef.current;
-        if (audio) {
-            audio.pause();
-            audio.currentTime = 0;
-            audio.onended = null;
-            audio.onerror = null;
-            audioElementRef.current = null;
-        }
+        stopAudioPlayback();
         setIsSpeaking(false);
     }, []);
 
@@ -114,26 +107,14 @@ const useAudioRecorder = ({ isWaitingResponse, onAudioSubmitted, onAudioError })
         }
 
         stopPlayback();
-
-        const audio = new Audio(`data:audio/wav;base64,${audioB64}`);
-        audioElementRef.current = audio;
         setIsSpeaking(true);
 
-        const cleanup = () => {
-            if (audioElementRef.current === audio) {
-                audioElementRef.current = null;
-            }
-            setIsSpeaking(false);
-        };
-
-        audio.onended = cleanup;
-        audio.onerror = cleanup;
-
         try {
-            await audio.play();
+            await playAudioBase64(audioB64, 'audio/wav');
         } catch (error) {
             console.error('Unable to play assistant audio:', error);
-            cleanup();
+        } finally {
+            setIsSpeaking(false);
         }
     }, [stopPlayback]);
 

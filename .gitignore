@@ -13,6 +13,7 @@ test_data
 temp
 .npm-cache
 article_ucami2026
+.DS_Store
 
 # Logs
 logs

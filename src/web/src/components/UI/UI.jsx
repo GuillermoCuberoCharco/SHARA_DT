@@ -17,6 +17,9 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         addSubjects,
         createSubject,
         switchSubject,
+        listSubjectDocuments,
+        uploadSubjectDocument,
+        deleteSubjectDocument,
     } = useAuth();
     const username = getUserId();
     const userRole = getUserRole();
@@ -37,6 +40,10 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     const [isSwitchingSubject, setIsSwitchingSubject] = useState(false);
     const [subjectFeedback, setSubjectFeedback] = useState('');
     const [subjectFeedbackTone, setSubjectFeedbackTone] = useState('info');
+    const [subjectDocuments, setSubjectDocuments] = useState([]);
+    const [isLoadingSubjectDocuments, setIsLoadingSubjectDocuments] = useState(false);
+    const [isUploadingSubjectDocument, setIsUploadingSubjectDocument] = useState(false);
+    const [deletingSubjectDocumentId, setDeletingSubjectDocumentId] = useState(null);
     const [isTtsEnabled, setIsTtsEnabled] = useState(false);
 
     const { isConnected, isRegistered, emit, refreshConnection, socket } = useWebSocketContext();
@@ -177,6 +184,104 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         }
     }, [emit, isConnected, isRegistered, isTtsEnabled, stopPlayback]);
 
+    const loadSubjectDocuments = useCallback(async () => {
+        if (userRole !== 'teacher' || !subjectCode || !isRegistered) {
+            setSubjectDocuments([]);
+            return [];
+        }
+
+        setIsLoadingSubjectDocuments(true);
+
+        try {
+            const data = await listSubjectDocuments(subjectCode);
+            const documents = Array.isArray(data?.documents) ? data.documents : [];
+            setSubjectDocuments(documents);
+            return documents;
+        } catch (error) {
+            setSubjectFeedback(error.message || 'No se pudieron cargar los materiales.');
+            setSubjectFeedbackTone('error');
+            throw error;
+        } finally {
+            setIsLoadingSubjectDocuments(false);
+        }
+    }, [isRegistered, subjectCode, userRole]);
+
+    const handleUploadSubjectDocuments = useCallback(async (files) => {
+        const fileList = Array.from(files || []);
+        if (
+            fileList.length === 0
+            || !subjectCode
+            || isUploadingSubjectDocument
+            || isSwitchingSubject
+        ) {
+            return null;
+        }
+
+        setIsUploadingSubjectDocument(true);
+        setSubjectFeedback('');
+        setSubjectFeedbackTone('info');
+
+        try {
+            const uploadedDocuments = [];
+            for (const file of fileList) {
+                const data = await uploadSubjectDocument(subjectCode, file);
+                if (data?.document) {
+                    uploadedDocuments.push(data.document);
+                }
+            }
+
+            await loadSubjectDocuments();
+            setSubjectFeedback(
+                uploadedDocuments.length === 1
+                    ? `Material subido: ${uploadedDocuments[0].original_filename}.`
+                    : `Materiales subidos: ${uploadedDocuments.length}.`,
+            );
+            setSubjectFeedbackTone('success');
+            return uploadedDocuments;
+        } catch (error) {
+            setSubjectFeedback(error.message || 'No se pudo subir el material.');
+            setSubjectFeedbackTone('error');
+            throw error;
+        } finally {
+            setIsUploadingSubjectDocument(false);
+        }
+    }, [
+        isSwitchingSubject,
+        isUploadingSubjectDocument,
+        loadSubjectDocuments,
+        subjectCode,
+        uploadSubjectDocument,
+    ]);
+
+    const handleDeleteSubjectDocument = useCallback(async (documentId) => {
+        if (!subjectCode || !documentId || deletingSubjectDocumentId || isSwitchingSubject) {
+            return null;
+        }
+
+        setDeletingSubjectDocumentId(documentId);
+        setSubjectFeedback('');
+        setSubjectFeedbackTone('info');
+
+        try {
+            await deleteSubjectDocument(subjectCode, documentId);
+            setSubjectDocuments((prev) => prev.filter((document) => Number(document.id) !== Number(documentId)));
+            setSubjectFeedback('Material eliminado.');
+            setSubjectFeedbackTone('success');
+            return true;
+        } catch (error) {
+            setSubjectFeedback(error.message || 'No se pudo eliminar el material.');
+            setSubjectFeedbackTone('error');
+            throw error;
+        } finally {
+            setDeletingSubjectDocumentId(null);
+        }
+    }, [
+        deleteSubjectDocument,
+        deletingSubjectDocumentId,
+        isSwitchingSubject,
+        subjectCode,
+    ]);
+
     const handleAddSubjects = useCallback(async (subjectCodesInput) => {
         const normalizedInput = subjectCodesInput.trim();
         if (!normalizedInput || isAddingSubjects || isCreatingSubject || isSwitchingSubject) {
@@ -274,6 +379,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         stopPlayback();
         setNewMessage('');
         setMessages([]);
+        setSubjectDocuments([]);
         setIsWaitingResponse(false);
         setConversationState('idle');
 
@@ -321,6 +427,17 @@ const UI = ({ onRobotStateChange, onLogout }) => {
             emit('tts_preference', { enabled: isTtsEnabled });
         }
     }, [emit, isConnected, isRegistered, isTtsEnabled, stopPlayback]);
+
+    useEffect(() => {
+        if (userRole !== 'teacher' || !subjectCode || !isRegistered) {
+            setSubjectDocuments([]);
+            return;
+        }
+
+        loadSubjectDocuments().catch(() => {
+            // The panel shows the error through subjectFeedback.
+        });
+    }, [isRegistered, loadSubjectDocuments, subjectCode, userRole]);
 
     useEffect(() => {
         if (!socket) {
@@ -388,6 +505,12 @@ const UI = ({ onRobotStateChange, onLogout }) => {
                 isSwitchingSubject={isSwitchingSubject}
                 subjectFeedback={subjectFeedback}
                 subjectFeedbackTone={subjectFeedbackTone}
+                subjectDocuments={subjectDocuments}
+                onUploadSubjectDocuments={userRole === 'teacher' ? handleUploadSubjectDocuments : null}
+                onDeleteSubjectDocument={userRole === 'teacher' ? handleDeleteSubjectDocument : null}
+                isLoadingSubjectDocuments={isLoadingSubjectDocuments}
+                isUploadingSubjectDocument={isUploadingSubjectDocument}
+                deletingSubjectDocumentId={deletingSubjectDocumentId}
             />
         </>
     );

@@ -9,6 +9,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from db import ensure_schema, get_db_connection
+from services.subject_documents import build_subject_material_context
 from subject_codes import normalize_subject_code
 from user_roles import STUDENT_USER_ROLE, is_teacher_role
 
@@ -154,11 +155,22 @@ def _build_instructions(user_role: str) -> str:
 
 def _build_history_snapshot(user_id: str, input_text: str, user_role: str, subject_code: str) -> list[dict[str, str]]:
     history_snapshot = _load_user_history(user_id, subject_code)
+    developer_contexts = []
+
+    subject_material_context = build_subject_material_context(subject_code, input_text)
+    if subject_material_context:
+        developer_contexts.append(subject_material_context)
 
     if is_teacher_role(user_role):
         teacher_context = _build_teacher_private_context(subject_code)
         if teacher_context:
-            history_snapshot = [{"role": "developer", "content": teacher_context}, *history_snapshot]
+            developer_contexts.append(teacher_context)
+
+    if developer_contexts:
+        history_snapshot = [
+            {"role": "developer", "content": context}
+            for context in developer_contexts
+        ] + history_snapshot
 
     history_snapshot.append({"role": "user", "content": input_text})
     return history_snapshot

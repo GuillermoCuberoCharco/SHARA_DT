@@ -122,6 +122,64 @@ export const useAuth = () => {
         return data;
     };
 
+    const listSubjectDocuments = async (subjectCode) => {
+        const token = getToken();
+        if (!token) {
+            throw new Error('Sesion no valida');
+        }
+
+        const res = await fetch(`${SERVER_URL}/auth/teacher/subjects/${encodeURIComponent(subjectCode)}/documents`, {
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error al cargar los materiales');
+        return data;
+    };
+
+    const uploadSubjectDocument = async (subjectCode, file) => {
+        const token = getToken();
+        if (!token) {
+            throw new Error('Sesion no valida');
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const res = await fetch(`${SERVER_URL}/auth/teacher/subjects/${encodeURIComponent(subjectCode)}/documents`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+            body: formData,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error al subir el material');
+        return data;
+    };
+
+    const deleteSubjectDocument = async (subjectCode, documentId) => {
+        const token = getToken();
+        if (!token) {
+            throw new Error('Sesion no valida');
+        }
+
+        const res = await fetch(
+            `${SERVER_URL}/auth/teacher/subjects/${encodeURIComponent(subjectCode)}/documents/${encodeURIComponent(documentId)}`,
+            {
+                method: 'DELETE',
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            },
+        );
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error al eliminar el material');
+        return data;
+    };
+
     const logout = () => {
         localStorage.removeItem('auth_token');
         localStorage.removeItem('auth_user_id');
@@ -142,6 +200,9 @@ export const useAuth = () => {
         addSubjects,
         createSubject,
         switchSubject,
+        listSubjectDocuments,
+        uploadSubjectDocument,
+        deleteSubjectDocument,
         logout,
     };
 };

@@ -24,6 +24,13 @@ import psycopg
 from flask import Blueprint, jsonify, request
 
 from db import ensure_schema, get_db_connection
+from services.subject_documents import (
+    SubjectDocumentError,
+    delete_subject_document,
+    get_subject_document,
+    ingest_subject_document,
+    list_subject_documents,
+)
 from subject_codes import is_valid_subject_code, normalize_subject_code, parse_subject_codes
 from user_roles import STUDENT_USER_ROLE, is_teacher_role, normalize_user_role
 
@@ -267,6 +274,28 @@ def _extract_bearer_token() -> str:
     return auth_header[len(prefix):].strip()
 
 
+def _load_teacher_subject_context(raw_subject_code: str) -> tuple[dict[str, str], str]:
+    token = _extract_bearer_token()
+    auth_context = verify_token(token) if token else None
+    if not auth_context:
+        raise AuthActionError("Sesion no valida", 401)
+
+    if not is_teacher_role(auth_context["role"]):
+        raise AuthActionError("Solo el profesorado puede gestionar materiales", 403)
+
+    subject_code = normalize_subject_code(raw_subject_code)
+    if not subject_code:
+        raise AuthActionError("Debes indicar una asignatura")
+
+    if not is_valid_subject_code(subject_code):
+        raise AuthActionError("Codigo de asignatura invalido")
+
+    if not _user_has_subject(auth_context["user_id"], subject_code):
+        raise AuthActionError("No tienes acceso a esa asignatura", 403)
+
+    return auth_context, subject_code
+
+
 @auth_bp.route("/auth/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or {}
@@ -442,6 +471,84 @@ def create_teacher_subject():
             "max_students": subject["max_students"],
         },
     }), 201
+
+
+@auth_bp.route("/auth/teacher/subjects/<subject_code>/documents", methods=["GET"])
+def get_teacher_subject_documents(subject_code):
+    try:
+        _, normalized_subject = _load_teacher_subject_context(subject_code)
+        documents = list_subject_documents(normalized_subject)
+    except AuthActionError as exc:
+        return jsonify({"error": exc.message}), exc.status_code
+    except psycopg.Error:
+        logger.exception("[Auth] Database error while listing subject documents")
+        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+
+    return jsonify({"documents": documents})
+
+
+@auth_bp.route("/auth/teacher/subjects/<subject_code>/documents", methods=["POST"])
+def upload_teacher_subject_document(subject_code):
+    try:
+        auth_context, normalized_subject = _load_teacher_subject_context(subject_code)
+        file_storage = request.files.get("file")
+        if file_storage is None or not file_storage.filename:
+            return jsonify({"error": "Debes adjuntar un archivo"}), 400
+
+        document = ingest_subject_document(
+            normalized_subject,
+            auth_context["user_id"],
+            file_storage,
+        )
+    except AuthActionError as exc:
+        return jsonify({"error": exc.message}), exc.status_code
+    except SubjectDocumentError as exc:
+        return jsonify({"error": exc.message}), exc.status_code
+    except psycopg.Error:
+        logger.exception("[Auth] Database error while uploading subject document")
+        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+
+    logger.info(
+        "[Auth] Teacher %s uploaded document %s for subject %s",
+        auth_context["user_id"],
+        document["original_filename"],
+        normalized_subject,
+    )
+    return jsonify({"document": document}), 201
+
+
+@auth_bp.route("/auth/teacher/subjects/<subject_code>/documents/<int:document_id>", methods=["GET"])
+def get_teacher_subject_document(subject_code, document_id):
+    try:
+        _, normalized_subject = _load_teacher_subject_context(subject_code)
+        document = get_subject_document(normalized_subject, document_id)
+    except AuthActionError as exc:
+        return jsonify({"error": exc.message}), exc.status_code
+    except psycopg.Error:
+        logger.exception("[Auth] Database error while loading subject document")
+        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+
+    if document is None:
+        return jsonify({"error": "Material no encontrado"}), 404
+
+    return jsonify({"document": document})
+
+
+@auth_bp.route("/auth/teacher/subjects/<subject_code>/documents/<int:document_id>", methods=["DELETE"])
+def delete_teacher_subject_document(subject_code, document_id):
+    try:
+        _, normalized_subject = _load_teacher_subject_context(subject_code)
+        deleted = delete_subject_document(normalized_subject, document_id)
+    except AuthActionError as exc:
+        return jsonify({"error": exc.message}), exc.status_code
+    except psycopg.Error:
+        logger.exception("[Auth] Database error while deleting subject document")
+        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+
+    if not deleted:
+        return jsonify({"error": "Material no encontrado"}), 404
+
+    return jsonify({"deleted": True, "document_id": document_id})
 
 
 @auth_bp.route("/auth/switch-subject", methods=["POST"])

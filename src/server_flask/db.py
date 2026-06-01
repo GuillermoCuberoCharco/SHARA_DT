@@ -183,6 +183,41 @@ def ensure_schema():
                 )
                 cur.execute(
                     """
+                    create table if not exists subject_documents (
+                        id bigserial primary key,
+                        subject_code text not null references subjects(code) on delete cascade,
+                        uploaded_by text references users(username) on delete set null,
+                        original_filename text not null,
+                        content_type text,
+                        source_hash text not null,
+                        markdown_content text not null,
+                        char_count integer not null default 0,
+                        chunk_count integer not null default 0,
+                        status text not null default 'ready'
+                            check (status in ('ready', 'failed')),
+                        conversion_error text,
+                        created_at timestamptz not null default now(),
+                        updated_at timestamptz not null default now()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    create table if not exists subject_document_chunks (
+                        id bigserial primary key,
+                        document_id bigint not null references subject_documents(id) on delete cascade,
+                        subject_code text not null references subjects(code) on delete cascade,
+                        chunk_index integer not null,
+                        heading text,
+                        content text not null,
+                        char_count integer not null default 0,
+                        created_at timestamptz not null default now(),
+                        unique (document_id, chunk_index)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
                     alter table chat_messages
                     add column if not exists subject_code text
                     """
@@ -225,6 +260,25 @@ def ensure_schema():
                     """
                     create index if not exists subjects_created_by_idx
                     on subjects(created_by)
+                    """
+                )
+                cur.execute(
+                    """
+                    create index if not exists subject_documents_subject_created_idx
+                    on subject_documents(subject_code, created_at desc, id desc)
+                    """
+                )
+                cur.execute(
+                    """
+                    create index if not exists subject_document_chunks_subject_doc_idx
+                    on subject_document_chunks(subject_code, document_id, chunk_index)
+                    """
+                )
+                cur.execute(
+                    """
+                    create index if not exists subject_document_chunks_search_idx
+                    on subject_document_chunks
+                    using gin (to_tsvector('spanish', content))
                     """
                 )
 

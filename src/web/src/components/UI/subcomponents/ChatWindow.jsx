@@ -41,6 +41,23 @@ const SubjectIcon = () => (
     </svg>
 );
 
+const FileIcon = () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+        <path d="M14 2v6h6" />
+        <path d="M8 13h8" />
+        <path d="M8 17h5" />
+    </svg>
+);
+
+const TrashIcon = () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 6h18" />
+        <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    </svg>
+);
+
 const SendIcon = () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
         <line x1="22" y1="2" x2="11" y2="13" />
@@ -119,6 +136,12 @@ const ChatWindow = ({
     userRole,
     onCreateSubject,
     isCreatingSubject,
+    subjectDocuments,
+    onUploadSubjectDocuments,
+    onDeleteSubjectDocument,
+    isLoadingSubjectDocuments,
+    isUploadingSubjectDocument,
+    deletingSubjectDocumentId,
 }) => {
     const getStatusInfo = () => {
         if (connectionError) return { dot: 'error', label: 'Sin conexion' };
@@ -131,12 +154,39 @@ const ChatWindow = ({
 
     const { dot, label } = getStatusInfo();
     const textareaRef = useRef(null);
+    const documentInputRef = useRef(null);
     const [isSubjectPanelOpen, setIsSubjectPanelOpen] = useState(false);
     const [subjectInput, setSubjectInput] = useState('');
     const [newSubjectInput, setNewSubjectInput] = useState('');
     const [maxStudentsInput, setMaxStudentsInput] = useState('');
+    const [documentFiles, setDocumentFiles] = useState([]);
     const [shouldRestoreTextareaFocus, setShouldRestoreTextareaFocus] = useState(false);
     const isTeacher = userRole === 'teacher';
+    const areDocumentActionsDisabled = (
+        isAddingSubjects
+        || isCreatingSubject
+        || isSwitchingSubject
+        || isLoadingSubjectDocuments
+        || isUploadingSubjectDocument
+        || deletingSubjectDocumentId !== null
+        || !isRegistered
+    );
+
+    const formatDocumentDate = (value) => {
+        if (!value) {
+            return '';
+        }
+
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+            return '';
+        }
+
+        return date.toLocaleDateString('es-ES', {
+            day: '2-digit',
+            month: 'short',
+        });
+    };
 
     useEffect(() => {
         const element = textareaRef.current;
@@ -190,6 +240,30 @@ const ChatWindow = ({
             if (data) {
                 setNewSubjectInput('');
                 setMaxStudentsInput('');
+            }
+        } catch {
+            // The parent already exposes the error message in the panel.
+        }
+    };
+
+    const handleDocumentInputChange = (event) => {
+        setDocumentFiles(Array.from(event.target.files || []));
+    };
+
+    const handleDocumentUploadSubmit = async (event) => {
+        event.preventDefault();
+
+        if (!onUploadSubjectDocuments || documentFiles.length === 0 || areDocumentActionsDisabled) {
+            return;
+        }
+
+        try {
+            const uploadedDocuments = await onUploadSubjectDocuments(documentFiles);
+            if (uploadedDocuments) {
+                setDocumentFiles([]);
+                if (documentInputRef.current) {
+                    documentInputRef.current.value = '';
+                }
             }
         } catch {
             // The parent already exposes the error message in the panel.
@@ -330,6 +404,74 @@ const ChatWindow = ({
                         </form>
                     )}
 
+                    {isTeacher && onUploadSubjectDocuments && (
+                        <div className="subject-documents-panel">
+                            <div className="subject-documents-header">
+                                <p className="subject-manager-title">Materiales de la asignatura</p>
+                                <span className="subject-documents-count">
+                                    {subjectDocuments.length}
+                                </span>
+                            </div>
+
+                            <form className="subject-document-upload" onSubmit={handleDocumentUploadSubmit}>
+                                <input
+                                    ref={documentInputRef}
+                                    type="file"
+                                    multiple
+                                    onChange={handleDocumentInputChange}
+                                    disabled={areDocumentActionsDisabled}
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={documentFiles.length === 0 || areDocumentActionsDisabled}
+                                >
+                                    {isUploadingSubjectDocument ? 'Subiendo...' : 'Subir'}
+                                </button>
+                            </form>
+
+                            <div className="subject-document-list">
+                                {isLoadingSubjectDocuments && (
+                                    <p className="subject-document-empty">Cargando materiales...</p>
+                                )}
+
+                                {!isLoadingSubjectDocuments && subjectDocuments.length === 0 && (
+                                    <p className="subject-document-empty">Sin materiales cargados.</p>
+                                )}
+
+                                {!isLoadingSubjectDocuments && subjectDocuments.map((document) => (
+                                    <div className="subject-document-item" key={document.id}>
+                                        <span className="subject-document-icon">
+                                            <FileIcon />
+                                        </span>
+                                        <div className="subject-document-info">
+                                            <p title={document.original_filename}>
+                                                {document.original_filename}
+                                            </p>
+                                            <span>
+                                                {document.chunk_count || 0} fragmentos
+                                                {formatDocumentDate(document.created_at) ? ` - ${formatDocumentDate(document.created_at)}` : ''}
+                                            </span>
+                                        </div>
+                                        {onDeleteSubjectDocument && (
+                                            <button
+                                                className="subject-document-delete"
+                                                type="button"
+                                                title="Eliminar material"
+                                                onClick={() => onDeleteSubjectDocument(document.id)}
+                                                disabled={
+                                                    areDocumentActionsDisabled
+                                                    || deletingSubjectDocumentId === document.id
+                                                }
+                                            >
+                                                <TrashIcon />
+                                            </button>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <p className={`subject-manager-help ${subjectFeedbackTone}`}>
                         {subjectFeedback || 'Pulsa una asignatura para cambiar de contexto o vincula un codigo existente.'}
                     </p>
@@ -448,6 +590,17 @@ ChatWindow.propTypes = {
     isSwitchingSubject: PropTypes.bool,
     subjectFeedback: PropTypes.string,
     subjectFeedbackTone: PropTypes.string,
+    subjectDocuments: PropTypes.arrayOf(PropTypes.shape({
+        id: PropTypes.number,
+        original_filename: PropTypes.string,
+        chunk_count: PropTypes.number,
+        created_at: PropTypes.string,
+    })),
+    onUploadSubjectDocuments: PropTypes.func,
+    onDeleteSubjectDocument: PropTypes.func,
+    isLoadingSubjectDocuments: PropTypes.bool,
+    isUploadingSubjectDocument: PropTypes.bool,
+    deletingSubjectDocumentId: PropTypes.number,
 };
 
 ChatWindow.defaultProps = {
@@ -474,6 +627,12 @@ ChatWindow.defaultProps = {
     isSwitchingSubject: false,
     subjectFeedback: '',
     subjectFeedbackTone: 'info',
+    subjectDocuments: [],
+    onUploadSubjectDocuments: null,
+    onDeleteSubjectDocument: null,
+    isLoadingSubjectDocuments: false,
+    isUploadingSubjectDocument: false,
+    deletingSubjectDocumentId: null,
 };
 
 export default ChatWindow;

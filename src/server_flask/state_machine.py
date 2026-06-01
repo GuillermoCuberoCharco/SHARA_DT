@@ -44,7 +44,7 @@ def init(socketio_instance, server_module):
     logger.info('StateMachine initialized')
 
 
-def register_session(sid: str, tts_enabled: bool = True):
+def register_session(sid: str, tts_enabled: bool = False):
     with _lock:
         _tts_preferences[sid] = bool(tts_enabled)
 
@@ -255,7 +255,7 @@ def _emit_transcription_result(text: str, sid: str):
 
 def _is_tts_enabled(sid: str) -> bool:
     with _lock:
-        return _tts_preferences.get(sid, True)
+        return _tts_preferences.get(sid, False)
 
 
 def get_active_users_count() -> int:

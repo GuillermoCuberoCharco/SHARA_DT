@@ -461,7 +461,7 @@ ChatWindow.defaultProps = {
     onLogout: null,
     isRecording: false,
     isSpeaking: false,
-    isTtsEnabled: true,
+    isTtsEnabled: false,
     conversationState: 'idle',
     subjectCode: '',
     subjectCodes: [],

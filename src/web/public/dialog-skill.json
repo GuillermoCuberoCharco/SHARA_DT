@@ -2301,6 +2301,6 @@
   },
   "learning_opt_out": false,
   "language": "es",
-  "description": "",
-  "name": "My first"
+  "description": "LEGACY / INACTIVO EN PI-ChatShara. Export heredado del flujo Watson/proactivo anterior; el chat actual usa OpenAI Responses API, historial en Postgres y Socket.IO autenticado.",
+  "name": "LEGACY - Watson dialog skill"
 }

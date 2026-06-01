@@ -1,6 +1,11 @@
 """
 robot_context.py
 
+LEGACY / INACTIVE IN PI-ChatShara:
+This module belongs to the earlier single-robot global-state flow. The active
+branch now tracks per-user/per-subject state in state_machine.py, so this file is
+kept only as historical reference for code that may still mention RobotContext.
+
 Global conversation state. Thread-safe access via RobotContext class.
 
 States:

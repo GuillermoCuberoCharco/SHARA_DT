@@ -1,7 +1,7 @@
 [
   {
     "type": "function",
-    "description": "Registrar un usuario en el sistema. Esta función solo debe ejecutarse cuando 'proactive_question' en la entrada del usuario es exactamente 'who_are_you_response' y el usuario proporciona explícitamente un nombre. Si la respuesta del usuario es vaga, evita llamar esta función.",
+    "description": "LEGACY / INACTIVO EN PI-ChatShara. Herramienta heredada del flujo antiguo con reconocimiento facial y preguntas proactivas; no se carga en el chat autenticado actual. Descripción histórica: Registrar un usuario en el sistema cuando 'proactive_question' era exactamente 'who_are_you_response' y el usuario proporcionaba explícitamente un nombre.",
     "name": "record_face",
     "parameters": {
       "additionalProperties": false,
@@ -19,7 +19,7 @@
   },
   {
     "type": "function",
-    "description": "Establecer el nombre de usuario en el sistema. Esta función debe llamarse si el usuario proporciona explícitamente su nombre en la conversación (si la respuesta del usuario es vaga, evita llamar esta función), para actualizar el nombre de usuario y cargar la conversación desde la base de datos.",
+    "description": "LEGACY / INACTIVO EN PI-ChatShara. Herramienta heredada del flujo antiguo de identificación por nombre; no se carga en el chat autenticado actual. Descripción histórica: Establecer el nombre de usuario en el sistema si el usuario proporcionaba explícitamente su nombre en la conversación.",
     "name": "set_username",
     "parameters": {
       "additionalProperties": false,

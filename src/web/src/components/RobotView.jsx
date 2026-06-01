@@ -97,7 +97,9 @@ const RobotView = ({ robotState }) => {
         return () => window.removeEventListener('resize', handleResize);
     }, []);
 
-    // ── set_face via /message socket ──────────────────────────────────────────
+    // ── LEGACY: set_face via /message socket ─────────────────────────────────
+    // The active PI-ChatShara flow drives expressions through robotState.
+    // This listener is kept for compatibility with earlier robot controllers.
 
     useEffect(() => {
         if (!socket) return;

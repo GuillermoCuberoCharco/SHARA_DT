@@ -40,7 +40,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     const [subjectFeedbackTone, setSubjectFeedbackTone] = useState('info');
     const [isTtsEnabled, setIsTtsEnabled] = useState(() => {
         const stored = localStorage.getItem(TTS_PREFERENCE_KEY);
-        return stored === null ? true : stored === 'true';
+        return stored === null ? false : stored === 'true';
     });
 
     const { isConnected, isRegistered, emit, refreshConnection, socket } = useWebSocketContext();

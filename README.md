@@ -17,7 +17,7 @@ La rama `PI-ChatShara` implementa actualmente:
 - STT y TTS con Google Cloud integrados en el flujo del chat.
 - Vista visual del robot con ojos animados y anillo LED.
 
-La aplicacion sigue centrada en una experiencia de chat web autenticada con persistencia fuera del filesystem efimero de Render. El reconocimiento facial y el comportamiento proactivo siguen fuera del flujo activo, pero el chat vuelve a admitir audio: el usuario puede grabar mensajes, el backend los transcribe con Google Cloud Speech-to-Text y la respuesta del robot puede reproducirse con Google Cloud Text-to-Speech. Esta voz se puede silenciar desde la interfaz y, cuando esta desactivada, no se invoca el servicio TTS.
+La aplicacion sigue centrada en una experiencia de chat web autenticada con persistencia fuera del filesystem efimero de Render. El reconocimiento facial y el comportamiento proactivo siguen fuera del flujo activo, pero el chat vuelve a admitir audio: el usuario puede grabar mensajes, el backend los transcribe con Google Cloud Speech-to-Text y la respuesta del robot puede reproducirse con Google Cloud Text-to-Speech. Esta voz esta desactivada por defecto, se puede activar desde la interfaz y, cuando esta desactivada, no se invoca el servicio TTS.
 
 ## Arquitectura
 
@@ -377,7 +377,22 @@ El script hace upsert sobre la tabla `users`, asi que sirve tanto para importar 
 - El registro publico solo crea cuentas `student`; las cuentas `teacher` deben crearse por CLI o por un backoffice futuro.
 - El profesorado recibe el historial del alumnado como contexto interno del modelo, pero no existe todavia una vista administrativa para navegar esos chats en bruto.
 - Si el volumen de conversaciones por asignatura crece mucho, el contexto docente puede verse truncado por el modelo.
-- La rama conserva algunos restos del proyecto original en dependencias y archivos auxiliares, pero el flujo activo es ya el de chat autenticado descrito arriba.
+
+## Legado conservado como referencia
+
+La rama conserva algunos artefactos de versiones anteriores, pero estan marcados como `LEGACY / INACTIVO` y quedan fuera del flujo activo de PI-ChatShara:
+
+- `src/server_flask/files/tools_config.json`: tools antiguas para reconocimiento/registro por nombre.
+- `src/server_flask/files/conversation_db.json`: persistencia local antigua, sustituida por Postgres.
+- `src/server_flask/files/*.wav`: sonidos locales del flujo fisico anterior; el chat actual usa TTS de Google Cloud.
+- `src/server_flask/files/logging.conf`: configuracion de loggers del flujo fisico anterior; Flask configura logging en `app.py`.
+- `src/web/public/dialog-skill.json`: export heredado de Watson/Dialog Skill.
+- `src/server_flask/robot_context.py`: estado global anterior, sustituido por `state_machine.py`.
+- `src/server_flask/requirements.face-recognition.txt`: dependencias opcionales del flujo de reconocimiento facial, comentadas.
+- `prompt_flow.html`: diagrama standalone del contrato de prompt antiguo con proactividad/camara.
+- Dependencias frontend heredadas de webcam/face detection listadas en `src/web/package.json` bajo `sharaLegacyNotes`.
+
+El flujo activo es el de chat autenticado descrito arriba: React + Flask + Socket.IO, usuarios/asignaturas en Postgres, OpenAI Responses API y Google STT/TTS.
 
 ## Contexto del proyecto
 

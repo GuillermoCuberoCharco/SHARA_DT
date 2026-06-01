@@ -1,2 +1,7 @@
--r requirements.txt
-face-recognition==1.3.0
+# LEGACY / INACTIVE IN PI-ChatShara:
+# This optional dependency set belongs to the previous face-recognition flow.
+# The active branch uses authenticated chat + Postgres + Socket.IO + STT/TTS.
+# Kept as historical reference, intentionally commented out.
+#
+# -r requirements.txt
+# face-recognition==1.3.0

@@ -29,7 +29,18 @@
     "@vitejs/plugin-react": "^2.2.0",
     "vite": "^3.2.10"
   },
-  "description": "SHARA Digitla Twin frontend application built with React and Vite. Handles webcam video capture, audio recording, and communication with the Flask backend via Socket.IO for real-time face detection and response rendering.",
+  "description": "SHARA frontend built with React and Vite. Handles authenticated chat, audio recording, Socket.IO communication with Flask, and robot response rendering.",
+  "sharaLegacyNotes": {
+    "inactiveDependencies": [
+      "@tensorflow-models/blazeface",
+      "@tensorflow/tfjs",
+      "@tensorflow/tfjs-backend-cpu",
+      "@tensorflow/tfjs-backend-webgl",
+      "axios",
+      "react-webcam"
+    ],
+    "note": "Kept for now as legacy dependencies from the previous face-recognition/webcam flow; they are not used by the active PI-ChatShara chat interface."
+  },
   "author": "Guillermo Cubero Charco",
   "license": "ISC"
 }

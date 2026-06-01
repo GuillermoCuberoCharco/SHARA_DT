@@ -45,9 +45,9 @@ class MessageNamespace(Namespace):
             'user_id': user_id,
             'user_role': user_role,
             'subject_code': subject_code,
-            'tts_enabled': True,
+            'tts_enabled': False,
         }
-        state_machine.register_session(request.sid, tts_enabled=True)
+        state_machine.register_session(request.sid, tts_enabled=False)
 
         emit('registration_success', {
             'status': 'ok',

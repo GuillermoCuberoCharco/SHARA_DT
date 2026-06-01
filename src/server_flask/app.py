@@ -1,7 +1,7 @@
 """
 app.py
 
-Flask-SocketIO server — text-only chat interface with JWT authentication.
+Flask-SocketIO server — authenticated text/audio chat interface.
 Flask serves both the React frontend (static build) and the WebSocket/REST API.
 """
 

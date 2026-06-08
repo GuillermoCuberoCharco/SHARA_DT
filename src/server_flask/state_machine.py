@@ -16,6 +16,7 @@ import os
 import queue
 import re
 import threading
+import uuid
 
 import gevent
 
@@ -27,6 +28,10 @@ logger = logging.getLogger('StateMachine')
 
 SERVER_QUERY_TIMEOUT = float(os.getenv('SERVER_QUERY_TIMEOUT_SECONDS', '45'))  # seconds
 AUDIO_STREAM_QUEUE_MAX_CHUNKS = 600
+TTS_WATCHDOG_MIN_SECONDS = float(os.getenv('TTS_WATCHDOG_MIN_SECONDS', '12'))
+TTS_WATCHDOG_MAX_SECONDS = float(os.getenv('TTS_WATCHDOG_MAX_SECONDS', '75'))
+TTS_WATCHDOG_SECONDS_PER_CHAR = float(os.getenv('TTS_WATCHDOG_SECONDS_PER_CHAR', '0.09'))
+TTS_WATCHDOG_GRACE_SECONDS = float(os.getenv('TTS_WATCHDOG_GRACE_SECONDS', '6'))
 _AUDIO_STREAM_END = object()
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -40,9 +45,11 @@ _proactive = None  # Kept for backwards-compatible init signature.
 
 _contexts_lock = threading.RLock()
 _audio_streams_lock = threading.RLock()
+_speaking_watchdogs_lock = threading.RLock()
 _session_contexts: dict[str, RobotContext] = {}
 _proactive_services: dict[str, ProactiveService] = {}
 _audio_streams: dict[str, '_AudioStream'] = {}
+_speaking_watchdogs: dict[str, dict] = {}
 
 
 class _AudioStream:
@@ -148,6 +155,7 @@ def unregister_session(sid: str):
     if proactive:
         proactive.cancel_timers()
 
+    _cancel_speaking_watchdog(sid)
     _discard_audio_stream(sid)
 
     logger.info('Unregistered runtime session: %s', sid)
@@ -244,6 +252,112 @@ def _discard_audio_stream(sid: str):
     logger.debug('Discarded audio stream for sid=%s', sid)
 
 
+def _estimate_tts_watchdog_seconds(text: str) -> float:
+    text_length = len((text or '').strip())
+    estimate = (text_length * TTS_WATCHDOG_SECONDS_PER_CHAR) + TTS_WATCHDOG_GRACE_SECONDS
+    return max(TTS_WATCHDOG_MIN_SECONDS, min(TTS_WATCHDOG_MAX_SECONDS, estimate))
+
+
+def _cancel_speaking_watchdog(sid: str, message_id: str = None):
+    if not sid:
+        return
+
+    with _speaking_watchdogs_lock:
+        entry = _speaking_watchdogs.get(sid)
+        if not entry:
+            return
+        if message_id and entry.get('message_id') != message_id:
+            return
+        _speaking_watchdogs.pop(sid, None)
+
+    greenlet = entry.get('greenlet')
+    if greenlet is not None and not greenlet.dead:
+        greenlet.kill()
+
+
+def _start_speaking_watchdog(sid: str, message_id: str, timeout_seconds: float):
+    if not sid or not message_id:
+        return
+
+    _cancel_speaking_watchdog(sid)
+    greenlet = gevent.spawn_later(
+        timeout_seconds,
+        _handle_tts_watchdog_timeout,
+        sid,
+        message_id,
+    )
+
+    with _speaking_watchdogs_lock:
+        _speaking_watchdogs[sid] = {
+            'message_id': message_id,
+            'greenlet': greenlet,
+            'timeout_seconds': timeout_seconds,
+        }
+
+    logger.debug(
+        'TTS watchdog started for sid=%s message_id=%s timeout=%.2fs',
+        sid,
+        message_id,
+        timeout_seconds,
+    )
+
+
+def _handle_tts_watchdog_timeout(sid: str, message_id: str):
+    context = _get_existing_context(sid)
+    if not context:
+        return
+
+    with _speaking_watchdogs_lock:
+        entry = _speaking_watchdogs.get(sid)
+        if not entry or entry.get('message_id') != message_id:
+            return
+        _speaking_watchdogs.pop(sid, None)
+
+    if context.state != 'speaking' or context.current_tts_message_id != message_id:
+        return
+
+    logger.warning(
+        'TTS watchdog timeout for sid=%s message_id=%s; forcing speaking transition',
+        sid,
+        message_id,
+    )
+    _complete_tts_transition(sid, context, message_id, status='watchdog_timeout')
+
+
+def _complete_tts_transition(sid: str, context: RobotContext, message_id: str = None, status: str = None):
+    if not context:
+        return
+
+    if context.state != 'speaking':
+        logger.debug(
+            'TTS completion ignored for sid=%s message_id=%s; state=%s status=%s',
+            sid,
+            message_id,
+            context.state,
+            status,
+        )
+        return
+
+    current_message_id = context.current_tts_message_id
+    if message_id and current_message_id and message_id != current_message_id:
+        logger.info(
+            'Ignoring stale TTS completion for sid=%s message_id=%s current=%s status=%s',
+            sid,
+            message_id,
+            current_message_id,
+            status,
+        )
+        return
+
+    _cancel_speaking_watchdog(sid, message_id or current_message_id)
+    context.current_tts_message_id = None
+
+    if context.continue_conversation:
+        gevent.spawn(process_transition, 'speaking2listening', {}, sid)
+    else:
+        gevent.spawn(process_transition, 'speaking2idle_presence', {}, sid)
+
+
 def _start_streaming_stt(audio_stream: _AudioStream, sid: str):
     if _server is None or not hasattr(_server, 'streaming_stt'):
         logger.info('Streaming STT unavailable; will use batch STT for sid=%s', sid)
@@ -338,6 +452,7 @@ def _reset_runtime_session_state(context: RobotContext, sid: str, clear_login: b
     context.face_session_id = None
     context.proactive_question = ''
     context.continue_conversation = False
+    context.current_tts_message_id = None
     _reset_unknown_user_tracking(context)
 
     if clear_login:
@@ -349,6 +464,7 @@ def _reset_runtime_session_state(context: RobotContext, sid: str, clear_login: b
     if proactive:
         proactive.cancel_timers()
 
+    _cancel_speaking_watchdog(sid)
     _discard_audio_stream(sid)
 
     if context.state != 'idle':
@@ -692,6 +808,7 @@ def on_session_login(sid: str, session_data: dict):
             context.state,
             sid,
         )
+        _emit_state_update(sid, context)
         return
 
     shara_name = None if is_new_user else _get_stored_shara_name(login_name)
@@ -739,7 +856,10 @@ def on_session_login(sid: str, session_data: dict):
     if not preserve_runtime_flags:
         context.proactive_question = ''
         context.continue_conversation = False
+        context.current_tts_message_id = None
         _reset_unknown_user_tracking(context)
+
+    _emit_state_update(sid, context)
 
 
 def on_user_detected(sid: str, user_data: dict):
@@ -914,18 +1034,25 @@ def on_text_message(text: str, sid: str):
     _executor.submit(_process_text_query, text, sid)
 
 
-def on_tts_complete(sid: str):
+def on_tts_complete(sid: str, data: dict = None):
     """Frontend finished playing TTS audio."""
     context = _get_existing_context(sid)
     if not context:
         return
 
-    logger.info('TTS complete from %s, continue=%s', sid, context.continue_conversation)
+    data = data or {}
+    message_id = data.get('messageId') if isinstance(data, dict) else None
+    status = data.get('status') if isinstance(data, dict) else None
 
-    if context.continue_conversation:
-        gevent.spawn(process_transition, 'speaking2listening', {}, sid)
-    else:
-        gevent.spawn(process_transition, 'speaking2idle_presence', {}, sid)
+    logger.info(
+        'TTS complete from %s, message_id=%s status=%s continue=%s',
+        sid,
+        message_id,
+        status,
+        context.continue_conversation,
+    )
+
+    _complete_tts_transition(sid, context, message_id=message_id, status=status)
 
 
 def process_transition(transition: str, params: dict = None, sid: str = None):
@@ -1155,6 +1282,9 @@ def _handle_proactive_query(params: dict, sid: str, context: RobotContext):
             logger.warning('Empty proactive response for sid=%s', sid)
             context.state = 'idle_presence'
             _emit_state_update(sid, context)
+            proactive = _get_existing_proactive_service(sid)
+            if proactive:
+                proactive.update('confirm', question, {'username': username})
             return
 
         next_proactive_question = 'who_are_you_response' if question == 'who_are_you' else ''
@@ -1177,10 +1307,16 @@ def _handle_proactive_query(params: dict, sid: str, context: RobotContext):
         logger.error('Timeout in proactive query for sid=%s', sid)
         context.state = 'idle_presence'
         _emit_state_update(sid, context)
+        proactive = _get_existing_proactive_service(sid)
+        if proactive:
+            proactive.update('confirm', question, {'username': username})
     except Exception as exc:
         logger.error('Error in proactive query for sid=%s: %s', sid, exc, exc_info=True)
         context.state = 'idle_presence'
         _emit_state_update(sid, context)
+        proactive = _get_existing_proactive_service(sid)
+        if proactive:
+            proactive.update('confirm', question, {'username': username})
 
 
 def _handle_response(
@@ -1194,9 +1330,13 @@ def _handle_response(
     Common response handler. Updates only this session context and emits only to
     this socket sid.
     """
+    message_id = uuid.uuid4().hex
+    watchdog_seconds = _estimate_tts_watchdog_seconds(response.text or '')
+
     context.state = 'speaking'
     context.continue_conversation = response.continue_conversation
     context.proactive_question = next_proactive_question or ''
+    context.current_tts_message_id = message_id
 
     if response.action == 'record_face':
         _set_shara_name_for_session(
@@ -1240,22 +1380,27 @@ def _handle_response(
     audio_b64 = base64.b64encode(response.audio).decode('utf-8') if response.audio else None
 
     message = {
+        'messageId': message_id,
         'text': response.text or '',
         'state': response.robot_mood or 'neutral',
         'audio': audio_b64,
         'audioMimeType': getattr(response, 'audio_mime_type', 'audio/mpeg'),
         'continue': response.continue_conversation,
         'sessionId': context.face_session_id,
+        'ttsTimeoutMs': int(watchdog_seconds * 1000),
     }
 
+    _start_speaking_watchdog(sid, message_id, watchdog_seconds)
     _emit_robot_message(message, sid)
     _emit_state_update(sid, context)
 
     logger.info(
-        'Response emitted to sid=%s: mood=%s continue=%s',
+        'Response emitted to sid=%s: message_id=%s mood=%s continue=%s watchdog=%.2fs',
         sid,
+        message_id,
         response.robot_mood,
         response.continue_conversation,
+        watchdog_seconds,
     )
 
 

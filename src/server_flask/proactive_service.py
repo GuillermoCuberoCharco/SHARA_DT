@@ -76,6 +76,7 @@ class ProactiveService:
             if self._presence_timer:
                 self._presence_timer.cancel()
                 self._presence_timer = None
+            self._pending_confirmation = None
         logger.debug('ProactiveService timers cancelled')
 
     # ── Internal sensor handling ──────────────────────────────────────────────
@@ -88,16 +89,16 @@ class ProactiveService:
             username = args.get('username')
             self._cancel_presence_timer()
 
-            if username and self._can_ask(username):
+            if username and self._reserve_ask(username):
                 self._fire('ask_how_are_you', {
                     'type': 'recognized',
                     'username': username
-                })
+                }, username=username)
 
         elif event == 'unknown_face':
             self._cancel_presence_timer()
-            if self._can_ask(None):
-                self._fire('ask_who_are_you', {})
+            if self._reserve_ask(None):
+                self._fire('ask_who_are_you', {}, username=None)
 
     def _handle_confirm(self, event: str, args: dict):
         """Called after the robot has successfully handled a proactive question."""
@@ -133,8 +134,8 @@ class ProactiveService:
         with self._lock:
             self._presence_timer = None
         logger.info('Presence timeout — firing ask_who_are_you')
-        if self._can_ask(None):
-            self._fire('ask_who_are_you', {})
+        if self._reserve_ask(None):
+            self._fire('ask_who_are_you', {}, username=None)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -142,15 +143,36 @@ class ProactiveService:
         """Returns True if enough time has passed since the last proactive question."""
         key = username or '__unknown__'
         with self._lock:
+            if self._pending_confirmation == key:
+                return False
             last = self._last_asked.get(key)
         if last is None:
             return True
         elapsed = (datetime.now() - last).total_seconds()
         return elapsed >= self.COOLDOWN
 
-    def _fire(self, event: str, params: dict):
+    def _reserve_ask(self, username) -> bool:
+        key = username or '__unknown__'
+        with self._lock:
+            if self._pending_confirmation == key:
+                return False
+
+            last = self._last_asked.get(key)
+            if last is not None:
+                elapsed = (datetime.now() - last).total_seconds()
+                if elapsed < self.COOLDOWN:
+                    return False
+
+            self._pending_confirmation = key
+            return True
+
+    def _fire(self, event: str, params: dict, username=None):
+        key = username or '__unknown__'
         logger.info(f'Firing proactive event: {event} — {params}')
         try:
             self.callback(event, params)
         except Exception as e:
+            with self._lock:
+                if self._pending_confirmation == key:
+                    self._pending_confirmation = None
             logger.error(f'Error in proactive callback: {e}')

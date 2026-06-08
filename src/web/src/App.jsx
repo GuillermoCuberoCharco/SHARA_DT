@@ -4,7 +4,12 @@ import SessionLogin from "./components/SessionLogin";
 import UI from "./components/UI/UI";
 import { WebSocketProvider } from "./contexts/WebSocketContext";
 import { SERVER_URL } from "./config";
-import { installAudioUnlockListeners } from "./utils/audioPlayback";
+import {
+  installAudioUnlockListeners,
+  isAudioPlaybackUnlocked,
+  subscribeAudioPlaybackUnlock,
+  unlockAudioPlayback,
+} from "./utils/audioPlayback";
 import { buildAuthenticatedSessionIdentity } from "./utils/sessionIdentity";
 
 function App() {
@@ -14,6 +19,9 @@ function App() {
   const [sharedStream, setSharedStream] = useState(null);
   const [isStreamReady, setIsStreamReady] = useState(false);
   const [robotState, setRobotState] = useState('neutral');
+  const [isAudioReady, setIsAudioReady] = useState(() => isAudioPlaybackUnlocked());
+  const [isUnlockingAudio, setIsUnlockingAudio] = useState(false);
+  const [audioUnlockError, setAudioUnlockError] = useState('');
   const streamRef = useRef(null);
   const sessionIdentityRef = useRef(null);
 
@@ -28,6 +36,10 @@ function App() {
 
   useEffect(() => {
     return installAudioUnlockListeners();
+  }, []);
+
+  useEffect(() => {
+    return subscribeAudioPlaybackUnlock(setIsAudioReady);
   }, []);
 
   useEffect(() => {
@@ -113,6 +125,25 @@ function App() {
       throw error;
     } finally {
       setIsLoggingOut(false);
+    }
+  };
+
+  const handleBeginInteraction = async () => {
+    setIsUnlockingAudio(true);
+    setAudioUnlockError('');
+
+    try {
+      const unlocked = await unlockAudioPlayback();
+      if (!unlocked) {
+        throw new Error('No se pudo activar el audio');
+      }
+
+      setIsAudioReady(true);
+    } catch (error) {
+      console.error('Unable to unlock audio:', error);
+      setAudioUnlockError('No se pudo activar el audio. Toca de nuevo para intentarlo.');
+    } finally {
+      setIsUnlockingAudio(false);
     }
   };
 
@@ -227,8 +258,31 @@ function App() {
         <SessionLogin onLogin={setSessionIdentity} />
       )}
 
+      {isAuthResolved && sessionIdentity && !isAudioReady && (
+        <div className="session-login-shell">
+          <div className="session-login-card session-restore-card">
+            <p className="session-login-kicker">SHARA</p>
+            <h1 className="session-login-title">Toca para empezar</h1>
+            <p className="session-login-copy">
+              Así SHARA puede saludarte con voz antes de escuchar.
+            </p>
+            <button
+              className="session-login-button session-login-button-primary"
+              type="button"
+              onClick={handleBeginInteraction}
+              disabled={isUnlockingAudio}
+            >
+              {isUnlockingAudio ? 'Activando...' : 'Empezar'}
+            </button>
+            {audioUnlockError && (
+              <p className="session-login-error">{audioUnlockError}</p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* UI overlay: chat, audio controls, status bar */}
-      {isAuthResolved && sessionIdentity && isStreamReady && (
+      {isAuthResolved && sessionIdentity && isStreamReady && isAudioReady && (
         <UI
           sharedStream={sharedStream}
           onRobotStateChange={setRobotState}

@@ -125,6 +125,59 @@ const isForCurrentSession = (payload, sessionIdentity) => {
 };
 
 const SERVER_RECORDING_READY_STATE = 'listening';
+const CLIENT_TTS_MIN_TIMEOUT_MS = 8000;
+const CLIENT_TTS_MAX_TIMEOUT_MS = 50000;
+const CLIENT_TTS_MS_PER_CHAR = 90;
+const CLIENT_TTS_TIMEOUT_GRACE_MS = 4500;
+
+const createTimeoutError = (message) => {
+    const error = new Error(message);
+    error.name = 'TimeoutError';
+    return error;
+};
+
+const withTimeout = (promise, timeoutMs, message) => new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+        if (settled) {
+            return;
+        }
+
+        settled = true;
+        reject(createTimeoutError(message));
+    }, timeoutMs);
+
+    Promise.resolve(promise).then(
+        (value) => {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            clearTimeout(timer);
+            resolve(value);
+        },
+        (error) => {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            clearTimeout(timer);
+            reject(error);
+        },
+    );
+});
+
+const estimateTtsTimeoutMs = (text) => {
+    const textLength = String(text || '').trim().length;
+    const estimate = (textLength * CLIENT_TTS_MS_PER_CHAR) + CLIENT_TTS_TIMEOUT_GRACE_MS;
+
+    return Math.max(
+        CLIENT_TTS_MIN_TIMEOUT_MS,
+        Math.min(CLIENT_TTS_MAX_TIMEOUT_MS, estimate),
+    );
+};
 
 const UI = ({
     sharedStream,
@@ -177,6 +230,45 @@ const UI = ({
         onRobotStateChange?.(knownState);
     }, [onRobotStateChange]);
 
+    const completeTtsForMessage = useCallback(async (message, source) => {
+        if (!isForCurrentSession(message, sessionIdentity)) {
+            return;
+        }
+
+        const messageId = message.messageId || null;
+        const timeoutMs = Number(message.ttsTimeoutMs) > 0
+            ? Number(message.ttsTimeoutMs)
+            : estimateTtsTimeoutMs(message.text);
+        let status = message.text?.trim() || message.audio ? 'played' : 'skipped_empty';
+
+        try {
+            if (message.text?.trim() || message.audio) {
+                console.log(`[SHARA][${source}]`, message.text || '[audio]');
+                await withTimeout(
+                    handleSynthesize(
+                        message.text,
+                        message.audio || null,
+                        message.audioMimeType || 'audio/mpeg',
+                        { timeoutMs },
+                    ),
+                    timeoutMs + 1500,
+                    'TTS playback timed out',
+                );
+            }
+        } catch (error) {
+            status = error?.name === 'TimeoutError' ? 'timeout' : 'failed';
+            handleSynthesize.cancel?.();
+            console.error(`[SHARA][${source}] TTS ${status}:`, error);
+        } finally {
+            emit('tts_complete', {
+                sessionId: sessionIdentity?.sessionId || null,
+                messageId,
+                status,
+            });
+            setIsWaitingResponse(false);
+        }
+    }, [emit, handleSynthesize, sessionIdentity]);
+
     const handleRobotMessage = useCallback(async (message) => {
         if (!isForCurrentSession(message, sessionIdentity)) {
             return;
@@ -186,17 +278,8 @@ const UI = ({
             notifyRobotState(message.state);
         }
 
-        if (message.text?.trim()) {
-            console.log('[SHARA][robot]', message.text);
-            await handleSynthesize(
-                message.text,
-                message.audio || null,
-                message.audioMimeType || 'audio/mpeg',
-            );
-        }
-        emit('tts_complete', { sessionId: sessionIdentity?.sessionId || null });
-        setIsWaitingResponse(false);
-    }, [notifyRobotState, handleSynthesize, emit, sessionIdentity]);
+        await completeTtsForMessage(message, 'robot');
+    }, [notifyRobotState, completeTtsForMessage, sessionIdentity]);
 
     const handleWizardMessage = useCallback(async (message) => {
         if (!isForCurrentSession(message, sessionIdentity)) {
@@ -207,14 +290,8 @@ const UI = ({
             notifyRobotState(message.state);
         }
 
-        if (message.text?.trim()) {
-            console.log('[SHARA][wizard]', message.text);
-        }
-
-        await handleSynthesize(message.text);
-        emit('tts_complete', { sessionId: sessionIdentity?.sessionId || null });
-        setIsWaitingResponse(false);
-    }, [notifyRobotState, handleSynthesize, emit, sessionIdentity]);
+        await completeTtsForMessage(message, 'wizard');
+    }, [notifyRobotState, completeTtsForMessage, sessionIdentity]);
 
     const handleClientMessage = useCallback((message) => {
         if (!isForCurrentSession(message, sessionIdentity)) {

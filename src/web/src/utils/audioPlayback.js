@@ -1,4 +1,9 @@
 const SILENT_WAV_DATA_URI = 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAAAA==';
+const AUDIO_UNLOCK_TIMEOUT_MS = 3500;
+const AUDIO_DECODE_TIMEOUT_MS = 8000;
+const HTML_AUDIO_PLAY_TIMEOUT_MS = 45000;
+const WEB_AUDIO_END_GRACE_MS = 2500;
+const WEB_AUDIO_MIN_TIMEOUT_MS = 5000;
 
 let sharedAudioElement = null;
 let sharedAudioContext = null;
@@ -27,6 +32,46 @@ const publishAudioDiagnostic = (diagnostic) => {
 
     console.log('[SHARA][audio]', nextDiagnostic);
 };
+
+const createTimeoutError = (message) => {
+    const error = new Error(message);
+    error.name = 'TimeoutError';
+    return error;
+};
+
+const withTimeout = (promise, timeoutMs, message, onTimeout) => new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+        if (settled) {
+            return;
+        }
+
+        settled = true;
+        onTimeout?.();
+        reject(createTimeoutError(message));
+    }, timeoutMs);
+
+    Promise.resolve(promise).then(
+        (value) => {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            clearTimeout(timer);
+            resolve(value);
+        },
+        (error) => {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            clearTimeout(timer);
+            reject(error);
+        },
+    );
+});
 
 const setAudioUnlocked = (nextUnlocked) => {
     if (isUnlocked === nextUnlocked) {
@@ -58,7 +103,9 @@ const getSharedAudioContext = () => {
     if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
         sharedAudioContext = new AudioContext();
         sharedAudioContext.onstatechange = () => {
-            setAudioUnlocked(sharedAudioContext?.state === 'running');
+            if (sharedAudioContext?.state === 'running') {
+                setAudioUnlocked(true);
+            }
         };
     }
 
@@ -96,7 +143,11 @@ const unlockWebAudio = async () => {
     }
 
     if (audioContext.state === 'suspended') {
-        await audioContext.resume();
+        await withTimeout(
+            audioContext.resume(),
+            AUDIO_UNLOCK_TIMEOUT_MS,
+            'AudioContext resume timed out',
+        );
     }
 
     if (audioContext.state !== 'running') {
@@ -126,7 +177,11 @@ const unlockHtmlAudio = async () => {
     audio.src = SILENT_WAV_DATA_URI;
     audio.load();
 
-    await audio.play();
+    await withTimeout(
+        audio.play(),
+        AUDIO_UNLOCK_TIMEOUT_MS,
+        'HTML audio unlock timed out',
+    );
     resetAudioElement(audio);
     audio.removeAttribute('src');
     audio.load();
@@ -150,8 +205,7 @@ export const unlockAudioPlayback = () => {
         .then((results) => {
             const webAudioUnlocked = results[0].status === 'fulfilled' && results[0].value;
             const htmlAudioUnlocked = results[1].status === 'fulfilled' && results[1].value;
-            const hasWebAudio = Boolean(getBrowserAudioContext());
-            const unlocked = webAudioUnlocked || (!hasWebAudio && htmlAudioUnlocked);
+            const unlocked = webAudioUnlocked || htmlAudioUnlocked;
 
             setAudioUnlocked(unlocked);
             publishAudioDiagnostic({
@@ -212,7 +266,7 @@ const decodeAudioData = (audioContext, arrayBuffer) => new Promise((resolve, rej
     }
 });
 
-const playBytesWithWebAudio = async (audioBytes, mimeType) => {
+const playBytesWithWebAudio = async (audioBytes, mimeType, options = {}) => {
     const audioContext = getSharedAudioContext();
     if (!audioContext) {
         throw new Error('Web Audio API is not available');
@@ -223,16 +277,24 @@ const playBytesWithWebAudio = async (audioBytes, mimeType) => {
     }
 
     if (audioContext.state === 'suspended') {
-        await audioContext.resume();
+        await withTimeout(
+            audioContext.resume(),
+            AUDIO_UNLOCK_TIMEOUT_MS,
+            'AudioContext resume timed out before playback',
+        );
     }
 
     if (audioContext.state !== 'running') {
         throw new Error(`AudioContext is ${audioContext.state}`);
     }
 
-    const audioBuffer = await decodeAudioData(
-        audioContext,
-        audioBytes.buffer.slice(audioBytes.byteOffset, audioBytes.byteOffset + audioBytes.byteLength),
+    const audioBuffer = await withTimeout(
+        decodeAudioData(
+            audioContext,
+            audioBytes.buffer.slice(audioBytes.byteOffset, audioBytes.byteOffset + audioBytes.byteLength),
+        ),
+        AUDIO_DECODE_TIMEOUT_MS,
+        'Audio decode timed out',
     );
 
     if (currentWebAudioSource) {
@@ -257,7 +319,15 @@ const playBytesWithWebAudio = async (audioBytes, mimeType) => {
         audioContextState: audioContext.state,
     });
 
-    return new Promise((resolve) => {
+    const playbackTimeoutMs = Math.max(
+        WEB_AUDIO_MIN_TIMEOUT_MS,
+        Math.ceil(audioBuffer.duration * 1000) + WEB_AUDIO_END_GRACE_MS,
+    );
+    const timeoutMs = options.timeoutMs
+        ? Math.max(playbackTimeoutMs, options.timeoutMs)
+        : playbackTimeoutMs;
+
+    return withTimeout(new Promise((resolve, reject) => {
         source.onended = () => {
             if (currentWebAudioSource === source) {
                 currentWebAudioSource = null;
@@ -272,8 +342,31 @@ const playBytesWithWebAudio = async (audioBytes, mimeType) => {
             resolve(true);
         };
 
-        source.start(0);
-        setAudioUnlocked(true);
+        try {
+            source.start(0);
+            setAudioUnlocked(true);
+        } catch (error) {
+            reject(error);
+        }
+    }), timeoutMs, 'Web Audio playback timed out', () => {
+        source.onended = null;
+        if (currentWebAudioSource === source) {
+            currentWebAudioSource = null;
+        }
+
+        try {
+            source.stop();
+        } catch {
+            // The source may not have started or may already be stopped.
+        }
+
+        publishAudioDiagnostic({
+            event: 'play_timeout',
+            route: 'web_audio',
+            mimeType,
+            bytes: audioBytes.byteLength,
+            timeoutMs,
+        });
     });
 };
 
@@ -338,7 +431,7 @@ export const revokeAudioObjectUrl = (audioUrl) => {
     }
 };
 
-export const playAudioUrl = async (audioUrl) => {
+export const playAudioUrl = async (audioUrl, options = {}) => {
     const audio = getSharedAudioElement();
     if (!audio || !audioUrl) {
         return false;
@@ -351,6 +444,7 @@ export const playAudioUrl = async (audioUrl) => {
     resetAudioElement(audio);
 
     let cleanup = () => {};
+    let playbackStarted = false;
     const playbackFinished = new Promise((resolve, reject) => {
         const handleEnded = () => {
             cleanup();
@@ -362,13 +456,46 @@ export const playAudioUrl = async (audioUrl) => {
             reject(audio.error || new Error('Audio playback failed'));
         };
 
+        const handleAbort = () => {
+            if (!playbackStarted) {
+                return;
+            }
+
+            cleanup();
+            reject(new Error('Audio playback aborted'));
+        };
+
+        const handleStalled = () => {
+            if (!playbackStarted) {
+                return;
+            }
+
+            cleanup();
+            reject(new Error('Audio playback stalled'));
+        };
+
+        const handleEmptied = () => {
+            if (!playbackStarted) {
+                return;
+            }
+
+            cleanup();
+            reject(new Error('Audio source emptied during playback'));
+        };
+
         cleanup = () => {
             audio.removeEventListener('ended', handleEnded);
             audio.removeEventListener('error', handleError);
+            audio.removeEventListener('abort', handleAbort);
+            audio.removeEventListener('stalled', handleStalled);
+            audio.removeEventListener('emptied', handleEmptied);
         };
 
         audio.addEventListener('ended', handleEnded);
         audio.addEventListener('error', handleError);
+        audio.addEventListener('abort', handleAbort);
+        audio.addEventListener('stalled', handleStalled);
+        audio.addEventListener('emptied', handleEmptied);
     });
 
     audio.muted = false;
@@ -378,18 +505,36 @@ export const playAudioUrl = async (audioUrl) => {
     try {
         const playResult = audio.play();
         if (playResult && typeof playResult.then === 'function') {
-            await playResult;
+            await withTimeout(
+                playResult,
+                AUDIO_UNLOCK_TIMEOUT_MS,
+                'HTML audio play() timed out',
+            );
         }
 
         setAudioUnlocked(true);
-        return await playbackFinished;
+        playbackStarted = true;
+        const timeoutMs = options.timeoutMs || HTML_AUDIO_PLAY_TIMEOUT_MS;
+        return await withTimeout(
+            playbackFinished,
+            timeoutMs,
+            'HTML audio playback timed out',
+            () => {
+                resetAudioElement(audio);
+                publishAudioDiagnostic({
+                    event: 'play_timeout',
+                    route: 'html_audio',
+                    timeoutMs,
+                });
+            },
+        );
     } catch (error) {
         cleanup();
         throw error;
     }
 };
 
-export const playAudioBase64 = async (audioB64, mimeType = 'audio/mpeg') => {
+export const playAudioBase64 = async (audioB64, mimeType = 'audio/mpeg', options = {}) => {
     if (!audioB64) {
         return false;
     }
@@ -397,7 +542,7 @@ export const playAudioBase64 = async (audioB64, mimeType = 'audio/mpeg') => {
     const audioBytes = base64ToUint8Array(audioB64);
 
     try {
-        return await playBytesWithWebAudio(audioBytes, mimeType);
+        return await playBytesWithWebAudio(audioBytes, mimeType, options);
     } catch (webAudioError) {
         console.warn('[SHARA][audio] Web Audio playback failed, falling back to HTMLAudioElement:', webAudioError);
         publishAudioDiagnostic({
@@ -419,7 +564,7 @@ export const playAudioBase64 = async (audioB64, mimeType = 'audio/mpeg') => {
             mimeType,
             bytes: audioBytes.byteLength,
         });
-        return await playAudioUrl(audioUrl);
+        return await playAudioUrl(audioUrl, options);
     } finally {
         revokeAudioObjectUrl(audioUrl);
     }

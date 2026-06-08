@@ -148,8 +148,8 @@ class MessageNamespace(Namespace):
         state_machine.on_user_lost(request.sid, data or {})
 
     def on_tts_complete(self, data):
-        logger.info(f'[/message] tts_complete from {request.sid}')
-        state_machine.on_tts_complete(request.sid)
+        logger.info(f'[/message] tts_complete from {request.sid}: {data}')
+        state_machine.on_tts_complete(request.sid, data if isinstance(data, dict) else {})
 
     def on_transcription_result(self, data):
         text = data.get('text', '').strip() if isinstance(data, dict) else str(data).strip()

@@ -39,6 +39,7 @@ class RobotContext:
             'continue_conversation': False,
             'proactive_question': '',
             'unknown_user_interactions': 0,
+            'current_tts_message_id': None,
         }
 
     def get(self, key, default=None):
@@ -124,6 +125,14 @@ class RobotContext:
     @unknown_user_interactions.setter
     def unknown_user_interactions(self, value: int):
         self.set('unknown_user_interactions', int(value))
+
+    @property
+    def current_tts_message_id(self):
+        return self.get('current_tts_message_id')
+
+    @current_tts_message_id.setter
+    def current_tts_message_id(self, value):
+        self.set('current_tts_message_id', value)
 
 
 # Singleton instance shared across the application

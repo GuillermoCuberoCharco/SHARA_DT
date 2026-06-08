@@ -519,11 +519,17 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
         // useEffect syncs isWaitingResponseRef.current = false.
     };
 
-    const handleSynthesize = async (text, audioB64 = null, audioMimeType = 'audio/mpeg') => {
+    const handleSynthesize = async (
+        text,
+        audioB64 = null,
+        audioMimeType = 'audio/mpeg',
+        options = {},
+    ) => {
         if (!text && !audioB64) return;
 
         let audioPayload = audioB64;
         let resolvedAudioMimeType = audioMimeType || 'audio/mpeg';
+        const playbackTimeoutMs = options.timeoutMs || 45000;
 
         try {
             setIsSpeaking(true);
@@ -531,7 +537,11 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
             if (!audioPayload && text) {
                 // Fallback: request TTS synthesis via HTTP (only when no audio in message)
-                const response = await axios.post(`${SERVER_URL}/api/synthesize`, { text });
+                const response = await axios.post(
+                    `${SERVER_URL}/api/synthesize`,
+                    { text },
+                    { timeout: Math.max(10000, playbackTimeoutMs) },
+                );
                 if (response.data?.audioContent) {
                     resolvedAudioMimeType = response.data.audioMimeType || 'audio/mpeg';
                     audioPayload = response.data.audioContent;
@@ -540,7 +550,9 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
             if (audioPayload) {
                 setAudioSrc(`audio:${resolvedAudioMimeType}`);
-                await playAudioBase64(audioPayload, resolvedAudioMimeType);
+                await playAudioBase64(audioPayload, resolvedAudioMimeType, {
+                    timeoutMs: playbackTimeoutMs,
+                });
                 console.log('[SHARA][audio] Audio playback finished');
             }
         } catch (error) {
@@ -548,6 +560,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
                 console.warn('[SHARA][audio] Browser blocked playback until a user gesture unlocks audio.');
             }
             console.error('❌ Error synthesizing speech:', error);
+            throw error;
         } finally {
             setIsSpeaking(false);
             setAudioSrc(null);

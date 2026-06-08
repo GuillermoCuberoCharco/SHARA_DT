@@ -2,7 +2,7 @@ import axios from 'axios';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AUDIO_SETTINGS, SERVER_URL } from '../../../config';
 import { useWebSocketContext } from '../../../contexts/WebSocketContext';
-import { playAudioBase64 } from '../../../utils/audioPlayback';
+import { cancelAudioPlayback, playAudioBase64 } from '../../../utils/audioPlayback';
 
 const encodePcmBase64 = (pcmBuffer) => {
     const uint8 = new Uint8Array(pcmBuffer);
@@ -568,11 +568,13 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
     };
 
     handleSynthesize.cancel = () => {
+        cancelAudioPlayback('synthesis_cancelled');
         setIsSpeaking(false);
         setAudioSrc(null);
     };
 
     const onStop = () => {
+        cancelAudioPlayback('manual_stop');
         setIsSpeaking(false);
     };
 

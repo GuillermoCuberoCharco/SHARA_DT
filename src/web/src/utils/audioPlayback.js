@@ -10,6 +10,7 @@ let sharedAudioContext = null;
 let currentWebAudioSource = null;
 let isUnlocked = false;
 let unlockPromise = null;
+let playbackGeneration = 0;
 const unlockListeners = new Set();
 
 const getBrowserAudioContext = () => {
@@ -38,6 +39,14 @@ const createTimeoutError = (message) => {
     error.name = 'TimeoutError';
     return error;
 };
+
+const createAbortError = (message) => {
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
+};
+
+const isCurrentPlayback = (playbackId) => playbackId === playbackGeneration;
 
 const withTimeout = (promise, timeoutMs, message, onTimeout) => new Promise((resolve, reject) => {
     let settled = false;
@@ -134,6 +143,52 @@ const resetAudioElement = (audio) => {
     } catch {
         // Some mobile browsers reject currentTime before metadata is loaded.
     }
+};
+
+const stopCurrentPlayback = () => {
+    if (currentWebAudioSource) {
+        const source = currentWebAudioSource;
+        currentWebAudioSource = null;
+        source.onended = null;
+
+        try {
+            source.stop();
+        } catch {
+            // The source may not have started or may already be stopped.
+        }
+
+        try {
+            source.disconnect();
+        } catch {
+            // Some browsers throw if the node is already disconnected.
+        }
+    }
+
+    if (sharedAudioElement) {
+        resetAudioElement(sharedAudioElement);
+        sharedAudioElement.removeAttribute('src');
+
+        try {
+            sharedAudioElement.load();
+        } catch {
+            // Mobile browsers may reject load() during teardown.
+        }
+    }
+};
+
+export const cancelAudioPlayback = (reason = 'cancelled') => {
+    playbackGeneration += 1;
+    stopCurrentPlayback();
+    publishAudioDiagnostic({
+        event: 'play_cancel',
+        reason,
+    });
+};
+
+const beginPlayback = () => {
+    playbackGeneration += 1;
+    stopCurrentPlayback();
+    return playbackGeneration;
 };
 
 const unlockWebAudio = async () => {
@@ -266,7 +321,21 @@ const decodeAudioData = (audioContext, arrayBuffer) => new Promise((resolve, rej
     }
 });
 
+const shouldPreferHtmlAudio = () => {
+    if (typeof navigator === 'undefined') {
+        return false;
+    }
+
+    const userAgent = navigator.userAgent || '';
+    const isIOS = /iPad|iPhone|iPod/.test(userAgent)
+        || (userAgent.includes('Macintosh') && navigator.maxTouchPoints > 1);
+    const isAndroidMobile = /Android/.test(userAgent) && /Mobile/.test(userAgent);
+
+    return isIOS || isAndroidMobile;
+};
+
 const playBytesWithWebAudio = async (audioBytes, mimeType, options = {}) => {
+    const playbackId = options.playbackId;
     const audioContext = getSharedAudioContext();
     if (!audioContext) {
         throw new Error('Web Audio API is not available');
@@ -288,6 +357,10 @@ const playBytesWithWebAudio = async (audioBytes, mimeType, options = {}) => {
         throw new Error(`AudioContext is ${audioContext.state}`);
     }
 
+    if (!isCurrentPlayback(playbackId)) {
+        throw createAbortError('Web Audio playback was cancelled before decode');
+    }
+
     const audioBuffer = await withTimeout(
         decodeAudioData(
             audioContext,
@@ -296,6 +369,10 @@ const playBytesWithWebAudio = async (audioBytes, mimeType, options = {}) => {
         AUDIO_DECODE_TIMEOUT_MS,
         'Audio decode timed out',
     );
+
+    if (!isCurrentPlayback(playbackId)) {
+        throw createAbortError('Web Audio playback was cancelled after decode');
+    }
 
     if (currentWebAudioSource) {
         try {
@@ -343,6 +420,11 @@ const playBytesWithWebAudio = async (audioBytes, mimeType, options = {}) => {
         };
 
         try {
+            if (!isCurrentPlayback(playbackId)) {
+                reject(createAbortError('Web Audio playback was cancelled before start'));
+                return;
+            }
+
             source.start(0);
             setAudioUnlocked(true);
         } catch (error) {
@@ -432,6 +514,7 @@ export const revokeAudioObjectUrl = (audioUrl) => {
 };
 
 export const playAudioUrl = async (audioUrl, options = {}) => {
+    const playbackId = options.playbackId ?? beginPlayback();
     const audio = getSharedAudioElement();
     if (!audio || !audioUrl) {
         return false;
@@ -442,22 +525,37 @@ export const playAudioUrl = async (audioUrl, options = {}) => {
     }
 
     resetAudioElement(audio);
+    if (!isCurrentPlayback(playbackId)) {
+        throw createAbortError('HTML audio playback was cancelled before load');
+    }
 
     let cleanup = () => {};
     let playbackStarted = false;
     const playbackFinished = new Promise((resolve, reject) => {
         const handleEnded = () => {
+            if (!isCurrentPlayback(playbackId)) {
+                return;
+            }
+
             cleanup();
             resolve(true);
         };
 
         const handleError = () => {
+            if (!isCurrentPlayback(playbackId)) {
+                return;
+            }
+
             cleanup();
             reject(audio.error || new Error('Audio playback failed'));
         };
 
         const handleAbort = () => {
             if (!playbackStarted) {
+                return;
+            }
+
+            if (!isCurrentPlayback(playbackId)) {
                 return;
             }
 
@@ -470,12 +568,20 @@ export const playAudioUrl = async (audioUrl, options = {}) => {
                 return;
             }
 
+            if (!isCurrentPlayback(playbackId)) {
+                return;
+            }
+
             cleanup();
             reject(new Error('Audio playback stalled'));
         };
 
         const handleEmptied = () => {
             if (!playbackStarted) {
+                return;
+            }
+
+            if (!isCurrentPlayback(playbackId)) {
                 return;
             }
 
@@ -512,6 +618,10 @@ export const playAudioUrl = async (audioUrl, options = {}) => {
             );
         }
 
+        if (!isCurrentPlayback(playbackId)) {
+            throw createAbortError('HTML audio playback was cancelled after play()');
+        }
+
         setAudioUnlocked(true);
         playbackStarted = true;
         const timeoutMs = options.timeoutMs || HTML_AUDIO_PLAY_TIMEOUT_MS;
@@ -520,7 +630,15 @@ export const playAudioUrl = async (audioUrl, options = {}) => {
             timeoutMs,
             'HTML audio playback timed out',
             () => {
-                resetAudioElement(audio);
+                if (isCurrentPlayback(playbackId)) {
+                    resetAudioElement(audio);
+                    audio.removeAttribute('src');
+                    try {
+                        audio.load();
+                    } catch {
+                        // Mobile browsers may reject load() during teardown.
+                    }
+                }
                 publishAudioDiagnostic({
                     event: 'play_timeout',
                     route: 'html_audio',
@@ -530,31 +648,20 @@ export const playAudioUrl = async (audioUrl, options = {}) => {
         );
     } catch (error) {
         cleanup();
+        if (isCurrentPlayback(playbackId)) {
+            resetAudioElement(audio);
+            audio.removeAttribute('src');
+            try {
+                audio.load();
+            } catch {
+                // Mobile browsers may reject load() during teardown.
+            }
+        }
         throw error;
     }
 };
 
-export const playAudioBase64 = async (audioB64, mimeType = 'audio/mpeg', options = {}) => {
-    if (!audioB64) {
-        return false;
-    }
-
-    const audioBytes = base64ToUint8Array(audioB64);
-
-    try {
-        return await playBytesWithWebAudio(audioBytes, mimeType, options);
-    } catch (webAudioError) {
-        console.warn('[SHARA][audio] Web Audio playback failed, falling back to HTMLAudioElement:', webAudioError);
-        publishAudioDiagnostic({
-            event: 'web_audio_error',
-            mimeType,
-            bytes: audioBytes.byteLength,
-            errorName: webAudioError?.name || null,
-            errorMessage: webAudioError?.message || String(webAudioError),
-            audioContextState: sharedAudioContext?.state || null,
-        });
-    }
-
+const playBytesWithHtmlAudio = async (audioBytes, mimeType, options = {}) => {
     const audioUrl = URL.createObjectURL(new Blob([audioBytes], { type: mimeType }));
 
     try {
@@ -568,4 +675,60 @@ export const playAudioBase64 = async (audioB64, mimeType = 'audio/mpeg', options
     } finally {
         revokeAudioObjectUrl(audioUrl);
     }
+};
+
+export const playAudioBase64 = async (audioB64, mimeType = 'audio/mpeg', options = {}) => {
+    if (!audioB64) {
+        return false;
+    }
+
+    const audioBytes = base64ToUint8Array(audioB64);
+    const playbackId = beginPlayback();
+    const playbackOptions = { ...options, playbackId };
+    const preferHtmlAudio = shouldPreferHtmlAudio();
+    let htmlAudioFailed = false;
+
+    if (preferHtmlAudio) {
+        try {
+            return await playBytesWithHtmlAudio(audioBytes, mimeType, playbackOptions);
+        } catch (htmlAudioError) {
+            if (!isCurrentPlayback(playbackId)) {
+                throw htmlAudioError;
+            }
+
+            htmlAudioFailed = true;
+            console.warn('[SHARA][audio] HTMLAudioElement playback failed, falling back to Web Audio:', htmlAudioError);
+            publishAudioDiagnostic({
+                event: 'html_audio_error',
+                mimeType,
+                bytes: audioBytes.byteLength,
+                errorName: htmlAudioError?.name || null,
+                errorMessage: htmlAudioError?.message || String(htmlAudioError),
+            });
+        }
+    }
+
+    try {
+        return await playBytesWithWebAudio(audioBytes, mimeType, playbackOptions);
+    } catch (webAudioError) {
+        if (!isCurrentPlayback(playbackId)) {
+            throw webAudioError;
+        }
+
+        console.warn('[SHARA][audio] Web Audio playback failed, falling back to HTMLAudioElement:', webAudioError);
+        publishAudioDiagnostic({
+            event: 'web_audio_error',
+            mimeType,
+            bytes: audioBytes.byteLength,
+            errorName: webAudioError?.name || null,
+            errorMessage: webAudioError?.message || String(webAudioError),
+            audioContextState: sharedAudioContext?.state || null,
+        });
+    }
+
+    if (htmlAudioFailed) {
+        throw new Error('HTMLAudioElement and Web Audio playback both failed');
+    }
+
+    return await playBytesWithHtmlAudio(audioBytes, mimeType, playbackOptions);
 };

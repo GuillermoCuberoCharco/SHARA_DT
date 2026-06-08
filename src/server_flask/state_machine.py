@@ -32,6 +32,7 @@ TTS_WATCHDOG_MIN_SECONDS = float(os.getenv('TTS_WATCHDOG_MIN_SECONDS', '12'))
 TTS_WATCHDOG_MAX_SECONDS = float(os.getenv('TTS_WATCHDOG_MAX_SECONDS', '75'))
 TTS_WATCHDOG_SECONDS_PER_CHAR = float(os.getenv('TTS_WATCHDOG_SECONDS_PER_CHAR', '0.09'))
 TTS_WATCHDOG_GRACE_SECONDS = float(os.getenv('TTS_WATCHDOG_GRACE_SECONDS', '6'))
+TTS_WATCHDOG_ACK_GRACE_SECONDS = float(os.getenv('TTS_WATCHDOG_ACK_GRACE_SECONDS', '8'))
 _AUDIO_STREAM_END = object()
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -252,7 +253,7 @@ def _discard_audio_stream(sid: str):
     logger.debug('Discarded audio stream for sid=%s', sid)
 
 
-def _estimate_tts_watchdog_seconds(text: str) -> float:
+def _estimate_tts_client_timeout_seconds(text: str) -> float:
     text_length = len((text or '').strip())
     estimate = (text_length * TTS_WATCHDOG_SECONDS_PER_CHAR) + TTS_WATCHDOG_GRACE_SECONDS
     return max(TTS_WATCHDOG_MIN_SECONDS, min(TTS_WATCHDOG_MAX_SECONDS, estimate))
@@ -1331,7 +1332,8 @@ def _handle_response(
     this socket sid.
     """
     message_id = uuid.uuid4().hex
-    watchdog_seconds = _estimate_tts_watchdog_seconds(response.text or '')
+    client_timeout_seconds = _estimate_tts_client_timeout_seconds(response.text or '')
+    watchdog_seconds = client_timeout_seconds + TTS_WATCHDOG_ACK_GRACE_SECONDS
 
     context.state = 'speaking'
     context.continue_conversation = response.continue_conversation
@@ -1387,7 +1389,7 @@ def _handle_response(
         'audioMimeType': getattr(response, 'audio_mime_type', 'audio/mpeg'),
         'continue': response.continue_conversation,
         'sessionId': context.face_session_id,
-        'ttsTimeoutMs': int(watchdog_seconds * 1000),
+        'ttsTimeoutMs': int(client_timeout_seconds * 1000),
     }
 
     _start_speaking_watchdog(sid, message_id, watchdog_seconds)
@@ -1395,11 +1397,12 @@ def _handle_response(
     _emit_state_update(sid, context)
 
     logger.info(
-        'Response emitted to sid=%s: message_id=%s mood=%s continue=%s watchdog=%.2fs',
+        'Response emitted to sid=%s: message_id=%s mood=%s continue=%s client_timeout=%.2fs watchdog=%.2fs',
         sid,
         message_id,
         response.robot_mood,
         response.continue_conversation,
+        client_timeout_seconds,
         watchdog_seconds,
     )
 

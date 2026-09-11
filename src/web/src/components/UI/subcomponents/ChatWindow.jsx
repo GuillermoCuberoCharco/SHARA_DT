@@ -1,5 +1,6 @@
 import PropTypes from 'prop-types';
 import { useEffect, useRef, useState } from 'react';
+import { SUBJECT_DOCUMENT_UPLOAD } from '../../../config';
 
 const RobotIcon = () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -22,13 +23,6 @@ const LogoutIcon = () => (
         <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
         <polyline points="16 17 21 12 16 7" />
         <line x1="21" y1="12" x2="9" y2="12" />
-    </svg>
-);
-
-const CloseIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="18" y1="6" x2="6" y2="18" />
-        <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
 );
 
@@ -111,8 +105,6 @@ const ChatWindow = ({
     onMessageSend,
     onInputChange,
     messagesContainerRef,
-    isVisible,
-    onClose,
     isWaitingResponse,
     isRegistered,
     connectionError,
@@ -137,6 +129,7 @@ const ChatWindow = ({
     onCreateSubject,
     isCreatingSubject,
     subjectDocuments,
+    subjectDocumentUploadConstraints,
     onUploadSubjectDocuments,
     onDeleteSubjectDocument,
     isLoadingSubjectDocuments,
@@ -160,8 +153,17 @@ const ChatWindow = ({
     const [newSubjectInput, setNewSubjectInput] = useState('');
     const [maxStudentsInput, setMaxStudentsInput] = useState('');
     const [documentFiles, setDocumentFiles] = useState([]);
+    const [documentInputError, setDocumentInputError] = useState('');
     const [shouldRestoreTextareaFocus, setShouldRestoreTextareaFocus] = useState(false);
     const isTeacher = userRole === 'teacher';
+    const acceptedDocumentExtensions = (
+        Array.isArray(subjectDocumentUploadConstraints?.allowed_extensions)
+        && subjectDocumentUploadConstraints.allowed_extensions.length > 0
+    )
+        ? subjectDocumentUploadConstraints.allowed_extensions
+        : SUBJECT_DOCUMENT_UPLOAD.acceptedExtensions;
+    const maxDocumentSizeMB = Number(subjectDocumentUploadConstraints?.max_size_mb)
+        || SUBJECT_DOCUMENT_UPLOAD.maxSizeMB;
     const areDocumentActionsDisabled = (
         isAddingSubjects
         || isCreatingSubject
@@ -199,9 +201,17 @@ const ChatWindow = ({
     }, [newMessage]);
 
     useEffect(() => {
+        setDocumentFiles([]);
+        setDocumentInputError('');
+
+        if (documentInputRef.current) {
+            documentInputRef.current.value = '';
+        }
+    }, [subjectCode]);
+
+    useEffect(() => {
         if (
             !shouldRestoreTextareaFocus
-            || !isVisible
             || !isRegistered
             || isWaitingResponse
             || isRecording
@@ -211,7 +221,7 @@ const ChatWindow = ({
 
         textareaRef.current?.focus({ preventScroll: true });
         setShouldRestoreTextareaFocus(false);
-    }, [isRecording, isRegistered, isVisible, isWaitingResponse, shouldRestoreTextareaFocus]);
+    }, [isRecording, isRegistered, isWaitingResponse, shouldRestoreTextareaFocus]);
 
     const handleSubjectSubmit = async (event) => {
         event.preventDefault();
@@ -247,7 +257,37 @@ const ChatWindow = ({
     };
 
     const handleDocumentInputChange = (event) => {
-        setDocumentFiles(Array.from(event.target.files || []));
+        const selectedFiles = Array.from(event.target.files || []);
+        const invalidFormatFile = selectedFiles.find((file) => {
+            const normalizedName = file.name.toLowerCase();
+            return !acceptedDocumentExtensions.some(
+                (extension) => normalizedName.endsWith(extension),
+            );
+        });
+
+        if (invalidFormatFile) {
+            setDocumentFiles([]);
+            setDocumentInputError(
+                `Formato no permitido: ${invalidFormatFile.name}. Solo se admiten PDF y PPTX.`,
+            );
+            event.target.value = '';
+            return;
+        }
+
+        const oversizedFile = selectedFiles.find(
+            (file) => file.size > maxDocumentSizeMB * 1024 * 1024,
+        );
+        if (oversizedFile) {
+            setDocumentFiles([]);
+            setDocumentInputError(
+                `${oversizedFile.name} supera el limite de ${maxDocumentSizeMB} MB.`,
+            );
+            event.target.value = '';
+            return;
+        }
+
+        setDocumentInputError('');
+        setDocumentFiles(selectedFiles);
     };
 
     const handleDocumentUploadSubmit = async (event) => {
@@ -261,6 +301,7 @@ const ChatWindow = ({
             const uploadedDocuments = await onUploadSubjectDocuments(documentFiles);
             if (uploadedDocuments) {
                 setDocumentFiles([]);
+                setDocumentInputError('');
                 if (documentInputRef.current) {
                     documentInputRef.current.value = '';
                 }
@@ -276,7 +317,7 @@ const ChatWindow = ({
     };
 
     return (
-        <div className={`chat-panel ${isVisible ? '' : 'hidden'}`}>
+        <div className="chat-panel">
             <div className="chat-header">
                 <div className="chat-header-brand">
                     <div className="chat-header-avatar">
@@ -319,9 +360,6 @@ const ChatWindow = ({
                             <LogoutIcon />
                         </button>
                     )}
-                    <button className="chat-close-btn" onClick={onClose} title="Cerrar chat" type="button">
-                        <CloseIcon />
-                    </button>
                 </div>
             </div>
 
@@ -418,6 +456,8 @@ const ChatWindow = ({
                                     ref={documentInputRef}
                                     type="file"
                                     multiple
+                                    accept={SUBJECT_DOCUMENT_UPLOAD.accept}
+                                    aria-describedby="subject-document-upload-help"
                                     onChange={handleDocumentInputChange}
                                     disabled={areDocumentActionsDisabled}
                                 />
@@ -428,6 +468,16 @@ const ChatWindow = ({
                                     {isUploadingSubjectDocument ? 'Subiendo...' : 'Subir'}
                                 </button>
                             </form>
+                            <p
+                                id="subject-document-upload-help"
+                                className={`subject-document-upload-help ${documentInputError ? 'error' : ''}`}
+                                aria-live="polite"
+                            >
+                                {documentInputError || (
+                                    `Formatos permitidos: PDF (.pdf) y PowerPoint (.pptx). `
+                                    + `Maximo ${maxDocumentSizeMB} MB por archivo.`
+                                )}
+                            </p>
 
                             <div className="subject-document-list">
                                 {isLoadingSubjectDocuments && (
@@ -565,8 +615,6 @@ ChatWindow.propTypes = {
     onMessageSend: PropTypes.func.isRequired,
     onInputChange: PropTypes.func.isRequired,
     messagesContainerRef: PropTypes.object,
-    isVisible: PropTypes.bool,
-    onClose: PropTypes.func,
     isWaitingResponse: PropTypes.bool,
     isRegistered: PropTypes.bool,
     connectionError: PropTypes.bool,
@@ -596,6 +644,10 @@ ChatWindow.propTypes = {
         chunk_count: PropTypes.number,
         created_at: PropTypes.string,
     })),
+    subjectDocumentUploadConstraints: PropTypes.shape({
+        allowed_extensions: PropTypes.arrayOf(PropTypes.string),
+        max_size_mb: PropTypes.number,
+    }),
     onUploadSubjectDocuments: PropTypes.func,
     onDeleteSubjectDocument: PropTypes.func,
     isLoadingSubjectDocuments: PropTypes.bool,
@@ -605,8 +657,6 @@ ChatWindow.propTypes = {
 
 ChatWindow.defaultProps = {
     messagesContainerRef: null,
-    isVisible: true,
-    onClose: null,
     isWaitingResponse: false,
     isRegistered: false,
     connectionError: false,
@@ -628,6 +678,7 @@ ChatWindow.defaultProps = {
     subjectFeedback: '',
     subjectFeedbackTone: 'info',
     subjectDocuments: [],
+    subjectDocumentUploadConstraints: null,
     onUploadSubjectDocuments: null,
     onDeleteSubjectDocument: null,
     isLoadingSubjectDocuments: false,

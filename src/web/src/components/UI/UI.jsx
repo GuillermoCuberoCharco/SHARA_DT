@@ -30,7 +30,6 @@ const UI = ({ onRobotStateChange, onLogout }) => {
 
     const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState('');
-    const [isChatVisible, setIsChatVisible] = useState(true);
     const [connectionError, setConnectionError] = useState(false);
     const [isWaitingResponse, setIsWaitingResponse] = useState(false);
     const [conversationState, setConversationState] = useState('idle');
@@ -41,6 +40,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     const [subjectFeedback, setSubjectFeedback] = useState('');
     const [subjectFeedbackTone, setSubjectFeedbackTone] = useState('info');
     const [subjectDocuments, setSubjectDocuments] = useState([]);
+    const [subjectDocumentUploadConstraints, setSubjectDocumentUploadConstraints] = useState(null);
     const [isLoadingSubjectDocuments, setIsLoadingSubjectDocuments] = useState(false);
     const [isUploadingSubjectDocument, setIsUploadingSubjectDocument] = useState(false);
     const [deletingSubjectDocumentId, setDeletingSubjectDocumentId] = useState(null);
@@ -187,6 +187,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     const loadSubjectDocuments = useCallback(async () => {
         if (userRole !== 'teacher' || !subjectCode || !isRegistered) {
             setSubjectDocuments([]);
+            setSubjectDocumentUploadConstraints(null);
             return [];
         }
 
@@ -196,6 +197,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
             const data = await listSubjectDocuments(subjectCode);
             const documents = Array.isArray(data?.documents) ? data.documents : [];
             setSubjectDocuments(documents);
+            setSubjectDocumentUploadConstraints(data?.upload_constraints || null);
             return documents;
         } catch (error) {
             setSubjectFeedback(error.message || 'No se pudieron cargar los materiales.');
@@ -380,6 +382,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         setNewMessage('');
         setMessages([]);
         setSubjectDocuments([]);
+        setSubjectDocumentUploadConstraints(null);
         setIsWaitingResponse(false);
         setConversationState('idle');
 
@@ -431,6 +434,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     useEffect(() => {
         if (userRole !== 'teacher' || !subjectCode || !isRegistered) {
             setSubjectDocuments([]);
+            setSubjectDocumentUploadConstraints(null);
             return;
         }
 
@@ -468,51 +472,43 @@ const UI = ({ onRobotStateChange, onLogout }) => {
     ]);
 
     return (
-        <>
-            {!isChatVisible && (
-                <button className="chat-tab" onClick={() => setIsChatVisible(true)}>
-                    Chat
-                </button>
-            )}
-            <ChatWindow
-                messages={messages}
-                newMessage={newMessage}
-                messagesContainerRef={messagesContainerRef}
-                isVisible={isChatVisible}
-                onClose={() => setIsChatVisible(false)}
-                onMessageSend={handleSendMessage}
-                onInputChange={(event) => setNewMessage(event.target.value)}
-                isWaitingResponse={isWaitingResponse}
-                isRegistered={isRegistered}
-                connectionError={connectionError}
-                username={displayUsername}
-                userRole={userRole}
-                onLogout={onLogout}
-                onStartRecording={handleStartRecording}
-                onStopRecording={stopRecording}
-                isRecording={isRecording}
-                isSpeaking={isSpeaking}
-                isTtsEnabled={isTtsEnabled}
-                onToggleTts={handleToggleTts}
-                conversationState={conversationState}
-                subjectCode={subjectCode}
-                subjectCodes={subjectCodes}
-                onAddSubjects={handleAddSubjects}
-                onCreateSubject={userRole === 'teacher' ? handleCreateSubject : null}
-                onSwitchSubject={handleSwitchSubject}
-                isAddingSubjects={isAddingSubjects}
-                isCreatingSubject={isCreatingSubject}
-                isSwitchingSubject={isSwitchingSubject}
-                subjectFeedback={subjectFeedback}
-                subjectFeedbackTone={subjectFeedbackTone}
-                subjectDocuments={subjectDocuments}
-                onUploadSubjectDocuments={userRole === 'teacher' ? handleUploadSubjectDocuments : null}
-                onDeleteSubjectDocument={userRole === 'teacher' ? handleDeleteSubjectDocument : null}
-                isLoadingSubjectDocuments={isLoadingSubjectDocuments}
-                isUploadingSubjectDocument={isUploadingSubjectDocument}
-                deletingSubjectDocumentId={deletingSubjectDocumentId}
-            />
-        </>
+        <ChatWindow
+            messages={messages}
+            newMessage={newMessage}
+            messagesContainerRef={messagesContainerRef}
+            onMessageSend={handleSendMessage}
+            onInputChange={(event) => setNewMessage(event.target.value)}
+            isWaitingResponse={isWaitingResponse}
+            isRegistered={isRegistered}
+            connectionError={connectionError}
+            username={displayUsername}
+            userRole={userRole}
+            onLogout={onLogout}
+            onStartRecording={handleStartRecording}
+            onStopRecording={stopRecording}
+            isRecording={isRecording}
+            isSpeaking={isSpeaking}
+            isTtsEnabled={isTtsEnabled}
+            onToggleTts={handleToggleTts}
+            conversationState={conversationState}
+            subjectCode={subjectCode}
+            subjectCodes={subjectCodes}
+            onAddSubjects={handleAddSubjects}
+            onCreateSubject={userRole === 'teacher' ? handleCreateSubject : null}
+            onSwitchSubject={handleSwitchSubject}
+            isAddingSubjects={isAddingSubjects}
+            isCreatingSubject={isCreatingSubject}
+            isSwitchingSubject={isSwitchingSubject}
+            subjectFeedback={subjectFeedback}
+            subjectFeedbackTone={subjectFeedbackTone}
+            subjectDocuments={subjectDocuments}
+            subjectDocumentUploadConstraints={subjectDocumentUploadConstraints}
+            onUploadSubjectDocuments={userRole === 'teacher' ? handleUploadSubjectDocuments : null}
+            onDeleteSubjectDocument={userRole === 'teacher' ? handleDeleteSubjectDocument : null}
+            isLoadingSubjectDocuments={isLoadingSubjectDocuments}
+            isUploadingSubjectDocument={isUploadingSubjectDocument}
+            deletingSubjectDocumentId={deletingSubjectDocumentId}
+        />
     );
 };
 

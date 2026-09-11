@@ -15,34 +15,18 @@ from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
 from db import ensure_schema, get_db_connection
+from document_formats import (
+    CANONICAL_DOCUMENT_MIME_TYPES,
+    MAX_UPLOAD_BYTES,
+    DocumentFormatError,
+    validate_document_format,
+)
 from subject_codes import is_valid_subject_code, normalize_subject_code
 
-MAX_UPLOAD_BYTES = int(os.getenv("SUBJECT_DOCUMENT_MAX_MB", "15")) * 1024 * 1024
 MAX_CHUNK_CHARS = int(os.getenv("SUBJECT_DOCUMENT_CHUNK_CHARS", "2800"))
 CHUNK_OVERLAP_CHARS = int(os.getenv("SUBJECT_DOCUMENT_CHUNK_OVERLAP", "250"))
 MAX_CONTEXT_CHARS = int(os.getenv("SUBJECT_DOCUMENT_CONTEXT_CHARS", "12000"))
 MAX_CONTEXT_CHUNKS = int(os.getenv("SUBJECT_DOCUMENT_CONTEXT_CHUNKS", "6"))
-
-PLAIN_TEXT_EXTENSIONS = {
-    ".csv",
-    ".css",
-    ".htm",
-    ".html",
-    ".js",
-    ".json",
-    ".jsx",
-    ".md",
-    ".markdown",
-    ".py",
-    ".scss",
-    ".ts",
-    ".tsx",
-    ".tsv",
-    ".txt",
-    ".xml",
-    ".yaml",
-    ".yml",
-}
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
@@ -87,22 +71,12 @@ def _read_upload(file_storage: FileStorage) -> bytes:
     return file_bytes
 
 
-def _decode_text(file_bytes: bytes) -> str:
-    for encoding in ("utf-8", "utf-8-sig", "latin-1"):
-        try:
-            return file_bytes.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-
-    raise SubjectDocumentError("No se pudo leer el archivo como texto")
-
-
 def _convert_with_markitdown(file_bytes: bytes, filename: str) -> str:
     try:
         from markitdown import MarkItDown
     except ImportError as exc:
         raise SubjectDocumentError(
-            "Este tipo de archivo requiere instalar markitdown[all] en el servidor",
+            "Este tipo de archivo requiere instalar markitdown[pdf,pptx] en el servidor",
             415,
         ) from exc
 
@@ -115,7 +89,7 @@ def _convert_with_markitdown(file_bytes: bytes, filename: str) -> str:
             temp_path = temp_file.name
 
         result = MarkItDown().convert(temp_path)
-        return (getattr(result, "text_content", "") or "").strip()
+        return (getattr(result, "markdown", "") or "").strip()
     except Exception as exc:
         raise SubjectDocumentError("No se pudo convertir el archivo a Markdown", 400) from exc
     finally:
@@ -124,14 +98,6 @@ def _convert_with_markitdown(file_bytes: bytes, filename: str) -> str:
                 os.unlink(temp_path)
             except OSError:
                 pass
-
-
-def _convert_to_markdown(file_bytes: bytes, filename: str) -> str:
-    extension = Path(filename).suffix.lower()
-    if extension in PLAIN_TEXT_EXTENSIONS:
-        return _decode_text(file_bytes)
-
-    return _convert_with_markitdown(file_bytes, filename)
 
 
 def _normalize_markdown(markdown: str) -> str:
@@ -226,10 +192,16 @@ def ingest_subject_document(subject_code: str, uploaded_by: str, file_storage: F
         raise SubjectDocumentError("Codigo de asignatura invalido")
 
     filename = secure_filename(file_storage.filename or "") or "documento"
-    content_type = file_storage.mimetype or file_storage.content_type or "application/octet-stream"
+    supplied_content_type = file_storage.mimetype or file_storage.content_type or "application/octet-stream"
     file_bytes = _read_upload(file_storage)
+    try:
+        extension = validate_document_format(filename, supplied_content_type, file_bytes)
+    except DocumentFormatError as exc:
+        raise SubjectDocumentError(exc.message, exc.status_code) from exc
+
+    content_type = CANONICAL_DOCUMENT_MIME_TYPES[extension]
     source_hash = hashlib.sha256(file_bytes).hexdigest()
-    markdown = _normalize_markdown(_convert_to_markdown(file_bytes, filename))
+    markdown = _normalize_markdown(_convert_with_markitdown(file_bytes, filename))
     chunks = _chunk_markdown(markdown)
 
     ensure_schema()

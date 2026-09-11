@@ -28,3 +28,9 @@ export const ANIMATION_MAPPINGS = {
     surprise: 'surprise',
     angry: 'angry',
 };
+
+export const SUBJECT_DOCUMENT_UPLOAD = {
+    acceptedExtensions: ['.pdf', '.pptx'],
+    accept: '.pdf,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    maxSizeMB: 15,
+};

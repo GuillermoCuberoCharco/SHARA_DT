@@ -12,10 +12,12 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from flask import Flask, send_from_directory
+from flask import Flask, jsonify, send_from_directory
 from flask_socketio import SocketIO
 
 load_dotenv()
+
+from document_formats import MAX_UPLOAD_BYTES, MAX_UPLOAD_MB
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +29,7 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='')
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'shara-woz-secret')
+app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES + (1024 * 1024)
 
 socketio = SocketIO(
     app,
@@ -57,6 +60,13 @@ from sockets.message_handler import MessageNamespace
 
 socketio.on_namespace(MessageNamespace('/message'))
 logger.info('Namespace registered: /message')
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return jsonify({
+        'error': f'El archivo supera el limite de {MAX_UPLOAD_MB} MB',
+    }), 413
 
 
 @app.route('/health')

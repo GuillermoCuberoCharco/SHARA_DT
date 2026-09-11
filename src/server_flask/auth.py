@@ -24,6 +24,7 @@ import psycopg
 from flask import Blueprint, jsonify, request
 
 from db import ensure_schema, get_db_connection
+from document_formats import get_document_upload_constraints
 from services.subject_documents import (
     SubjectDocumentError,
     delete_subject_document,
@@ -484,7 +485,10 @@ def get_teacher_subject_documents(subject_code):
         logger.exception("[Auth] Database error while listing subject documents")
         return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
 
-    return jsonify({"documents": documents})
+    return jsonify({
+        "documents": documents,
+        "upload_constraints": get_document_upload_constraints(),
+    })
 
 
 @auth_bp.route("/auth/teacher/subjects/<subject_code>/documents", methods=["POST"])

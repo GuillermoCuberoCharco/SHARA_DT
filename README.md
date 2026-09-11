@@ -14,6 +14,7 @@ La rama `PI-ChatShara` implementa actualmente:
 - Contexto privado para profesorado con acceso a los historiales completos del alumnado de su asignatura activa, sin exponer esos chats en la UI.
 - Interfaz web de chat con estado de conexion, espera, grabacion de audio y reproduccion opcional de voz.
 - Gestion de asignaturas desde la propia interfaz: el alumnado solo puede vincular asignaturas existentes y el profesorado puede crear asignaturas con limite opcional de alumnos.
+- Gestion de materiales docentes por asignatura, limitada a PDF (`.pdf`) y PowerPoint moderno (`.pptx`) de hasta 15 MB por archivo.
 - STT y TTS con Google Cloud integrados en el flujo del chat.
 - Vista visual del robot con ojos animados y anillo LED.
 
@@ -30,9 +31,11 @@ PI-ChatShara
 |   |-- create_user.py              # Utilidad CLI para crear o actualizar usuarios
 |   |-- migrate_users_json.py       # Importa usuarios legacy desde users.json
 |   |-- state_machine.py            # Estado por usuario y ejecucion de consultas
+|   |-- document_formats.py         # Politica y validacion binaria de PDF/PPTX
 |   |-- subject_codes.py            # Normalizacion y validacion de codigos de asignatura
 |   |-- sockets/message_handler.py  # Namespace /message autenticado
 |   |-- user_roles.py               # Roles validos y utilidades de autorizacion
+|   |-- services/subject_documents.py # Conversion, fragmentacion y busqueda de materiales
 |   `-- services/cloud
 |       |-- server.py               # Pipeline de consulta al modelo
 |       |-- google_api.py           # STT/TTS de Google Cloud
@@ -104,11 +107,13 @@ Usuario autenticado escribe texto o envia audio
 - Tabla de asignaturas: `subjects(code, created_by, max_students, created_at)`.
 - Relacion usuario-asignatura: `user_subjects(user_id, subject_code, created_at)`.
 - Tabla de conversaciones: `chat_messages(id, user_id, subject_code, role, content, created_at)`.
+- Tabla de materiales: `subject_documents(id, subject_code, uploaded_by, original_filename, content_type, source_hash, markdown_content, char_count, chunk_count, status, ...)`.
+- Tabla de fragmentos: `subject_document_chunks(id, document_id, subject_code, chunk_index, heading, content, char_count, ...)`.
 - Sesion web: el frontend guarda `auth_token`, `auth_user_id`, `auth_user_role`, `auth_subject_code` y `auth_subject_codes` en `localStorage`.
 - Conversaciones: se guardan en Postgres por `user_id` y `subject_code`.
 - Reinicio del servidor: tanto los usuarios como el historial de chat persisten.
 
-El backend crea automaticamente las tablas `users`, `subjects`, `user_subjects` y `chat_messages` al arrancar si todavia no existen, incluyendo columnas, constraints e indices nuevos cuando la base ya existia.
+El backend crea automaticamente las tablas `users`, `subjects`, `user_subjects`, `chat_messages`, `subject_documents` y `subject_document_chunks` al arrancar si todavia no existen, incluyendo columnas, constraints e indices nuevos cuando la base ya existia.
 
 ## API HTTP
 
@@ -118,6 +123,10 @@ El backend crea automaticamente las tablas `users`, `subjects`, `user_subjects` 
 | `POST` | `/auth/register` | Registra un alumno y devuelve `{ token, user_id, role, subject_code, subject_codes }` |
 | `POST` | `/auth/subjects` | Vincula asignaturas existentes al usuario autenticado y devuelve la lista actualizada |
 | `POST` | `/auth/teacher/subjects` | Crea una asignatura nueva como profesor y la vincula a su cuenta |
+| `GET` | `/auth/teacher/subjects/<subject_code>/documents` | Lista los materiales de una asignatura accesible para el profesor |
+| `POST` | `/auth/teacher/subjects/<subject_code>/documents` | Convierte y guarda un archivo PDF o PPTX de hasta 15 MB |
+| `GET` | `/auth/teacher/subjects/<subject_code>/documents/<document_id>` | Devuelve los metadatos y Markdown extraido de un material |
+| `DELETE` | `/auth/teacher/subjects/<subject_code>/documents/<document_id>` | Elimina un material y sus fragmentos |
 | `POST` | `/auth/switch-subject` | Cambia la asignatura activa del usuario autenticado y devuelve un nuevo JWT |
 | `GET` | `/health` | Devuelve `{ status, active_queries }` |
 | `GET` | `/*` | Sirve la SPA de React en produccion |
@@ -259,6 +268,7 @@ GOOGLE_CLIENT_EMAIL=...            # Opcion 1 para credenciales de Google Cloud
 GOOGLE_PRIVATE_KEY=...             # Opcion 1 para credenciales de Google Cloud
 GOOGLE_PROJECT_ID=...              # Opcion 1 para credenciales de Google Cloud
 GOOGLE_APPLICATION_CREDENTIALS=... # Opcion 2: JSON completo o ruta a fichero
+SUBJECT_DOCUMENT_MAX_MB=15         # Limite por PDF/PPTX subido por profesorado
 PORT=8081                          # Opcional, por defecto: 8081
 ```
 
@@ -273,6 +283,7 @@ Las credenciales de Google Cloud son necesarias para el envio de audio y para la
 - OpenAI API key
 - Credenciales de Google Cloud Speech/Text-to-Speech si se quiere usar audio
 - Una base de datos Postgres accesible desde el backend
+- MarkItDown con extras `pdf` y `pptx` (instalado desde `requirements.txt`)
 
 ## Desarrollo local
 
@@ -377,6 +388,8 @@ El script hace upsert sobre la tabla `users`, asi que sirve tanto para importar 
 - El registro publico solo crea cuentas `student`; las cuentas `teacher` deben crearse por CLI o por un backoffice futuro.
 - El profesorado recibe el historial del alumnado como contexto interno del modelo, pero no existe todavia una vista administrativa para navegar esos chats en bruto.
 - Si el volumen de conversaciones por asignatura crece mucho, el contexto docente puede verse truncado por el modelo.
+- Los materiales admitidos son PDF con extension `.pdf` y PowerPoint moderno con extension `.pptx`; el formato legacy `.ppt` no se admite.
+- La conversion actual no aplica OCR, por lo que los PDF escaneados y el contenido exclusivamente visual pueden no producir texto util.
 
 ## Legado conservado como referencia
 

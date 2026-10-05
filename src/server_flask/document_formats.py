@@ -62,7 +62,7 @@ def _normalize_content_type(content_type: str) -> str:
 
 def _validate_pdf(file_bytes: bytes):
     if b"%PDF-" not in file_bytes[:1024]:
-        raise DocumentFormatError("El archivo no contiene un PDF valido")
+        raise DocumentFormatError("El archivo no contiene un PDF válido")
 
 
 def _validate_pptx(file_bytes: bytes):
@@ -70,7 +70,7 @@ def _validate_pptx(file_bytes: bytes):
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
             entries = archive.infolist()
             if len(entries) > MAX_PPTX_ARCHIVE_FILES:
-                raise DocumentFormatError("La presentacion PPTX contiene demasiados elementos", 413)
+                raise DocumentFormatError("La presentación PPTX contiene demasiados elementos", 413)
 
             normalized_names = set()
             expanded_size = 0
@@ -78,7 +78,7 @@ def _validate_pptx(file_bytes: bytes):
                 normalized_name = entry.filename.replace("\\", "/")
                 path = PurePosixPath(normalized_name)
                 if normalized_name.startswith("/") or ".." in path.parts:
-                    raise DocumentFormatError("La presentacion PPTX contiene rutas no validas")
+                    raise DocumentFormatError("La presentación PPTX contiene rutas no válidas")
                 if entry.flag_bits & 0x1:
                     raise DocumentFormatError("No se admiten presentaciones PPTX cifradas")
 
@@ -86,22 +86,22 @@ def _validate_pptx(file_bytes: bytes):
                 expanded_size += entry.file_size
 
             if expanded_size > MAX_PPTX_EXPANDED_BYTES:
-                raise DocumentFormatError("La presentacion PPTX es demasiado grande al descomprimirse", 413)
+                raise DocumentFormatError("La presentación PPTX es demasiado grande al descomprimirse", 413)
 
             if not _PPTX_REQUIRED_FILES.issubset(normalized_names):
-                raise DocumentFormatError("El archivo no contiene una presentacion PPTX valida")
+                raise DocumentFormatError("El archivo no contiene una presentación PPTX válida")
 
             content_types_info = archive.getinfo("[Content_Types].xml")
             if content_types_info.file_size > MAX_PPTX_CONTENT_TYPES_BYTES:
-                raise DocumentFormatError("La presentacion PPTX contiene metadatos no validos")
+                raise DocumentFormatError("La presentación PPTX contiene metadatos no válidos")
 
             content_types = archive.read(content_types_info)
             if _PPTX_PRESENTATION_CONTENT_TYPE not in content_types:
-                raise DocumentFormatError("El archivo no contiene una presentacion PPTX valida")
+                raise DocumentFormatError("El archivo no contiene una presentación PPTX válida")
     except DocumentFormatError:
         raise
     except (KeyError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
-        raise DocumentFormatError("El archivo no contiene una presentacion PPTX valida") from exc
+        raise DocumentFormatError("El archivo no contiene una presentación PPTX válida") from exc
 
 
 def validate_document_format(filename: str, content_type: str, file_bytes: bytes) -> str:

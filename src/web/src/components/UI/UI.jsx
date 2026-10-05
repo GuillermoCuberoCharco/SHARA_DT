@@ -157,7 +157,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
             setTimeout(scrollToBottom, 100);
         } else {
             appendMessage({
-                text: 'No se pudo enviar el mensaje. Comprueba tu conexion.',
+                text: 'No se pudo enviar el mensaje. Comprueba tu conexión.',
                 sender: 'robot',
             });
         }
@@ -333,7 +333,7 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         if (normalizedMaxStudents) {
             maxStudents = Number(normalizedMaxStudents);
             if (!Number.isInteger(maxStudents) || maxStudents < 1) {
-                setSubjectFeedback('El limite de alumnos debe ser un numero entero positivo.');
+                setSubjectFeedback('El límite de alumnos debe ser un número entero positivo.');
                 setSubjectFeedbackTone('error');
                 return null;
             }

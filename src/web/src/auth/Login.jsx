@@ -35,7 +35,7 @@ const Login = ({ onLoginSuccess }) => {
         setError('');
 
         if (mode === 'register' && password !== confirmPassword) {
-            setError('Las contrasenas no coinciden');
+            setError('Las contraseñas no coinciden');
             return;
         }
 
@@ -67,7 +67,7 @@ const Login = ({ onLoginSuccess }) => {
                 <div className="login-avatar">🤖</div>
                 <h1 className="login-title">SHARA</h1>
                 <p className="login-subtitle">
-                    {isLogin ? 'Inicia sesion para continuar' : 'Crea tu cuenta'}
+                    {isLogin ? 'Inicia sesión para continuar' : 'Crea tu cuenta'}
                 </p>
 
                 <div className="login-tabs">
@@ -103,7 +103,7 @@ const Login = ({ onLoginSuccess }) => {
                     </div>
 
                     <div className="login-field">
-                        <label htmlFor="password">Contrasena</label>
+                        <label htmlFor="password">Contraseña</label>
                         <input
                             id="password"
                             type="password"
@@ -117,7 +117,7 @@ const Login = ({ onLoginSuccess }) => {
 
                     {!isLogin && (
                         <div className="login-field">
-                            <label htmlFor="confirmPassword">Confirmar contrasena</label>
+                            <label htmlFor="confirmPassword">Confirmar contraseña</label>
                             <input
                                 id="confirmPassword"
                                 type="password"
@@ -132,7 +132,7 @@ const Login = ({ onLoginSuccess }) => {
 
                     <div className="login-field">
                         <label htmlFor="subjectCode">
-                            {isLogin ? 'Codigo de asignatura' : 'Codigo/s de asignatura'}
+                            {isLogin ? 'Código de asignatura' : 'Código/s de asignatura'}
                         </label>
                         <input
                             id="subjectCode"

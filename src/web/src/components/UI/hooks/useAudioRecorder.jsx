@@ -251,8 +251,8 @@ const useAudioRecorder = ({ isWaitingResponse, onAudioSubmitted, onAudioError })
             releaseRecordingResources();
 
             const message = error?.name === 'NotAllowedError'
-                ? 'No tengo permiso para usar el microfono en este navegador.'
-                : 'No he podido iniciar la grabacion de audio.';
+                ? 'No tengo permiso para usar el micrófono en este navegador.'
+                : 'No he podido iniciar la grabación de audio.';
             onAudioError?.(message);
         } finally {
             startInProgressRef.current = false;

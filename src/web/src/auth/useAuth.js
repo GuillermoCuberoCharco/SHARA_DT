@@ -42,7 +42,7 @@ export const useAuth = () => {
             body: JSON.stringify({ username, password, subject_code: subjectCode }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Error al iniciar sesion');
+        if (!res.ok) throw new Error(data.error || 'Error al iniciar sesión');
         _storeSession(data);
         return data;
     };
@@ -62,7 +62,7 @@ export const useAuth = () => {
     const addSubjects = async (subjectCodes) => {
         const token = getToken();
         if (!token) {
-            throw new Error('Sesion no valida');
+            throw new Error('Sesión no válida');
         }
 
         const res = await fetch(`${SERVER_URL}/auth/subjects`, {
@@ -82,7 +82,7 @@ export const useAuth = () => {
     const createSubject = async (subjectCode, maxStudents) => {
         const token = getToken();
         if (!token) {
-            throw new Error('Sesion no valida');
+            throw new Error('Sesión no válida');
         }
 
         const res = await fetch(`${SERVER_URL}/auth/teacher/subjects`, {
@@ -105,7 +105,7 @@ export const useAuth = () => {
     const switchSubject = async (subjectCode) => {
         const token = getToken();
         if (!token) {
-            throw new Error('Sesion no valida');
+            throw new Error('Sesión no válida');
         }
 
         const res = await fetch(`${SERVER_URL}/auth/switch-subject`, {
@@ -125,7 +125,7 @@ export const useAuth = () => {
     const listSubjectDocuments = async (subjectCode) => {
         const token = getToken();
         if (!token) {
-            throw new Error('Sesion no valida');
+            throw new Error('Sesión no válida');
         }
 
         const res = await fetch(`${SERVER_URL}/auth/teacher/subjects/${encodeURIComponent(subjectCode)}/documents`, {
@@ -142,7 +142,7 @@ export const useAuth = () => {
     const uploadSubjectDocument = async (subjectCode, file) => {
         const token = getToken();
         if (!token) {
-            throw new Error('Sesion no valida');
+            throw new Error('Sesión no válida');
         }
 
         const formData = new FormData();
@@ -163,7 +163,7 @@ export const useAuth = () => {
     const deleteSubjectDocument = async (subjectCode, documentId) => {
         const token = getToken();
         if (!token) {
-            throw new Error('Sesion no valida');
+            throw new Error('Sesión no válida');
         }
 
         const res = await fetch(

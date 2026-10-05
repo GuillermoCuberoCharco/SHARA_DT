@@ -90,19 +90,19 @@ def _parse_max_students(raw_value) -> int | None:
         if not raw_value:
             return None
         if not raw_value.isdigit():
-            raise AuthActionError("El limite de alumnos debe ser un numero entero positivo")
+            raise AuthActionError("El límite de alumnos debe ser un número entero positivo")
         max_students = int(raw_value)
     elif isinstance(raw_value, bool):
-        raise AuthActionError("El limite de alumnos debe ser un numero entero positivo")
+        raise AuthActionError("El límite de alumnos debe ser un número entero positivo")
     elif isinstance(raw_value, int):
         max_students = raw_value
     elif isinstance(raw_value, float) and raw_value.is_integer():
         max_students = int(raw_value)
     else:
-        raise AuthActionError("El limite de alumnos debe ser un numero entero positivo")
+        raise AuthActionError("El límite de alumnos debe ser un número entero positivo")
 
     if max_students < 1:
-        raise AuthActionError("El limite de alumnos debe ser mayor que cero")
+        raise AuthActionError("El límite de alumnos debe ser mayor que cero")
 
     return max_students
 
@@ -151,7 +151,7 @@ def _assign_existing_subjects_in_transaction(cur, username: str, subject_codes: 
             student_count = cur.fetchone()["student_count"]
             if student_count >= subject["max_students"]:
                 raise AuthActionError(
-                    f"La asignatura {subject_code} ha alcanzado el limite de alumnos",
+                    f"La asignatura {subject_code} ha alcanzado el límite de alumnos",
                     409,
                 )
 
@@ -279,7 +279,7 @@ def _load_teacher_subject_context(raw_subject_code: str) -> tuple[dict[str, str]
     token = _extract_bearer_token()
     auth_context = verify_token(token) if token else None
     if not auth_context:
-        raise AuthActionError("Sesion no valida", 401)
+        raise AuthActionError("Sesión no válida", 401)
 
     if not is_teacher_role(auth_context["role"]):
         raise AuthActionError("Solo el profesorado puede gestionar materiales", 403)
@@ -289,7 +289,7 @@ def _load_teacher_subject_context(raw_subject_code: str) -> tuple[dict[str, str]
         raise AuthActionError("Debes indicar una asignatura")
 
     if not is_valid_subject_code(subject_code):
-        raise AuthActionError("Codigo de asignatura invalido")
+        raise AuthActionError("Código de asignatura inválido")
 
     if not _user_has_subject(auth_context["user_id"], subject_code):
         raise AuthActionError("No tienes acceso a esa asignatura", 403)
@@ -305,16 +305,16 @@ def login():
     subject_code = normalize_subject_code(data.get("subject_code"))
 
     if not username or not password or not subject_code:
-        return jsonify({"error": "Usuario, contrasena y asignatura requeridos"}), 400
+        return jsonify({"error": "Usuario, contraseña y asignatura requeridos"}), 400
 
     if not is_valid_subject_code(subject_code):
-        return jsonify({"error": "Codigo de asignatura invalido"}), 400
+        return jsonify({"error": "Código de asignatura inválido"}), 400
 
     try:
         user = _fetch_user(username)
     except psycopg.Error:
         logger.exception("[Auth] Database error during login")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     if not user or not bcrypt.checkpw(
         password.encode("utf-8"),
@@ -328,7 +328,7 @@ def login():
         user_subjects = _fetch_user_subjects(username)
     except psycopg.Error:
         logger.exception("[Auth] Database error loading user subjects during login")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     if not has_subject:
         return jsonify({"error": "No tienes acceso a esa asignatura"}), 403
@@ -353,16 +353,16 @@ def register():
     subject_codes = parse_subject_codes(raw_subject_codes)
 
     if not username or not password or not subject_codes:
-        return jsonify({"error": "Usuario, contrasena y asignatura requeridos"}), 400
+        return jsonify({"error": "Usuario, contraseña y asignatura requeridos"}), 400
 
     if not USERNAME_RE.match(username):
-        return jsonify({"error": "Usuario: 3-20 caracteres, solo letras, numeros, _ o -"}), 400
+        return jsonify({"error": "Usuario: 3-20 caracteres, solo letras, números, _ o -"}), 400
 
     if len(password) < MIN_PASSWORD_LEN:
-        return jsonify({"error": f"La contrasena debe tener al menos {MIN_PASSWORD_LEN} caracteres"}), 400
+        return jsonify({"error": f"La contraseña debe tener al menos {MIN_PASSWORD_LEN} caracteres"}), 400
 
     if any(not is_valid_subject_code(subject_code) for subject_code in subject_codes):
-        return jsonify({"error": "Codigo de asignatura invalido"}), 400
+        return jsonify({"error": "Código de asignatura inválido"}), 400
 
     password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -372,10 +372,10 @@ def register():
         return jsonify({"error": exc.message}), exc.status_code
     except psycopg.Error:
         logger.exception("[Auth] Database error during registration")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     if not created:
-        return jsonify({"error": "El nombre de usuario ya esta en uso"}), 409
+        return jsonify({"error": "El nombre de usuario ya está en uso"}), 409
 
     logger.info(f"[Auth] Registered new user: {username}")
     return jsonify({
@@ -392,7 +392,7 @@ def add_subjects():
     token = _extract_bearer_token()
     auth_context = verify_token(token) if token else None
     if not auth_context:
-        return jsonify({"error": "Sesion no valida"}), 401
+        return jsonify({"error": "Sesión no válida"}), 401
 
     data = request.get_json(silent=True) or {}
     raw_subject_codes = data.get("subject_codes", data.get("subject_code"))
@@ -402,7 +402,7 @@ def add_subjects():
         return jsonify({"error": "Debes indicar al menos una asignatura"}), 400
 
     if any(not is_valid_subject_code(subject_code) for subject_code in subject_codes):
-        return jsonify({"error": "Codigo de asignatura invalido"}), 400
+        return jsonify({"error": "Código de asignatura inválido"}), 400
 
     user_id = auth_context["user_id"]
 
@@ -414,7 +414,7 @@ def add_subjects():
         return jsonify({"error": exc.message}), exc.status_code
     except psycopg.Error:
         logger.exception("[Auth] Database error while adding subjects")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     added_subjects = [subject_code for subject_code in updated_subjects if subject_code not in previous_subjects]
     logger.info("[Auth] Added subjects for %s: %s", user_id, ", ".join(added_subjects) or "none")
@@ -433,7 +433,7 @@ def create_teacher_subject():
     token = _extract_bearer_token()
     auth_context = verify_token(token) if token else None
     if not auth_context:
-        return jsonify({"error": "Sesion no valida"}), 401
+        return jsonify({"error": "Sesión no válida"}), 401
 
     if not is_teacher_role(auth_context["role"]):
         return jsonify({"error": "Solo el profesorado puede crear asignaturas"}), 403
@@ -445,7 +445,7 @@ def create_teacher_subject():
         return jsonify({"error": "Debes indicar una asignatura"}), 400
 
     if not is_valid_subject_code(subject_code):
-        return jsonify({"error": "Codigo de asignatura invalido"}), 400
+        return jsonify({"error": "Código de asignatura inválido"}), 400
 
     try:
         max_students = _parse_max_students(data.get("max_students"))
@@ -459,7 +459,7 @@ def create_teacher_subject():
         return jsonify({"error": exc.message}), exc.status_code
     except psycopg.Error:
         logger.exception("[Auth] Database error while creating teacher subject")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     logger.info("[Auth] Teacher %s created subject: %s", auth_context["user_id"], subject_code)
     return jsonify({
@@ -483,7 +483,7 @@ def get_teacher_subject_documents(subject_code):
         return jsonify({"error": exc.message}), exc.status_code
     except psycopg.Error:
         logger.exception("[Auth] Database error while listing subject documents")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     return jsonify({
         "documents": documents,
@@ -510,7 +510,7 @@ def upload_teacher_subject_document(subject_code):
         return jsonify({"error": exc.message}), exc.status_code
     except psycopg.Error:
         logger.exception("[Auth] Database error while uploading subject document")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     logger.info(
         "[Auth] Teacher %s uploaded document %s for subject %s",
@@ -530,7 +530,7 @@ def get_teacher_subject_document(subject_code, document_id):
         return jsonify({"error": exc.message}), exc.status_code
     except psycopg.Error:
         logger.exception("[Auth] Database error while loading subject document")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     if document is None:
         return jsonify({"error": "Material no encontrado"}), 404
@@ -547,7 +547,7 @@ def delete_teacher_subject_document(subject_code, document_id):
         return jsonify({"error": exc.message}), exc.status_code
     except psycopg.Error:
         logger.exception("[Auth] Database error while deleting subject document")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     if not deleted:
         return jsonify({"error": "Material no encontrado"}), 404
@@ -560,7 +560,7 @@ def switch_subject():
     token = _extract_bearer_token()
     auth_context = verify_token(token) if token else None
     if not auth_context:
-        return jsonify({"error": "Sesion no valida"}), 401
+        return jsonify({"error": "Sesión no válida"}), 401
 
     data = request.get_json(silent=True) or {}
     subject_code = normalize_subject_code(data.get("subject_code"))
@@ -569,7 +569,7 @@ def switch_subject():
         return jsonify({"error": "Debes indicar una asignatura"}), 400
 
     if not is_valid_subject_code(subject_code):
-        return jsonify({"error": "Codigo de asignatura invalido"}), 400
+        return jsonify({"error": "Código de asignatura inválido"}), 400
 
     user_id = auth_context["user_id"]
 
@@ -578,7 +578,7 @@ def switch_subject():
         user_subjects = _fetch_user_subjects(user_id)
     except psycopg.Error:
         logger.exception("[Auth] Database error while switching subjects")
-        return jsonify({"error": "Servicio de autenticacion no disponible"}), 500
+        return jsonify({"error": "Servicio de autenticación no disponible"}), 500
 
     if not has_subject:
         return jsonify({"error": "No tienes acceso a esa asignatura"}), 403

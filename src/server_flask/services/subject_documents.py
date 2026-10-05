@@ -62,11 +62,11 @@ def _document_summary(row: dict) -> dict:
 def _read_upload(file_storage: FileStorage) -> bytes:
     file_bytes = file_storage.read(MAX_UPLOAD_BYTES + 1)
     if not file_bytes:
-        raise SubjectDocumentError("El archivo esta vacio")
+        raise SubjectDocumentError("El archivo está vacío")
 
     if len(file_bytes) > MAX_UPLOAD_BYTES:
         max_mb = max(1, MAX_UPLOAD_BYTES // (1024 * 1024))
-        raise SubjectDocumentError(f"El archivo supera el limite de {max_mb} MB", 413)
+        raise SubjectDocumentError(f"El archivo supera el límite de {max_mb} MB", 413)
 
     return file_bytes
 
@@ -105,7 +105,7 @@ def _normalize_markdown(markdown: str) -> str:
     normalized = re.sub(r"\n{4,}", "\n\n\n", normalized).strip()
 
     if not normalized:
-        raise SubjectDocumentError("La conversion no produjo contenido legible")
+        raise SubjectDocumentError("La conversión no produjo contenido legible")
 
     return normalized
 
@@ -181,7 +181,7 @@ def _chunk_markdown(markdown: str) -> list[dict[str, str]]:
             })
 
     if not chunks:
-        raise SubjectDocumentError("La conversion no produjo fragmentos utiles")
+        raise SubjectDocumentError("La conversión no produjo fragmentos útiles")
 
     return chunks
 
@@ -189,7 +189,7 @@ def _chunk_markdown(markdown: str) -> list[dict[str, str]]:
 def ingest_subject_document(subject_code: str, uploaded_by: str, file_storage: FileStorage) -> dict:
     normalized_subject = normalize_subject_code(subject_code)
     if not is_valid_subject_code(normalized_subject):
-        raise SubjectDocumentError("Codigo de asignatura invalido")
+        raise SubjectDocumentError("Código de asignatura inválido")
 
     filename = secure_filename(file_storage.filename or "") or "documento"
     supplied_content_type = file_storage.mimetype or file_storage.content_type or "application/octet-stream"

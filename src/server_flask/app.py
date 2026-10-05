@@ -65,7 +65,7 @@ logger.info('Namespace registered: /message')
 @app.errorhandler(413)
 def request_too_large(_error):
     return jsonify({
-        'error': f'El archivo supera el limite de {MAX_UPLOAD_MB} MB',
+        'error': f'El archivo supera el límite de {MAX_UPLOAD_MB} MB',
     }), 413
 
 

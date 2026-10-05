@@ -137,7 +137,7 @@ const ChatWindow = ({
     deletingSubjectDocumentId,
 }) => {
     const getStatusInfo = () => {
-        if (connectionError) return { dot: 'error', label: 'Sin conexion' };
+        if (connectionError) return { dot: 'error', label: 'Sin conexión' };
         if (!isRegistered) return { dot: 'connecting', label: 'Conectando...' };
         if (conversationState === 'recording' || isRecording) return { dot: 'recording', label: 'Grabando...' };
         if (isWaitingResponse) return { dot: 'processing', label: 'Procesando...' };
@@ -280,7 +280,7 @@ const ChatWindow = ({
         if (oversizedFile) {
             setDocumentFiles([]);
             setDocumentInputError(
-                `${oversizedFile.name} supera el limite de ${maxDocumentSizeMB} MB.`,
+                `${oversizedFile.name} supera el límite de ${maxDocumentSizeMB} MB.`,
             );
             event.target.value = '';
             return;
@@ -356,7 +356,7 @@ const ChatWindow = ({
                         </button>
                     )}
                     {onLogout && (
-                        <button className="chat-logout-btn" onClick={onLogout} title="Cerrar sesion" type="button">
+                        <button className="chat-logout-btn" onClick={onLogout} title="Cerrar sesión" type="button">
                             <LogoutIcon />
                         </button>
                     )}
@@ -401,7 +401,7 @@ const ChatWindow = ({
                             type="text"
                             value={subjectInput}
                             onChange={(event) => setSubjectInput(event.target.value)}
-                            placeholder="codigo existente"
+                            placeholder="código existente"
                             autoComplete="off"
                             disabled={isAddingSubjects || isCreatingSubject || isSwitchingSubject}
                         />
@@ -429,7 +429,7 @@ const ChatWindow = ({
                                 step="1"
                                 value={maxStudentsInput}
                                 onChange={(event) => setMaxStudentsInput(event.target.value)}
-                                placeholder="limite"
+                                placeholder="límite"
                                 autoComplete="off"
                                 disabled={isAddingSubjects || isCreatingSubject || isSwitchingSubject}
                             />
@@ -475,7 +475,7 @@ const ChatWindow = ({
                             >
                                 {documentInputError || (
                                     `Formatos permitidos: PDF (.pdf) y PowerPoint (.pptx). `
-                                    + `Maximo ${maxDocumentSizeMB} MB por archivo.`
+                                    + `Máximo ${maxDocumentSizeMB} MB por archivo.`
                                 )}
                             </p>
 
@@ -523,7 +523,7 @@ const ChatWindow = ({
                     )}
 
                     <p className={`subject-manager-help ${subjectFeedbackTone}`}>
-                        {subjectFeedback || 'Pulsa una asignatura para cambiar de contexto o vincula un codigo existente.'}
+                        {subjectFeedback || 'Pulsa una asignatura para cambiar de contexto o vincula un código existente.'}
                     </p>
                 </div>
             )}
@@ -534,7 +534,7 @@ const ChatWindow = ({
                         <span className="chat-empty-icon">
                             <BubbleIcon />
                         </span>
-                        <p>Hola, soy SHARA.<br />En que puedo ayudarte hoy?</p>
+                        <p>Hola, soy SHARA.<br />¿En qué puedo ayudarte hoy?</p>
                     </div>
                 )}
 
@@ -568,7 +568,7 @@ const ChatWindow = ({
                     className={`audio-btn ${isRecording ? 'recording' : ''}`}
                     onClick={isRecording ? onStopRecording : onStartRecording}
                     disabled={!isRegistered || isWaitingResponse}
-                    title={isRecording ? 'Detener grabacion' : 'Grabar audio'}
+                    title={isRecording ? 'Detener grabación' : 'Grabar audio'}
                     type="button"
                 >
                     {isRecording ? <StopIcon /> : <MicIcon />}
@@ -599,8 +599,8 @@ const ChatWindow = ({
             </div>
             <div className="input-hint">
                 {isRecording
-                    ? 'Pulsa otra vez para detener la grabacion o espera al silencio.'
-                    : 'Intro para enviar - Mayus+Intro para nueva linea'}
+                    ? 'Pulsa otra vez para detener la grabación o espera al silencio.'
+                    : 'Intro para enviar - Mayús+Intro para nueva línea'}
             </div>
         </div>
     );

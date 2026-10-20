@@ -73,8 +73,8 @@ SHARA_DT
 ### 2. Presencia facial
 
 1. Tras autenticarse, el navegador solicita camara si hay dispositivo disponible.
-2. `FaceDetection.jsx` carga BlazeFace y evalua la presencia localmente cada `250 ms`.
-3. Con dos detecciones consecutivas validas, emite `user_detected`.
+2. `FaceDetection.jsx` carga BlazeFace y evalua la presencia localmente cada `250 ms`, sin solapar inferencias.
+3. La presencia requiere confianza minima de `0.90`, una cara suficientemente grande, cajas estables y al menos seis muestras durante `1.25 s` antes de emitir `user_detected`.
 4. Si la cara se pierde durante suficiente tiempo, emite `user_lost`.
 5. SHARA usa la presencia para pasar de `idle` a `idle_presence` y despues a `listening`.
 6. Si el usuario no tiene `shara_name`, el flujo proactivo puede preguntar quien es y registrar el nombre mediante `record_face`.
@@ -97,7 +97,7 @@ SHARA_DT
 - Usuario conocido: `ProactiveService` puede disparar `ask_how_are_you`.
 - Usuario desconocido o sin `shara_name`: puede disparar `ask_who_are_you`.
 - Tras una interaccion sin nombre confirmado, la maquina puede activar `casual_ask_known_username`, que habilita `set_username`.
-- El cooldown de preguntas proactivas es de `120 s`.
+- El cooldown de preguntas proactivas es de `1.800 s` (`30 min`).
 
 ## Estados del Robot
 

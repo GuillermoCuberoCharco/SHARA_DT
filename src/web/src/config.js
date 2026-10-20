@@ -8,7 +8,23 @@
  */
 export const SERVER_URL = (import.meta.env.PROD ? '' : 'http://localhost:8081');
 
-export const DETECTION_INTERVAL_MS = 250;
+export const FACE_DETECTION_SETTINGS = Object.freeze({
+    intervalMs: 250,
+    modelScoreThreshold: 0.9,
+    minProbability: 0.9,
+    minFaceSizePx: 96,
+    minFaceSizeRatio: 0.22,
+    minAspectRatio: 0.65,
+    maxAspectRatio: 1.5,
+    minStableSamples: 6,
+    minStableDurationMs: 1250,
+    minBoxIou: 0.5,
+    minConsecutiveLosses: 3,
+    lossTimeoutMs: 10000,
+});
+
+// Kept as a named export for compatibility with older imports.
+export const DETECTION_INTERVAL_MS = FACE_DETECTION_SETTINGS.intervalMs;
 export const RECOGNITION_REQUEST_TIMEOUT_MS = 60000;
 
 export const AUDIO_SETTINGS = {

@@ -144,7 +144,7 @@ class MessageNamespace(Namespace):
         state_machine.on_user_detected(request.sid, data or {})
 
     def on_user_lost(self, data):
-        logger.info(f'[/message] user_lost from {request.sid}')
+        logger.info(f'[/message] user_lost from {request.sid}: {data}')
         state_machine.on_user_lost(request.sid, data or {})
 
     def on_tts_complete(self, data):

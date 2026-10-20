@@ -939,7 +939,13 @@ def on_user_lost(sid: str, user_data: dict):
     if not context:
         return
 
-    logger.info('User lost: sid=%s state=%s', sid, context.state)
+    logger.info(
+        'User lost: sid=%s state=%s reason=%s last_seen_ago_ms=%s',
+        sid,
+        context.state,
+        (user_data or {}).get('reason'),
+        (user_data or {}).get('lastSeenAgoMs'),
+    )
     _persist_current_conversation(context)
     context.face_session_id = None
     context.proactive_question = ''

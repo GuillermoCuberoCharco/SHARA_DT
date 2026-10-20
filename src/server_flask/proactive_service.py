@@ -37,8 +37,8 @@ class ProactiveService:
 
     # How long (seconds) a user must be present before a proactive greeting
     PRESENCE_TIMEOUT = 8
-    # Cooldown (seconds) between proactive questions for the same user
-    COOLDOWN = 120
+    # Cooldown (seconds) between proactive questions for the same user (30 min)
+    COOLDOWN = 30 * 60
 
     def __init__(self, callback):
         self.callback = callback

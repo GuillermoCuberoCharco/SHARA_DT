@@ -130,3 +130,6 @@ proyecto-1-450222-8c00d6ef9620.json
 
 # User database — create locally with create_user.py
 src/server_flask/files/users.json
+
+# Local Neon administration snippets (may contain credentials when edited)
+/.neon_admin.sql

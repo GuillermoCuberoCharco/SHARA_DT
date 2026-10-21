@@ -84,7 +84,7 @@ SHARA_DT
 1. Cuando hay presencia y el sistema esta libre, el frontend inicia grabacion automaticamente.
 2. `useAudioRecorder.jsx` usa `AudioWorklet` (`public/pcm-processor.js`) para convertir audio a PCM LINEAR16 mono a `16 kHz`.
 3. El frontend envia `audio_stream_start`, multiples `audio_chunk` en base64 y `audio_stream_end`.
-4. La grabacion se detiene tras `2 s` de silencio o al alcanzar el limite duro de `50 s`.
+4. Si no se detecta voz durante `12 s`, el backend cierra el turno y vuelve a `idle_presence`; una vez iniciada la voz, la grabacion se detiene por VAD o al alcanzar el limite duro de `50 s`.
 5. `state_machine.py` pasa a `processing_query` y ejecuta la cadena en `services/cloud/server.py`:
    - Google Speech-to-Text,
    - OpenAI Responses API,
@@ -204,6 +204,7 @@ FRONTEND_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 AUTH_COOKIE_MAX_AGE_SECONDS=2592000
 AUTH_COOKIE_SAMESITE=Lax
 AUTH_COOKIE_SECURE=auto
+LISTENING_RESPONSE_TIMEOUT_SECONDS=12
 ```
 
 Notas:
@@ -213,6 +214,7 @@ Notas:
 - `GOOGLE_APPLICATION_CREDENTIALS` puede ser un JSON de credenciales o una ruta local.
 - `FLASK_SECRET_KEY` tiene fallback de desarrollo, pero en despliegue debe definirse.
 - `AUTH_COOKIE_SECURE=auto` activa cookie segura cuando detecta HTTPS o un host no local.
+- `LISTENING_RESPONSE_TIMEOUT_SECONDS` limita cuanto espera SHARA una respuesta antes de volver al LED morado; es independiente del cooldown proactivo de `30 min`.
 - `EYES_WIDTH` y `EYES_HEIGHT` aparecen en `render.yaml`, pero el codigo actual no los consume.
 
 ## Desarrollo Local

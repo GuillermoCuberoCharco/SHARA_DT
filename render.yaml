@@ -18,6 +18,8 @@ services:
         sync: false
       - key: GOOGLE_APPLICATION_CREDENTIALS
         sync: false
+      - key: LISTENING_RESPONSE_TIMEOUT_SECONDS
+        value: 12
       - key: EYES_WIDTH
         value: 600
       - key: EYES_HEIGHT

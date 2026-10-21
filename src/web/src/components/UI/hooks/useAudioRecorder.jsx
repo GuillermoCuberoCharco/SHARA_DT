@@ -69,6 +69,7 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
     const workletNodeRef = useRef(null);
     const startInProgressRef = useRef(false);
+    const recordingAttemptRef = useRef(0);
     const audioStreamStartedRef = useRef(false);
     const pendingPcmChunksRef = useRef([]);
     const observedChunksRef = useRef(0);
@@ -121,6 +122,8 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
     }, [isWaitingResponse])
 
     const stopRecording = useCallback(() => {
+        // Also invalidates a getUserMedia/AudioWorklet start that is still awaiting.
+        recordingAttemptRef.current += 1;
         const recorder = mediaRecorderRef.current;
         if (recorder && (isRecordingRef.current || recorder.state === 'recording')) {
             console.log('🛑 Stopping recording...');
@@ -350,6 +353,8 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
         try {
             startInProgressRef.current = true;
+            const recordingAttempt = recordingAttemptRef.current + 1;
+            recordingAttemptRef.current = recordingAttempt;
 
             if (mediaRecorderRef.current?.state === 'recording') {
                 console.log('⚠️ MediaRecorder is already recording, skipping duplicate start');
@@ -372,31 +377,39 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
 
             const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: AUDIO_SETTINGS.sampleRate } });
 
-            mediaRecorderRef.current = new MediaRecorder(stream, {
+            if (
+                recordingAttempt !== recordingAttemptRef.current
+                || isWaitingResponseRef.current
+                || isSpeaking
+            ) {
+                stream.getTracks().forEach(track => track.stop());
+                console.log('Recording start canceled before microphone setup completed');
+                return;
+            }
+
+            const recorder = new MediaRecorder(stream, {
                 mimeType: AUDIO_SETTINGS.mimeType,
                 audioBitsPerSecond: AUDIO_SETTINGS.audioBitsPerSecond
             });
-            mediaRecorderRef.current.ondataavailable = (event) => {
+            mediaRecorderRef.current = recorder;
+            recorder.ondataavailable = (event) => {
                 if (event.data.size > 0) {
                     audioChunksRef.current.push(event.data);
                 }
             };
 
-            const maxRecordingTime = setTimeout(() => {
-                if (isRecordingRef.current) {
-                    console.log(`Max recording time reached`);
-                    stopRecording();
-                }
-            }, AUDIO_SETTINGS.maxRecordingTime);
+            let maxRecordingTimer = null;
 
-            mediaRecorderRef.current.onstop = async () => {
-                clearTimeout(maxRecordingTime);
+            recorder.onstop = async () => {
+                clearTimeout(maxRecordingTimer);
                 const audioBlob = new Blob(audioChunksRef.current, { type: AUDIO_SETTINGS.mimeType });
 
                 console.log(`📦 Recording stopped - Size: ${(audioBlob.size / 1024).toFixed(2)} KB, Chunks: ${audioChunksRef.current.length}`);
 
                 stream.getTracks().forEach(track => track.stop());
-                mediaRecorderRef.current = null;
+                if (mediaRecorderRef.current === recorder) {
+                    mediaRecorderRef.current = null;
+                }
             };
 
             try {
@@ -425,20 +438,48 @@ const useAudioRecorder = (onTranscriptionComplete, isWaitingResponse, onAudioSub
             } catch (workletError) {
                 console.warn('⚠️ AudioWorklet unavailable, falling back to blob STT:', workletError);
                 // Fallback: on stop, send the entire recording as a blob for transcription
-                mediaRecorderRef.current.onstop = async () => {
-                    clearTimeout(maxRecordingTime);
+                recorder.onstop = async () => {
+                    clearTimeout(maxRecordingTimer);
                     const audioBlob = new Blob(audioChunksRef.current, { type: AUDIO_SETTINGS.mimeType });
                     console.log(`📦 FALLBACK Recording stopped - Size: ${(audioBlob.size / 1024).toFixed(2)} KB, Chunks: ${audioChunksRef.current.length}`);
                     if (audioChunksRef.current.length > 0) {
                         await handleTranscribe(audioBlob);
                     }
                     stream.getTracks().forEach(track => track.stop());
+                    if (mediaRecorderRef.current === recorder) {
+                        mediaRecorderRef.current = null;
+                    }
                 };
                 detectSilence(stream);
             }
 
+            if (
+                recordingAttempt !== recordingAttemptRef.current
+                || isWaitingResponseRef.current
+                || isSpeaking
+            ) {
+                if (workletNodeRef.current) {
+                    workletNodeRef.current.port.onmessage = null;
+                    workletNodeRef.current.disconnect();
+                    workletNodeRef.current = null;
+                }
+                stream.getTracks().forEach(track => track.stop());
+                if (mediaRecorderRef.current === recorder) {
+                    mediaRecorderRef.current = null;
+                }
+                console.log('Recording start canceled before recorder activation');
+                return;
+            }
+
+            maxRecordingTimer = setTimeout(() => {
+                if (isRecordingRef.current) {
+                    console.log('Max recording time reached');
+                    stopRecording();
+                }
+            }, AUDIO_SETTINGS.maxRecordingTime);
+
             isRecordingRef.current = true;
-            mediaRecorderRef.current.start(100);
+            recorder.start(100);
             setIsRecording(true);
 
             console.log('✅ Successfully started recording');

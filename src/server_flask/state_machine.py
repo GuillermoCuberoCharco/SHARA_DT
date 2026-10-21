@@ -33,6 +33,7 @@ TTS_WATCHDOG_MAX_SECONDS = float(os.getenv('TTS_WATCHDOG_MAX_SECONDS', '75'))
 TTS_WATCHDOG_SECONDS_PER_CHAR = float(os.getenv('TTS_WATCHDOG_SECONDS_PER_CHAR', '0.09'))
 TTS_WATCHDOG_GRACE_SECONDS = float(os.getenv('TTS_WATCHDOG_GRACE_SECONDS', '6'))
 TTS_WATCHDOG_ACK_GRACE_SECONDS = float(os.getenv('TTS_WATCHDOG_ACK_GRACE_SECONDS', '8'))
+LISTENING_RESPONSE_TIMEOUT_SECONDS = float(os.getenv('LISTENING_RESPONSE_TIMEOUT_SECONDS', '12'))
 _AUDIO_STREAM_END = object()
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -47,10 +48,12 @@ _proactive = None  # Kept for backwards-compatible init signature.
 _contexts_lock = threading.RLock()
 _audio_streams_lock = threading.RLock()
 _speaking_watchdogs_lock = threading.RLock()
+_listening_watchdogs_lock = threading.RLock()
 _session_contexts: dict[str, RobotContext] = {}
 _proactive_services: dict[str, ProactiveService] = {}
 _audio_streams: dict[str, '_AudioStream'] = {}
 _speaking_watchdogs: dict[str, dict] = {}
+_listening_watchdogs: dict[str, dict] = {}
 
 
 class _AudioStream:
@@ -157,6 +160,7 @@ def unregister_session(sid: str):
         proactive.cancel_timers()
 
     _cancel_speaking_watchdog(sid)
+    _cancel_listening_watchdog(sid)
     _discard_audio_stream(sid)
 
     logger.info('Unregistered runtime session: %s', sid)
@@ -325,6 +329,84 @@ def _handle_tts_watchdog_timeout(sid: str, message_id: str):
     _complete_tts_transition(sid, context, message_id, status='watchdog_timeout')
 
 
+def _cancel_listening_watchdog(sid: str, cycle_id: str = None):
+    if not sid:
+        return
+
+    with _listening_watchdogs_lock:
+        entry = _listening_watchdogs.get(sid)
+        if not entry:
+            return
+        if cycle_id and entry.get('cycle_id') != cycle_id:
+            return
+        _listening_watchdogs.pop(sid, None)
+
+    greenlet = entry.get('greenlet')
+    if greenlet is not None and not greenlet.dead:
+        greenlet.kill()
+
+
+def _start_listening_watchdog(sid: str):
+    if not sid:
+        return None
+
+    _cancel_listening_watchdog(sid)
+    cycle_id = uuid.uuid4().hex
+    greenlet = gevent.spawn_later(
+        LISTENING_RESPONSE_TIMEOUT_SECONDS,
+        _handle_listening_watchdog_timeout,
+        sid,
+        cycle_id,
+    )
+
+    with _listening_watchdogs_lock:
+        _listening_watchdogs[sid] = {
+            'cycle_id': cycle_id,
+            'greenlet': greenlet,
+            'timeout_seconds': LISTENING_RESPONSE_TIMEOUT_SECONDS,
+        }
+
+    logger.info(
+        'Listening watchdog started for sid=%s cycle_id=%s timeout=%.2fs',
+        sid,
+        cycle_id,
+        LISTENING_RESPONSE_TIMEOUT_SECONDS,
+    )
+    return cycle_id
+
+
+def _handle_listening_watchdog_timeout(sid: str, cycle_id: str):
+    with _listening_watchdogs_lock:
+        entry = _listening_watchdogs.get(sid)
+        if not entry or entry.get('cycle_id') != cycle_id:
+            return
+        _listening_watchdogs.pop(sid, None)
+
+    context = _get_existing_context(sid)
+    if not context or context.state != 'listening':
+        return
+
+    logger.info(
+        'No response detected for sid=%s cycle_id=%s; returning to idle_presence',
+        sid,
+        cycle_id,
+    )
+    context.continue_conversation = False
+    context.proactive_question = ''
+    _reset_unknown_user_tracking(context)
+    process_transition(
+        'listening2idle_presence',
+        {'reason': 'no_response_timeout'},
+        sid,
+    )
+
+
+def _enter_listening(sid: str, context: RobotContext):
+    context.state = 'listening'
+    _emit_state_update(sid, context)
+    _start_listening_watchdog(sid)
+
+
 def _complete_tts_transition(sid: str, context: RobotContext, message_id: str = None, status: str = None):
     if not context:
         return
@@ -466,6 +548,7 @@ def _reset_runtime_session_state(context: RobotContext, sid: str, clear_login: b
         proactive.cancel_timers()
 
     _cancel_speaking_watchdog(sid)
+    _cancel_listening_watchdog(sid)
     _discard_audio_stream(sid)
 
     if context.state != 'idle':
@@ -951,6 +1034,7 @@ def on_user_lost(sid: str, user_data: dict):
     context.proactive_question = ''
     context.continue_conversation = False
     _reset_unknown_user_tracking(context)
+    _cancel_listening_watchdog(sid)
 
     proactive = _get_existing_proactive_service(sid)
     if proactive:
@@ -965,10 +1049,11 @@ def on_audio_stream_start(sid: str) -> bool:
     context = _get_context(sid)
     logger.info('Audio stream start from %s, state=%s', sid, context.state)
 
-    if context.state not in ('listening', 'idle_presence', 'idle'):
+    if context.state != 'listening':
         logger.warning('audio_stream_start in unexpected state for %s: %s', sid, context.state)
         return False
 
+    _cancel_listening_watchdog(sid)
     context.state = 'recording'
     _emit_state_update(sid, context)
 
@@ -1018,10 +1103,11 @@ def on_audio_message(audio_b64: str, sid: str):
     context = _get_context(sid)
     logger.info('Legacy audio blob from %s, state=%s', sid, context.state)
 
-    if context.state not in ('listening', 'idle_presence', 'idle'):
+    if context.state != 'listening':
         logger.warning('Audio received in unexpected state for %s: %s', sid, context.state)
         return
 
+    _cancel_listening_watchdog(sid)
     context.state = 'recording'
     _emit_state_update(sid, context)
     _executor.submit(_process_audio_query, audio_b64, sid)
@@ -1036,6 +1122,7 @@ def on_text_message(text: str, sid: str):
         logger.warning('Session %s is already processing a query, ignoring', sid)
         return
 
+    _cancel_listening_watchdog(sid)
     context.state = 'processing_query'
     _emit_state_update(sid, context)
     _executor.submit(_process_text_query, text, sid)
@@ -1082,16 +1169,18 @@ def process_transition(transition: str, params: dict = None, sid: str = None):
             _emit_state_update(sid, context)
 
         elif transition == 'idle_presence2listening' and current == 'idle_presence':
-            context.state = 'listening'
-            _emit_state_update(sid, context)
+            _enter_listening(sid, context)
 
         elif transition == 'listening2idle_presence' and current == 'listening':
+            _cancel_listening_watchdog(sid)
             context.state = 'idle_presence'
+            context.proactive_question = ''
+            context.continue_conversation = False
+            _reset_unknown_user_tracking(context)
             _emit_state_update(sid, context)
 
         elif transition == 'speaking2listening' and current == 'speaking':
-            context.state = 'listening'
-            _emit_state_update(sid, context)
+            _enter_listening(sid, context)
 
         elif transition == 'speaking2idle_presence' and current == 'speaking':
             context.state = 'idle_presence'
@@ -1124,8 +1213,7 @@ def _build_request(context: RobotContext, audio: bytes = b'', text: str = None):
 
 def _return_to_listening_after_empty_audio(sid: str, context: RobotContext, reason: str):
     logger.info('Empty audio input for sid=%s (%s); returning to listening', sid, reason)
-    context.state = 'listening'
-    _emit_state_update(sid, context)
+    _enter_listening(sid, context)
     _emit_audio_empty(sid, context)
 
 
@@ -1272,6 +1360,7 @@ def _handle_proactive_query(params: dict, sid: str, context: RobotContext):
     logger.info('Proactive query for sid=%s: %s for %s', sid, question, username)
 
     try:
+        _cancel_listening_watchdog(sid)
         context.state = 'processing_query'
         _emit_state_update(sid, context)
 
@@ -1341,6 +1430,7 @@ def _handle_response(
     client_timeout_seconds = _estimate_tts_client_timeout_seconds(response.text or '')
     watchdog_seconds = client_timeout_seconds + TTS_WATCHDOG_ACK_GRACE_SECONDS
 
+    _cancel_listening_watchdog(sid)
     context.state = 'speaking'
     context.continue_conversation = response.continue_conversation
     context.proactive_question = next_proactive_question or ''
@@ -1496,6 +1586,7 @@ def _emit_audio_empty(sid: str, context: RobotContext):
 def _emit_error(sid=None):
     context = _get_existing_context(sid)
     if context:
+        _cancel_listening_watchdog(sid)
         context.state = 'idle_presence'
         _emit_state_update(sid, context)
 

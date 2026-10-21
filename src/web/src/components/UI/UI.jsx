@@ -205,6 +205,13 @@ const UI = ({
     // Context and references
     const { isConnected, isRegistered, emit, socket } = useWebSocketContext();
 
+    const handleTranscriptionComplete = useCallback(() => {
+        setIsWaitingResponse(false);
+    }, []);
+    const handleAudioSubmitted = useCallback(() => {
+        setIsWaitingResponse(true);
+    }, []);
+
     // Audio hooks
     const {
         isRecording,
@@ -213,9 +220,9 @@ const UI = ({
         stopRecording,
         handleSynthesize
     } = useAudioRecorder(
-        () => { setIsWaitingResponse(false); },
+        handleTranscriptionComplete,
         isWaitingResponse,
-        () => { setIsWaitingResponse(true); }
+        handleAudioSubmitted
     );
 
     /**
@@ -429,6 +436,15 @@ const UI = ({
 
         emit('set_login_identity', sessionIdentity);
     }, [emit, isRegistered, sessionIdentity]);
+
+    // A server transition to a passive state is authoritative. Besides stopping
+    // an active recorder, this invalidates a microphone start still awaiting
+    // getUserMedia/AudioWorklet setup.
+    useEffect(() => {
+        if (serverConversationState === 'idle' || serverConversationState === 'idle_presence') {
+            stopRecording();
+        }
+    }, [serverConversationState, stopRecording]);
 
     // Auto-restart recording only when the backend state machine is listening.
     useEffect(() => {

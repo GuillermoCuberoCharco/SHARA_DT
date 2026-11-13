@@ -8,7 +8,8 @@ RUN yarn install --non-interactive
 COPY src/web/ ./
 RUN yarn build
 
-FROM python:3.10-bullseye AS runtime
+# Python 3.10 is no longer supported by google-api-core.
+FROM python:3.12-bookworm AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

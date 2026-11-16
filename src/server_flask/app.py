@@ -8,6 +8,12 @@ Flask serves both the React frontend (static build) and the WebSocket/REST API.
 from gevent import monkey
 monkey.patch_all()
 
+# Google Cloud's Python clients use gRPC. Without its gevent adapter a TTS
+# request can block the Socket.IO event loop, preventing heartbeats and causing
+# the browser to disconnect while it waits for the response.
+from grpc.experimental import gevent as grpc_gevent
+grpc_gevent.init_gevent()
+
 import logging
 import os
 

@@ -8,27 +8,29 @@ the LLM simultaneously without blocking each other.
 
 Flow:
     user sends text/audio -> mark user as processing -> STT/LLM call
-    -> optional TTS -> emit robot_message -> mark idle
+    -> emit robot_message -> optional background TTS/robot_audio
 """
 
 import base64
 import concurrent.futures
 import logging
 import threading
+import uuid
 
 logger = logging.getLogger('StateMachine')
 
 QUERY_TIMEOUT = 30  # seconds
-TTS_TIMEOUT = 20    # seconds
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
 _query_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+_tts_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 _socketio = None
 _server = None
 
 _processing_users: set[str] = set()
 _tts_preferences: dict[str, bool] = {}
+_tts_generations: dict[str, int] = {}
 _lock = threading.Lock()
 
 
@@ -47,16 +49,22 @@ def init(socketio_instance, server_module):
 def register_session(sid: str, tts_enabled: bool = False):
     with _lock:
         _tts_preferences[sid] = bool(tts_enabled)
+        _tts_generations[sid] = 0
 
 
 def unregister_session(sid: str):
     with _lock:
         _tts_preferences.pop(sid, None)
+        _tts_generations.pop(sid, None)
 
 
 def set_tts_enabled(sid: str, enabled: bool):
     with _lock:
-        _tts_preferences[sid] = bool(enabled)
+        enabled = bool(enabled)
+        previous = _tts_preferences.get(sid, False)
+        _tts_preferences[sid] = enabled
+        if previous != enabled:
+            _tts_generations[sid] = _tts_generations.get(sid, 0) + 1
 
 
 def on_text_message(
@@ -169,39 +177,77 @@ def _process_audio_query(audio_bytes: bytes, sid: str, user_id: str, user_role: 
 
 
 def _handle_response(response, sid: str, user_id: str, subject_code: str):
-    audio_b64 = None
-
-    if _is_tts_enabled(sid):
-        try:
-            future = _query_executor.submit(_server.synthesize_response, response.text)
-            audio_bytes = future.result(timeout=TTS_TIMEOUT)
-            if audio_bytes:
-                audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        except concurrent.futures.TimeoutError:
-            logger.error('Timeout synthesizing TTS for %s', user_id)
-        except Exception as exc:
-            logger.error('Error synthesizing TTS for %s: %s', user_id, exc, exc_info=True)
-
+    message_id = uuid.uuid4().hex
+    tts_enabled, tts_generation = _get_tts_preference(sid)
     message = {
+        'id': message_id,
         'text': response.text or '',
         'state': response.robot_mood or 'neutral',
     }
-    if audio_b64:
-        message['audio'] = audio_b64
 
     with _lock:
         _processing_users.discard(_processing_key(user_id, subject_code))
 
+    # Never hold the textual answer behind Google TTS. The chat becomes usable
+    # immediately and the (potentially slower) audio follows in its own event.
     _emit_robot_message(message, sid)
     _emit_state_update('idle', sid)
 
     logger.info('Response emitted to %s [%s]: mood=%s', user_id, subject_code, response.robot_mood)
+
+    if tts_enabled:
+        _tts_executor.submit(
+            _synthesize_and_emit,
+            response.text,
+            message_id,
+            sid,
+            user_id,
+            tts_generation,
+        )
+
+
+def _synthesize_and_emit(
+    text: str,
+    message_id: str,
+    sid: str,
+    user_id: str,
+    tts_generation: int,
+):
+    """Generate speech in the background and emit it if it is still wanted."""
+    # The preference may have changed while this task was waiting for a worker.
+    if not _is_current_tts_request(sid, tts_generation):
+        return
+
+    try:
+        audio_bytes = _server.synthesize_response(text)
+    except Exception as exc:
+        logger.error('Error synthesizing TTS for %s: %s', user_id, exc, exc_info=True)
+        return
+
+    if not audio_bytes or not _is_current_tts_request(sid, tts_generation):
+        return
+
+    _emit_robot_audio(
+        {
+            'id': message_id,
+            'audio': base64.b64encode(audio_bytes).decode('utf-8'),
+            'mime_type': getattr(_server, 'TTS_MIME_TYPE', 'audio/mpeg'),
+        },
+        sid,
+    )
+    logger.info('TTS response emitted to %s (%s bytes)', user_id, len(audio_bytes))
 
 
 def _emit_robot_message(message: dict, sid: str):
     if _socketio is None:
         return
     _socketio.emit('robot_message', message, to=sid, namespace='/message')
+
+
+def _emit_robot_audio(message: dict, sid: str):
+    if _socketio is None:
+        return
+    _socketio.emit('robot_audio', message, to=sid, namespace='/message')
 
 
 def _emit_state_update(state: str, sid: str):
@@ -253,9 +299,20 @@ def _emit_transcription_result(text: str, sid: str):
     )
 
 
-def _is_tts_enabled(sid: str) -> bool:
+def _get_tts_preference(sid: str) -> tuple[bool, int]:
     with _lock:
-        return _tts_preferences.get(sid, False)
+        return (
+            _tts_preferences.get(sid, False),
+            _tts_generations.get(sid, 0),
+        )
+
+
+def _is_current_tts_request(sid: str, generation: int) -> bool:
+    with _lock:
+        return (
+            _tts_preferences.get(sid, False)
+            and _tts_generations.get(sid, 0) == generation
+        )
 
 
 def get_active_users_count() -> int:

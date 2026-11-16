@@ -71,7 +71,9 @@ voice = texttospeech.VoiceSelectionParams(
 )
 
 tts_config = texttospeech.AudioConfig(
-    audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+    # MP3 is much smaller than LINEAR16. This keeps spoken responses well below
+    # the practical Socket.IO message size while remaining browser-native.
+    audio_encoding=texttospeech.AudioEncoding.MP3,
     sample_rate_hertz=24000,
     pitch=-0.4,
 )
@@ -126,7 +128,7 @@ def speech_to_text(audio_bytes: bytes) -> str:
 
 def text_to_speech(text: str) -> bytes:
     """
-    Convert text into LINEAR16 audio.
+    Convert text into MP3 audio.
     """
     if not text:
         return b''
@@ -136,5 +138,7 @@ def text_to_speech(text: str) -> bytes:
         input=synthesis_input,
         voice=voice,
         audio_config=tts_config,
+        retry=None,
+        timeout=15,
     )
     return response.audio_content

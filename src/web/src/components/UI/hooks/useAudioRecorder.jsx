@@ -101,7 +101,7 @@ const useAudioRecorder = ({ isWaitingResponse, onAudioSubmitted, onAudioError })
         }
     }, [emit, onAudioError, onAudioSubmitted, releaseRecordingResources]);
 
-    const playAudio = useCallback(async (audioB64) => {
+    const playAudio = useCallback(async (audioB64, mimeType = 'audio/mpeg') => {
         if (!audioB64) {
             return;
         }
@@ -110,7 +110,7 @@ const useAudioRecorder = ({ isWaitingResponse, onAudioSubmitted, onAudioError })
         setIsSpeaking(true);
 
         try {
-            await playAudioBase64(audioB64, 'audio/wav');
+            await playAudioBase64(audioB64, mimeType);
         } catch (error) {
             console.error('Unable to play assistant audio:', error);
         } finally {

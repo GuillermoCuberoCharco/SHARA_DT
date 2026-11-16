@@ -101,9 +101,17 @@ const UI = ({ onRobotStateChange, onLogout }) => {
         setConversationState('idle');
 
         if (message.audio && isTtsEnabled) {
-            playAudio(message.audio);
+            playAudio(message.audio, message.mime_type || 'audio/wav');
         }
     }, [appendMessage, isTtsEnabled, notifyRobotState, playAudio]);
+
+    const handleRobotAudio = useCallback((message) => {
+        if (!isTtsEnabled || !message?.audio) {
+            return;
+        }
+
+        playAudio(message.audio, message.mime_type || 'audio/mpeg');
+    }, [isTtsEnabled, playAudio]);
 
     const handleConversationHistory = useCallback((payload) => {
         const historyMessages = Array.isArray(payload?.messages) ? payload.messages : [];
@@ -450,6 +458,8 @@ const UI = ({ onRobotStateChange, onLogout }) => {
 
         socket.off('robot_message');
         socket.on('robot_message', handleRobotMessage);
+        socket.off('robot_audio');
+        socket.on('robot_audio', handleRobotAudio);
         socket.off('conversation_history');
         socket.on('conversation_history', handleConversationHistory);
         socket.off('transcription_result');
@@ -459,12 +469,14 @@ const UI = ({ onRobotStateChange, onLogout }) => {
 
         return () => {
             socket.off('robot_message');
+            socket.off('robot_audio');
             socket.off('conversation_history');
             socket.off('transcription_result');
             socket.off('state_update');
         };
     }, [
         handleConversationHistory,
+        handleRobotAudio,
         handleRobotMessage,
         handleStateUpdate,
         handleTranscriptionResult,

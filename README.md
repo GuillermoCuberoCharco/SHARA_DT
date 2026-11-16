@@ -82,8 +82,9 @@ Usuario autenticado escribe texto o envia audio
             -> Google STT (solo si hay audio)
             -> services/cloud/server.py
                 -> OpenAI Responses API (gpt-4o-mini)
+                -> robot_message / transcription_result (Socket.IO)
                 -> Google TTS opcional segun el altavoz del chat
-                    -> robot_message / transcription_result (Socket.IO)
+                    -> robot_audio (Socket.IO)
                         -> UI muestra la transcripcion y la respuesta
 ```
 
@@ -95,10 +96,11 @@ Usuario autenticado escribe texto o envia audio
 6. `openai_api.py` carga desde Postgres el historial del usuario para la asignatura activa y envia ese contexto mas el nuevo mensaje a OpenAI.
 7. Si el usuario autenticado es `teacher`, el backend anade como contexto interno los historiales completos del alumnado de esa misma asignatura para que el modelo pueda analizarlos.
 8. Ese contexto docente solo se usa en el prompt interno: la UI del profesor no muestra los chats crudos del alumnado.
-9. La respuesta vuelve como `robot_message` con `text`, `state` y, solo si el altavoz esta activado, `audio`.
-10. El backend persiste en Postgres el mensaje del usuario y la respuesta del asistente asociados a `user_id` y `subject_code`.
-11. El frontend actualiza el chat, la expresion visual del robot y reproduce el audio si el TTS esta habilitado.
-12. El backend emite `state_update` con `idle`.
+9. La respuesta textual vuelve inmediatamente como `robot_message` con `text` y `state`.
+10. Si el altavoz esta activado, Google TTS genera un MP3 en segundo plano y el backend lo envia despues como `robot_audio`; si esta desactivado, Google TTS no se invoca.
+11. El backend persiste en Postgres el mensaje del usuario y la respuesta del asistente asociados a `user_id` y `subject_code`.
+12. El frontend actualiza el chat, la expresion visual del robot y reproduce el audio si el TTS esta habilitado.
+13. El backend emite `state_update` con `idle`.
 
 ## Persistencia y estado
 
@@ -244,7 +246,8 @@ Si el token es invalido o ha expirado, el servidor rechaza la conexion.
 |---|---|---|
 | `registration_success` | `{ status, user_id, role, subject_code }` | Confirmacion de conexion autenticada |
 | `conversation_history` | `{ messages }` | Historial persistido del usuario para repintar el chat |
-| `robot_message` | `{ text, state, audio? }` | Respuesta del asistente, con audio opcional |
+| `robot_message` | `{ id, text, state }` | Respuesta textual inmediata del asistente |
+| `robot_audio` | `{ id, audio, mime_type }` | MP3 generado en segundo plano cuando el altavoz esta activado |
 | `transcription_result` | `{ text }` | Texto transcrito a partir del audio del usuario |
 | `state_update` | `{ state }` | Estado operativo del usuario en curso |
 

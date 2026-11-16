@@ -13,6 +13,7 @@ from .google_api import speech_to_text, text_to_speech
 from .openai_api import generate_response
 
 logger = logging.getLogger('Server')
+TTS_MIME_TYPE = 'audio/mpeg'
 
 
 @dataclass

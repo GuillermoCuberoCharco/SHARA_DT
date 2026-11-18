@@ -11,7 +11,7 @@ En el estado actual, el sistema se despliega como un unico servicio: Flask sirve
 - Persistencia actual en PostgreSQL mediante `DATABASE_URL`; los historiales ya no se guardan en JSON.
 - Identidad basada en cuenta de usuario y cookie `shara_auth`; el nombre con el que SHARA se dirige al usuario se guarda como `shara_name`.
 - La presencia facial se detecta localmente en el navegador; `/api/recognize-face` queda como endpoint de compatibilidad y no calcula embeddings.
-- Audio principal por `AudioWorklet`: PCM LINEAR16 mono a 16 kHz, enviado por Socket.IO y procesado con Google STT batch.
+- Captura de voz mono en el navegador, remuestreada a PCM LINEAR16 de 16 kHz. Google STT procesa el turno en streaming con respaldo por lotes sobre el audio completo.
 - TTS actual con Google Cloud en espanol (`es-ES`) y salida MP3 (`audio/mpeg`).
 - LLM actual: OpenAI `gpt-4o-mini`, salida estructurada con `response`, `robot_mood` y `continue`.
 - Herramientas activas del modelo: `record_face` y `set_username`, usadas para registrar o recuperar el nombre preferido del usuario.
@@ -67,13 +67,13 @@ SHARA_DT
 2. Si no hay cookie valida, `SessionLogin.jsx` muestra login o registro.
 3. Login y registro crean una cookie HTTP-only `shara_auth`.
 4. Al conectarse Socket.IO, el frontend emite `register_client`.
-5. Cuando la conexion queda registrada, el frontend emite `set_login_identity` con `loginName`, `sessionId`, `userName` y estado de identificacion.
-6. El backend crea un `RobotContext` por `sid`, carga el historial de `loginName` desde PostgreSQL y marca si falta `shara_name`.
+5. El servidor autentica el socket mediante la cookie y obtiene el nombre preferido desde PostgreSQL. El navegador vincula su `sessionId` a ese socket con `set_login_identity` y `protocolVersion: 2`.
+6. Cada conexión tiene su propio estado. El modelo recibe el historial de la cuenta autenticada.
 
 ### 2. Presencia facial
 
-1. Tras autenticarse, el navegador solicita camara si hay dispositivo disponible.
-2. `FaceDetection.jsx` carga BlazeFace y evalua la presencia localmente cada `250 ms`, sin solapar inferencias.
+1. Tras iniciar sesión y activar el sonido, el navegador solicita la cámara para buscar presencia. La interfaz permite reintentar si falla el permiso, el dispositivo o el modelo.
+2. El navegador carga BlazeFace desde la propia aplicación y espera `250 ms` entre inferencias. El modelo TF.js v1 de TensorFlow se distribuye con su licencia Apache 2.0 en `src/web/public/models/blazeface`. [Modelo original](https://www.kaggle.com/models/tensorflow/blazeface/TfJs/default/1)
 3. La presencia requiere confianza minima de `0.90`, una cara suficientemente grande, cajas estables y al menos seis muestras durante `1.25 s` antes de emitir `user_detected`.
 4. Si la cara se pierde durante suficiente tiempo, emite `user_lost`.
 5. SHARA usa la presencia para pasar de `idle` a `idle_presence` y despues a `listening`.
@@ -81,23 +81,19 @@ SHARA_DT
 
 ### 3. Conversacion por voz
 
-1. Cuando hay presencia y el sistema esta libre, el frontend inicia grabacion automaticamente.
-2. `useAudioRecorder.jsx` usa `AudioWorklet` (`public/pcm-processor.js`) para convertir audio a PCM LINEAR16 mono a `16 kHz`.
-3. El frontend envia `audio_stream_start`, multiples `audio_chunk` en base64 y `audio_stream_end`.
-4. Si no se detecta voz durante `12 s`, el backend cierra el turno y vuelve a `idle_presence`; una vez iniciada la voz, la grabacion se detiene por VAD o al alcanzar el limite duro de `50 s`.
-5. `state_machine.py` pasa a `processing_query` y ejecuta la cadena en `services/cloud/server.py`:
-   - Google Speech-to-Text,
-   - OpenAI Responses API,
-   - Google Text-to-Speech.
-6. El backend emite `transcription_result`, `robot_message`, `set_face` y `state_update`.
-7. El frontend reproduce el MP3 recibido, actualiza ojos/anillo LED y emite `tts_complete`.
+1. Cuando SHARA cede la palabra, el navegador libera la cámara y abre el micrófono. Los 12 s de silencio empiezan con el primer bloque de audio capturado. Hasta entonces se indica que el micrófono está arrancando.
+2. AudioWorklet o la captura alternativa de Web Audio entregan las mismas muestras PCM a 16 kHz. Al detectar voz se abre el flujo Socket.IO. Una pausa de 1,8 s cierra la intervención. El grabador tiene un límite de 50 s.
+3. La transcripción recoge todos los segmentos finales. Si el streaming falla, termina antes de consumir el audio o sigue incompleto al cerrar, se transcribe la grabación completa por lotes.
+4. Al cerrar el micrófono se vuelve a activar la cámara. Antes de hablar, SHARA exige una confirmación visual reciente. La pérdida de presencia, una pestaña oculta o la desconexión invalidan el turno y sus resultados pendientes.
+5. El navegador confirma la reproducción con el identificador del mensaje. Tras una respuesta escuchada, SHARA comprueba la presencia antes de ceder la palabra. Si la reproducción falla o falta la confirmación, vuelve al reposo y muestra el motivo.
+6. Tras silencio sin voz, la cámara comprueba si la persona sigue delante. Si la encuentra, SHARA vuelve a escuchar sin repetir el saludo. Una despedida deja el robot en reposo. El botón **Retomar conversación** permite iniciar otro turno sin salir de plano.
 
 ### 4. Proactividad
 
-- Usuario conocido: `ProactiveService` puede disparar `ask_how_are_you`.
-- Usuario desconocido o sin `shara_name`: puede disparar `ask_who_are_you`.
+- Si hay un nombre guardado, SHARA puede iniciar el saludo `how_are_you` usando el historial de la cuenta.
+- Si falta el nombre, puede iniciar `who_are_you` para preguntar cómo llamar a la persona.
 - Tras una interaccion sin nombre confirmado, la maquina puede activar `casual_ask_known_username`, que habilita `set_username`.
-- El cooldown de preguntas proactivas es de `1.800 s` (`30 min`).
+- El intervalo entre saludos es de 30 min por cuenta. Empieza al confirmarse la reproducción y se conserva en PostgreSQL al reconectar.
 
 ## Estados del Robot
 
@@ -110,7 +106,7 @@ SHARA_DT
 | `processing_query` | El backend esta ejecutando STT, LLM o TTS. |
 | `speaking` | El frontend esta reproduciendo la respuesta de SHARA. |
 
-El anillo LED replica estos estados: apagado para `idle`/`processing_query`, morado fijo en `idle_presence`, azul giratorio en `listening`, blanco giratorio en `recording` y azul respirando en `speaking`.
+El anillo está apagado en `idle` y `processing_query`. Se mantiene morado en `idle_presence` y mientras arranca el micrófono. Gira en azul al recibir las primeras muestras y en blanco al detectar voz. El azul que respira indica que SHARA está hablando.
 
 ## API HTTP
 
@@ -119,8 +115,8 @@ El anillo LED replica estos estados: apagado para `idle`/`processing_query`, mor
 | `POST` | `/api/auth/login` | Verifica `loginName` y `password`; crea cookie `shara_auth`. |
 | `POST` | `/api/auth/register` | Crea usuario con password minimo de 4 caracteres; crea cookie. |
 | `GET` | `/api/auth/me` | Restaura la sesion desde cookie. |
-| `POST` | `/api/auth/logout` | Fuerza flush de sesion runtime y limpia la cookie. |
-| `POST` | `/api/session/flush` | Flush explicito al cerrar o abandonar pagina. |
+| `POST` | `/api/auth/logout` | Invalida el contexto de la sesión y limpia la cookie. |
+| `POST` | `/api/session/flush` | Comprueba si la sesión sigue activa al abandonar la página. La persistencia se realiza por turno. |
 | `GET` | `/health` | Devuelve `status`, `active_sessions` y `session_states`. |
 | `POST` | `/api/synthesize` | Convierte texto a audio MP3 base64 como fallback TTS. |
 | `POST` | `/api/recognize-face` | Compatibilidad con clientes antiguos; resuelve identidad por sesion, no por embeddings. |
@@ -140,6 +136,7 @@ Eventos enviados por el frontend:
 - `set_login_identity`
 - `user_detected`
 - `user_lost`
+- `microphone_ready`, `device_error` y `resume_listening`
 - `audio_stream_start`
 - `audio_chunk`
 - `audio_stream_end`
@@ -156,7 +153,9 @@ Eventos emitidos por el backend:
 - `state_update`
 - `set_face`
 - `session_identity_updated`
-- `audio_empty`
+- `audio_empty` e `interaction_error`
+
+En el protocolo 2 cada evento de turno incluye `sessionId` y `turnId`. Las comprobaciones de cámara usan además `presenceCheck` y los acuses de voz incluyen `messageId` y `status`.
 
 `RobotView` y `UI` escuchan el mismo namespace `/message`; ya no hay una ruta Socket.IO separada para animacion.
 
@@ -168,15 +167,17 @@ La base de datos activa es PostgreSQL:
   - `login_name`: identificador estable de login.
   - `password_hash`: password con hash de Werkzeug.
   - `shara_name`: nombre preferido que SHARA usa al hablar.
+  - `last_greeting_at`: último saludo proactivo oído.
   - `created_at`.
 - `conversation_messages`
   - `login_name`.
   - `role`: `user` o `assistant`.
   - `content`.
   - `session_id`.
+  - `turn_id`: permite reintentar la escritura sin duplicar un mensaje.
   - `created_at`.
 
-`openai_api.py` carga el historial por `login_name` en cada peticion y persiste cada intercambio exitoso usuario/asistente como filas nuevas. El antiguo flujo de volcado a JSON queda como compatibilidad; `src/server_flask/files/conversation_db.json` no es el store activo.
+El servidor lee el historial por cuenta, guarda la intervención transcrita y añade la respuesta de SHARA al recibir la confirmación de reproducción. Las filas históricas sin `turn_id` siguen siendo legibles. Una avería de la base de datos genera un mensaje visible.
 
 ## Variables de Entorno
 
@@ -212,7 +213,7 @@ Notas:
 - `DATABASE_URL` es obligatorio: `db.init_schema()` se ejecuta al iniciar Flask.
 - `GOOGLE_CLIENT_EMAIL` + `GOOGLE_PRIVATE_KEY` + `GOOGLE_PROJECT_ID` tienen prioridad sobre `GOOGLE_APPLICATION_CREDENTIALS`.
 - `GOOGLE_APPLICATION_CREDENTIALS` puede ser un JSON de credenciales o una ruta local.
-- `FLASK_SECRET_KEY` tiene fallback de desarrollo, pero en despliegue debe definirse.
+- `FLASK_SECRET_KEY` usa una clave efímera si se omite. Define un valor estable en el despliegue para restaurar la cookie tras reiniciar.
 - `AUTH_COOKIE_SECURE=auto` activa cookie segura cuando detecta HTTPS o un host no local.
 - `LISTENING_RESPONSE_TIMEOUT_SECONDS` limita cuanto espera SHARA una respuesta antes de volver al LED morado; es independiente del cooldown proactivo de `30 min`.
 - `EYES_WIDTH` y `EYES_HEIGHT` aparecen en `render.yaml`, pero el codigo actual no los consume.
@@ -288,7 +289,7 @@ La fidelidad principal esta en el flujo conversacional, proactividad, estados op
 ## Limitaciones Conocidas
 
 - No hay tests automatizados de paridad con el robot fisico.
-- La ruta principal de audio es batch STT con PCM acumulado; los helpers de streaming STT existen, pero no estan conectados al flujo activo.
+- La comprobación visual requiere una cámara operativa. Mientras el micrófono está abierto, una marcha se comprueba al terminar la captura o al agotar el plazo de escucha.
 - El componente `ChatWindow` y el path de texto por Socket.IO existen, pero la UI activa esta centrada en voz, presencia y visualizacion del robot.
 - `/api/recognize-face` es solo compatibilidad legacy.
 - `render.yaml` no crea ni enlaza una base de datos; `DATABASE_URL` debe configurarse aparte.

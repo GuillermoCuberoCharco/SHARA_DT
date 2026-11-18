@@ -4,7 +4,7 @@ services/cloud/google_api.py
 Google Cloud Speech-to-Text and Text-to-Speech wrappers.
 
 STT configurations:
-    stt_config          — batch recognition for WEBM_OPUS blobs (legacy fallback)
+    stt_config          — batch recognition for complete LINEAR16 recordings
     streaming_config    — streaming recognition for LINEAR16 PCM from AudioWorklet
                           (same format as the physical robot's PyAudio stream)
 
@@ -15,13 +15,12 @@ TTS configuration:
 import json
 import logging
 import os
-import time
 
 from google.cloud import speech, texttospeech
 from google.oauth2 import service_account
 
 logger = logging.getLogger('GoogleAPI')
-STREAMING_RECOGNIZE_RPC_TIMEOUT = float(os.getenv('GOOGLE_STREAMING_STT_RPC_TIMEOUT_SECONDS', '15'))
+STREAMING_RECOGNIZE_RPC_TIMEOUT = float(os.getenv('GOOGLE_STREAMING_STT_RPC_TIMEOUT_SECONDS', '65'))
 
 
 def _build_credentials():
@@ -111,7 +110,6 @@ stt_config = speech.RecognitionConfig(
 )
 
 # Streaming STT — LINEAR16 PCM from AudioWorklet (same as robot's PyAudio stream)
-# AudioWorklet sends Int16 samples at 16000 Hz, mono.
 streaming_config = speech.StreamingRecognitionConfig(
     config=speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
@@ -127,186 +125,53 @@ streaming_config = speech.StreamingRecognitionConfig(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def speech_to_text(audio_bytes: bytes) -> str:
+def speech_to_text(audio_bytes: bytes, mime_type='audio/pcm') -> str:
     """
-    Converts speech audio (LINEAR16 from browser) to text.
-
-    Args:
-        audio_bytes: Raw audio bytes from browser MediaRecorder
-
-    Returns:
-        Transcribed text string, or empty string if no speech detected
+    Recognize a complete PCM utterance or a legacy MediaRecorder file.
     """
     audio = speech.RecognitionAudio(content=audio_bytes)
-    response = clientSTT.recognize(config=stt_config, audio=audio)
-    return ''.join(
-        result.alternatives[0].transcript for result in response.results
-    )
+    config = stt_config
+    if mime_type != 'audio/pcm':
+        encodings = {
+            'audio/webm': speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+            'audio/ogg': speech.RecognitionConfig.AudioEncoding.OGG_OPUS,
+            'audio/wav': speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED,
+        }
+        encoding = encodings[mime_type.split(';')[0]]
+        config = speech.RecognitionConfig(encoding=encoding, language_code='es-ES',
+                                          enable_automatic_punctuation=True)
+        if mime_type.split(';')[0] in ('audio/webm', 'audio/ogg'):
+            config.sample_rate_hertz = 48000
+    response = clientSTT.recognize(config=config, audio=audio, timeout=25)
+    return ' '.join(
+        result.alternatives[0].transcript.strip() for result in response.results if result.alternatives
+    ).strip()
 
 def create_streaming_stt_request_generator(audio_generator):
     for audio_chunk in audio_generator:
         yield speech.StreamingRecognizeRequest(audio_content=audio_chunk)
 
 
-def create_streaming_requests_with_collection(audio_generator):
-    collected = []
-    def gen():
-        for audio_chunk in audio_generator:
-            collected.append(audio_chunk)
-            yield speech.StreamingRecognizeRequest(audio_content=audio_chunk)
-    return gen(), collected
+def streaming_speech_to_text(audio_generator):
+    """Accept only a normally completed stream of final segments."""
+    complete_input = False
 
+    def requests():
+        nonlocal complete_input
+        yield from create_streaming_stt_request_generator(audio_generator)
+        complete_input = True
 
-def _notify_streaming_transcript(callback, transcript, is_final=False, silence_detection_time=None):
-    if not callback or not transcript:
-        return
-
-    try:
-        callback(
-            transcript,
-            is_final=is_final,
-            silence_detection_time=silence_detection_time,
-        )
-    except Exception as exc:
-        logger.debug('Streaming STT transcript callback failed: %s', exc)
-
-
-def streaming_speech_to_text(audio_generator, on_transcript=None):
-    """
-    Core streaming STT function. Pure streaming logic without fallback.
-    
-    Args:
-        audio_generator: Generator that yields audio chunks (bytes)
-        on_transcript: Optional callback invoked with interim/final transcripts
-    
-    Returns:
-        tuple: (transcript, silence_detection_time, audio_bytes) where:
-            - transcript: The transcribed text from streaming
-            - silence_detection_time: Time from last interim to final result
-            - audio_bytes: Collected audio for potential fallback
-    """
-    # Create requests and collect audio for potential fallback
-    requests, collected_audio = create_streaming_requests_with_collection(audio_generator)
-    responses = clientSTT.streaming_recognize(
-        streaming_config,
-        requests,
-        timeout=STREAMING_RECOGNIZE_RPC_TIMEOUT,
-    )
-    
-    transcript = ""
-    silence_detection_time = None
-    last_interim_time = None
-    last_interim_transcript = ""  # Store last interim result as fallback
-    
-    try:
-        for response in responses:
-            if not response.results:
-                continue
-                
-            result = response.results[0]
+    parts = []
+    unfinished = False
+    for response in clientSTT.streaming_recognize(streaming_config, requests(),
+                                                  timeout=STREAMING_RECOGNIZE_RPC_TIMEOUT):
+        for result in response.results:
             if not result.alternatives:
                 continue
-            
-            if not result.is_final:
-                # Update the time of the last interim result (user still speaking)
-                last_interim_transcript = result.alternatives[0].transcript  # Save interim transcript
-                last_interim_time = time.time()
-                _notify_streaming_transcript(
-                    on_transcript,
-                    last_interim_transcript,
-                    is_final=False,
-                )
-            else:
-                # Final result - calculate time since last interim result
-                final_result_time = time.time()
-                transcript = result.alternatives[0].transcript
-                
-                if last_interim_time is not None:
-                    silence_detection_time = final_result_time - last_interim_time
-                else:
-                    # No interim results received, can't measure accurately
-                    silence_detection_time = 0.0
-                
-                # If final transcript is empty but we had interim results, use the last interim
-                if not transcript and last_interim_transcript:
-                    transcript = last_interim_transcript
-
-                _notify_streaming_transcript(
-                    on_transcript,
-                    transcript,
-                    is_final=True,
-                    silence_detection_time=silence_detection_time,
-                )
-
-                break  # We got the final result
-
-        if not transcript and last_interim_transcript:
-            transcript = last_interim_transcript
-            _notify_streaming_transcript(
-                on_transcript,
-                transcript,
-                is_final=False,
-                silence_detection_time=silence_detection_time,
-            )
-    
-    except Exception as e:
-        # If the stream ends or there's an error, return what we have
-        # Use last interim result if available
-        logger.warning('Streaming STT ended with partial result after error: %s', e)
-        if not transcript and last_interim_transcript:
-            transcript = last_interim_transcript
-            _notify_streaming_transcript(
-                on_transcript,
-                transcript,
-                is_final=False,
-                silence_detection_time=silence_detection_time,
-            )
-    
-    audio_bytes = b''.join(collected_audio) if collected_audio else b''
-    return transcript, silence_detection_time, audio_bytes
-
-
-def compose_streaming_fallback_speech_to_text(audio_generator, on_transcript=None):
-    """
-    Performs streaming speech recognition with automatic fallback for empty results.
-    
-    Strategy:
-    1. Try streaming STT with latest_long model (optimized for conversations)
-    2. If result is empty, fallback to latest_short model (better for monosyllables)
-    
-    Args:
-        audio_generator: Generator that yields audio chunks (bytes)
-    
-    Returns:
-        tuple: (transcript, silence_detection_time) where:
-            - transcript: The transcribed text
-            - silence_detection_time: Total time including fallback if used
-    """
-    # Step 1: Try streaming STT
-    transcript, silence_time, audio_bytes = streaming_speech_to_text(
-        audio_generator,
-        on_transcript=on_transcript,
-    )
-    
-    # Step 2: Fallback if result is empty
-    if not transcript and audio_bytes:
-        try:
-            fallback_start = time.time()
-            fallback_transcript = speech_to_text(audio_bytes)
-            fallback_time = time.time() - fallback_start
-            
-            if fallback_transcript:
-                transcript = fallback_transcript
-                # Add fallback time to total time
-                if silence_time is not None:
-                    silence_time += fallback_time
-                else:
-                    silence_time = fallback_time
-        except Exception as exc:
-            # Fallback failed, keep original transcript
-            logger.warning('Streaming STT fallback batch recognition failed: %s', exc)
-    
-    return transcript, silence_time
+            unfinished = not result.is_final
+            if result.is_final:
+                parts.append(result.alternatives[0].transcript.strip())
+    return ' '.join(parts).strip() if complete_input and not unfinished else ''
 
 
 def text_to_speech(text: str) -> bytes:
@@ -323,6 +188,6 @@ def text_to_speech(text: str) -> bytes:
     response = clientTTS.synthesize_speech(
         input=synthesis_input,
         voice=voice,
-        audio_config=tts_config
+        audio_config=tts_config, timeout=25
     )
     return response.audio_content

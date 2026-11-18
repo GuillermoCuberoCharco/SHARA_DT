@@ -1,165 +1,232 @@
+"""Regression tests with the real gevent hub and native workers. No cloud or DB."""
 import sys
-import types
+import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import gevent
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import state_machine as sm
 
 
-SERVER_DIR = Path(__file__).resolve().parents[1]
-if str(SERVER_DIR) not in sys.path:
-    sys.path.insert(0, str(SERVER_DIR))
-
-
-class _FakeGreenlet:
-    def __init__(self, callback, args):
-        self.callback = callback
-        self.args = args
-        self.dead = False
-
-    def kill(self):
-        self.dead = True
-
-
-class _FakeGevent(types.ModuleType):
-    def __init__(self):
-        super().__init__('gevent')
-        self.scheduled = []
-
-    def spawn_later(self, timeout, callback, *args):
-        greenlet = _FakeGreenlet(callback, args)
-        self.scheduled.append((timeout, greenlet))
-        return greenlet
-
-    @staticmethod
-    def spawn(callback, *args):
-        return callback(*args)
-
-
-fake_gevent = _FakeGevent()
-sys.modules['gevent'] = fake_gevent
-
-fake_auth = types.ModuleType('auth')
-fake_auth.get_shara_name = lambda _login_name: None
-fake_auth.update_shara_name = lambda _login_name, _shara_name: True
-sys.modules['auth'] = fake_auth
-
-
-class _FakeProactiveService:
-    def __init__(self, callback=None):
-        self.callback = callback
-
-    def cancel_timers(self):
-        pass
-
-    def update(self, *_args, **_kwargs):
-        pass
-
-
-fake_proactive = types.ModuleType('proactive_service')
-fake_proactive.ProactiveService = _FakeProactiveService
-sys.modules['proactive_service'] = fake_proactive
-
-import state_machine
-
-
-class _FakeSocket:
-    def __init__(self):
-        self.events = []
-
-    def emit(self, event, payload, **kwargs):
-        self.events.append((event, payload, kwargs))
-
-
-class ListeningTimeoutTests(unittest.TestCase):
+class TurnTests(unittest.TestCase):
     def setUp(self):
-        state_machine._session_contexts.clear()
-        state_machine._proactive_services.clear()
-        state_machine._audio_streams.clear()
-        state_machine._speaking_watchdogs.clear()
-        state_machine._listening_watchdogs.clear()
-        state_machine._server = None
-        state_machine._socketio = _FakeSocket()
-        state_machine.LISTENING_RESPONSE_TIMEOUT_SECONDS = 12
-        fake_gevent.scheduled.clear()
-        self.sid = 'test-sid'
-
-    def tearDown(self):
-        state_machine._cancel_listening_watchdog(self.sid)
-        state_machine._discard_audio_stream(self.sid)
-        state_machine._session_contexts.clear()
-
-    def _context(self, state='speaking'):
-        context = state_machine._get_context(self.sid)
-        context.state = state
-        context.face_session_id = 'face-session'
-        context.continue_conversation = True
-        context.proactive_question = 'how_are_you'
-        context.unknown_user_interactions = 2
-        return context
-
-    def test_entering_listening_starts_one_session_watchdog(self):
-        context = self._context()
-
-        state_machine.process_transition('speaking2listening', {}, self.sid)
-
-        self.assertEqual(context.state, 'listening')
-        self.assertIn(self.sid, state_machine._listening_watchdogs)
-        self.assertEqual(len(fake_gevent.scheduled), 1)
-        self.assertEqual(fake_gevent.scheduled[0][0], 12)
-        self.assertEqual(state_machine._socketio.events[-1][1]['state'], 'listening')
-
-    def test_no_response_timeout_returns_to_idle_presence_and_cleans_turn(self):
-        context = self._context()
-        state_machine.process_transition('speaking2listening', {}, self.sid)
-        cycle_id = state_machine._listening_watchdogs[self.sid]['cycle_id']
-
-        state_machine._handle_listening_watchdog_timeout(self.sid, cycle_id)
-
-        self.assertEqual(context.state, 'idle_presence')
-        self.assertFalse(context.continue_conversation)
-        self.assertEqual(context.proactive_question, '')
-        self.assertEqual(context.unknown_user_interactions, 0)
-        self.assertNotIn(self.sid, state_machine._listening_watchdogs)
-        self.assertEqual(state_machine._socketio.events[-1][1]['state'], 'idle_presence')
-
-    def test_detected_voice_cancels_watchdog_and_enters_recording(self):
-        context = self._context()
-        state_machine.process_transition('speaking2listening', {}, self.sid)
-        greenlet = state_machine._listening_watchdogs[self.sid]['greenlet']
-
-        accepted = state_machine.on_audio_stream_start(self.sid)
-
-        self.assertTrue(accepted)
-        self.assertEqual(context.state, 'recording')
-        self.assertTrue(greenlet.dead)
-        self.assertNotIn(self.sid, state_machine._listening_watchdogs)
-        self.assertIn(self.sid, state_machine._audio_streams)
-
-    def test_late_audio_start_is_rejected_after_timeout(self):
-        context = self._context()
-        state_machine.process_transition('speaking2listening', {}, self.sid)
-        cycle_id = state_machine._listening_watchdogs[self.sid]['cycle_id']
-        state_machine._handle_listening_watchdog_timeout(self.sid, cycle_id)
-
-        accepted = state_machine.on_audio_stream_start(self.sid)
-
-        self.assertFalse(accepted)
-        self.assertEqual(context.state, 'idle_presence')
-        self.assertNotIn(self.sid, state_machine._audio_streams)
-
-    def test_stale_watchdog_cannot_close_a_new_listening_cycle(self):
-        context = self._context()
-        state_machine.process_transition('speaking2listening', {}, self.sid)
-        old_cycle_id = state_machine._listening_watchdogs[self.sid]['cycle_id']
-        new_cycle_id = state_machine._start_listening_watchdog(self.sid)
-
-        state_machine._handle_listening_watchdog_timeout(self.sid, old_cycle_id)
-
-        self.assertEqual(context.state, 'listening')
-        self.assertEqual(
-            state_machine._listening_watchdogs[self.sid]['cycle_id'],
-            new_cycle_id,
+        self.socket = Mock()
+        self.cloud = Mock(Request=SimpleNamespace)
+        self.cloud.query_with_text.side_effect = lambda r: SimpleNamespace(
+            request=r, audio=None, text='Hola', username=None, continue_conversation=True,
+            robot_mood='joy', audio_mime_type='audio/mpeg', exchange=['test'],
         )
+        self.cloud.streaming_stt.side_effect = lambda chunks: 'hola' if b''.join(chunks) else ''
+        self.cloud.speech_to_text.return_value = ''
+        self.cloud.text_to_speech.return_value = b'MP3'
+        sm.init(self.socket, self.cloud)
+        self.recent = self.enter_patch('greeted_recently', return_value=False)
+        self.save_name = self.enter_patch('update_shara_name', return_value=True)
+        self.enter_patch('_proactive', new=sm.ProactiveService())
+        sm.register_session('sid', 'cuenta', None)
+        sm.on_session_login('sid', {'sessionId': 'page', 'protocolVersion': 2})
+        self.c = sm._sessions['sid']
+        self.addCleanup(sm.on_client_disconnect, 'sid')
 
+    def enter_patch(self, name, **kwargs):
+        p = patch.object(sm, name, **kwargs)
+        self.addCleanup(p.stop)
+        return p.start()
 
-if __name__ == '__main__':
-    unittest.main()
+    def event(self, **data):
+        return dict(sessionId='page', turnId=self.c.turn_id, **data)
+
+    def wait_for(self, condition):
+        with gevent.Timeout(4, AssertionError('Transition timed out')):
+            while not condition():
+                gevent.sleep(.002)
+
+    def listen(self):
+        self.recent.return_value = True
+        sm.on_user_detected('sid', self.event())
+        self.wait_for(lambda: self.c.state == 'listening')
+
+    def confirm_face(self):
+        sm.on_user_detected('sid', self.event(presenceCheck=self.c.presence_check))
+
+    def greeting(self):
+        sm.on_user_detected('sid', self.event())
+        self.wait_for(lambda: self.c.presence_check)
+        self.confirm_face()
+        self.assertEqual(self.c.state, 'speaking')
+
+    def ack(self, status='played'):
+        sm.on_tts_complete('sid', self.event(messageId=self.c.current_tts_message_id, status=status))
+
+    def test_listening_deadline_begins_when_microphone_is_ready(self):
+        self.enter_patch('LISTENING_RESPONSE_TIMEOUT_SECONDS', new=.025)
+        self.listen()
+        gevent.sleep(.04)
+        self.assertEqual(self.c.state, 'listening')
+        sm.on_microphone_ready('sid', self.event())
+        first = self.c.timer
+        sm.on_microphone_ready('sid', self.event())
+        self.assertIs(first, self.c.timer)
+        self.wait_for(lambda: self.c.state == 'idle_presence')
+        self.assertTrue(self.c.presence_check)
+        self.assertIsNone(self.c.stream)
+
+    def test_late_audio_and_old_watchdog_cannot_change_verified_new_turn(self):
+        self.enter_patch('LISTENING_RESPONSE_TIMEOUT_SECONDS', new=.02)
+        self.listen()
+        old = self.event()
+        sm.on_microphone_ready('sid', old)
+        self.wait_for(lambda: self.c.presence_check)
+        self.assertFalse(sm.on_audio_stream_start('sid', old))
+        self.confirm_face()
+        sm.on_microphone_ready('sid', self.event())
+        self.assertTrue(sm.on_audio_stream_start('sid', self.event()))
+        sm.on_audio_chunk(b'old', 'sid', old)
+        self.assertFalse(sm.on_audio_stream_end('sid', old))
+        gevent.sleep(.04)
+        self.assertEqual(self.c.state, 'recording')
+        self.assertEqual(self.c.stream.buffer, b'')
+
+    def test_worker_turn_requires_fresh_presence_and_persists_only_once_after_playback(self):
+        self.listen()
+        sm.on_microphone_ready('sid', self.event())
+        self.assertTrue(sm.on_audio_stream_start('sid', self.event()))
+        sm.on_audio_chunk(b'pcm', 'sid', self.event())
+        self.assertTrue(sm.on_audio_stream_end('sid', self.event()))
+        self.wait_for(lambda: self.c.presence_check)
+        self.assertEqual(self.c.state, 'processing_query')
+        sm.on_user_detected('sid', self.event(presenceCheck='old-check'))
+        self.assertEqual(self.c.state, 'processing_query')
+        self.confirm_face()
+        self.cloud.persist_exchange.assert_not_called()
+        original = self.event(messageId=self.c.current_tts_message_id, status='played')
+        sm.on_tts_complete('sid', original)
+        sm.on_tts_complete('sid', original)
+        self.wait_for(lambda: self.c.presence_check)
+        self.confirm_face()
+        self.assertEqual(self.c.state, 'listening')
+        self.cloud.persist_exchange.assert_called_once()
+
+    def test_presence_loss_invalidates_late_cloud_reply_and_does_not_block_hub(self):
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        def slow(_):
+            gate.wait(.5)
+            return None
+        self.cloud.query_with_text.side_effect = slow
+        sm.on_user_detected('sid', self.event())
+        self.wait_for(lambda: self.cloud.query_with_text.called)
+        sm.on_user_lost('sid', self.event())
+        self.assertFalse(gate.is_set())
+        gate.set()
+        gevent.sleep(.03)
+        self.assertEqual(self.c.state, 'idle')
+        self.assertIsNone(self.c.response)
+        self.cloud.text_to_speech.assert_not_called()
+        self.assertFalse(any(c.args[0] == 'robot_message' for c in self.socket.emit.call_args_list))
+
+    def test_failed_or_missing_playback_releases_greeting_without_saving(self):
+        self.enter_patch('TTS_WATCHDOG_MIN_SECONDS', new=.01)
+        self.enter_patch('TTS_WATCHDOG_MAX_SECONDS', new=.01)
+        self.enter_patch('TTS_WATCHDOG_ACK_GRACE_SECONDS', new=.01)
+        self.greeting()
+        self.wait_for(lambda: self.c.state == 'idle_presence')
+        sm.on_user_lost('sid', self.event())
+        self.greeting()
+        self.ack('failed')
+        self.assertEqual(self.c.state, 'idle_presence')
+        self.assertFalse(sm._proactive.delivered_until)
+        self.assertFalse(sm._proactive.pending)
+        self.cloud.persist_exchange.assert_not_called()
+
+    def test_worker_watchdog_and_empty_transcription_recheck(self):
+        self.listen()
+        self.cloud.streaming_stt.side_effect = lambda chunks: ''
+        sm.on_microphone_ready('sid', self.event())
+        sm.on_audio_stream_start('sid', self.event())
+        sm.on_audio_chunk(b'all PCM', 'sid', self.event())
+        sm.on_audio_stream_end('sid', self.event())
+        self.wait_for(lambda: self.c.presence_check)
+        self.cloud.speech_to_text.assert_called_once_with(b'all PCM')
+        self.assertEqual(self.c.state, 'idle_presence')
+        sm.on_user_lost('sid', self.event())
+        self.assertEqual(self.c.state, 'idle')
+
+    def test_recording_deadline_closes_orphaned_stream(self):
+        self.enter_patch('RECORDING_TIMEOUT', new=.02)
+        self.listen()
+        sm.on_microphone_ready('sid', self.event())
+        sm.on_audio_stream_start('sid', self.event())
+        stream = self.c.stream
+        self.wait_for(lambda: self.c.presence_check)
+        self.assertTrue(stream.closed)
+        self.assertIsNone(self.c.stream)
+
+    def test_silent_capture_cap_rechecks_only_its_own_turn(self):
+        self.listen()
+        previous = self.event(reason='silence')
+        self.assertTrue(sm.on_audio_stream_end('sid', previous))
+        self.confirm_face()
+        self.assertFalse(sm.on_audio_stream_end('sid', previous))
+        self.assertEqual(self.c.state, 'listening')
+
+    def test_delivered_history_failure_returns_to_rest_with_visible_error(self):
+        self.cloud.persist_exchange.side_effect = RuntimeError('database unavailable')
+        self.greeting()
+        with self.assertLogs('StateMachine', level='ERROR'), patch.object(gevent.get_hub(), 'exception_stream', None):
+            self.ack()
+            self.wait_for(lambda: self.c.state == 'idle_presence')
+        self.assertEqual(self.cloud.persist_exchange.call_count, 2)
+        self.assertIsNone(self.c.presence_check)
+        self.assertEqual(self.socket.emit.call_args.args[0], 'interaction_error')
+
+    def test_literal_name_and_reconnection_cooldown(self):
+        self.enter_patch('LISTENING_RESPONSE_TIMEOUT_SECONDS', new=.02)
+        self.greeting()
+        self.ack()
+        self.wait_for(lambda: self.c.presence_check)
+        self.confirm_face()
+        sm.on_microphone_ready('sid', self.event())
+        self.wait_for(lambda: self.c.presence_check)
+        self.confirm_face()
+        self.assertEqual(self.c.state, 'listening')
+        sm.on_text_message('sid', self.event(text='No lo sé'))
+        self.wait_for(lambda: self.c.presence_check)
+        self.save_name.assert_called_once_with('cuenta', 'No lo sé')
+        sm.on_client_disconnect('sid')
+        sm.register_session('sid', 'cuenta', 'No lo sé')
+        sm.on_session_login('sid', {'sessionId':'page', 'protocolVersion':2})
+        self.c = sm._sessions['sid']
+        sm.on_user_detected('sid', self.event())
+        self.assertEqual(self.c.state, 'listening')
+
+    def test_goodbye_waits_for_explicit_resume(self):
+        self.greeting()
+        self.ack()
+        self.wait_for(lambda: self.c.presence_check)
+        self.confirm_face()
+        self.assertEqual(self.c.state, 'listening')
+        sm.on_text_message('sid', self.event(text='Adiós'))
+        self.wait_for(lambda: self.c.presence_check)
+        self.c.response.continue_conversation = False
+        self.confirm_face()
+        self.ack()
+        self.wait_for(lambda: self.c.state == 'idle_presence')
+        self.assertIsNone(self.c.presence_check)
+        sm.on_user_detected('sid', self.event())
+        self.assertEqual(self.c.state, 'idle_presence')
+        sm.on_resume('sid', self.event())
+        self.confirm_face()
+        self.assertEqual(self.c.state, 'listening')
+
+    def test_old_page_or_connection_cannot_change_current_session(self):
+        sm.on_user_detected('sid', dict(self.event(), sessionId='other'))
+        self.assertEqual(self.c.state, 'idle')
+        self.listen()
+        sm.on_client_disconnect('sid')
+        sm.on_user_detected('sid', self.event())
+        self.assertNotIn('sid', sm._sessions)

@@ -11,6 +11,7 @@ let currentWebAudioSource = null;
 let isUnlocked = false;
 let unlockPromise = null;
 let playbackGeneration = 0;
+let playbackController = new AbortController();
 const unlockListeners = new Set();
 
 const getBrowserAudioContext = () => {
@@ -146,6 +147,8 @@ const resetAudioElement = (audio) => {
 };
 
 const stopCurrentPlayback = () => {
+    playbackController.abort();
+    playbackController = new AbortController();
     if (currentWebAudioSource) {
         const source = currentWebAudioSource;
         currentWebAudioSource = null;
@@ -404,7 +407,11 @@ const playBytesWithWebAudio = async (audioBytes, mimeType, options = {}) => {
         ? Math.max(playbackTimeoutMs, options.timeoutMs)
         : playbackTimeoutMs;
 
+    const signal = playbackController.signal;
+    let abort;
     return withTimeout(new Promise((resolve, reject) => {
+        abort = () => reject(createAbortError('Playback cancelled'));
+        signal.addEventListener('abort', abort, { once: true });
         source.onended = () => {
             if (currentWebAudioSource === source) {
                 currentWebAudioSource = null;
@@ -449,6 +456,9 @@ const playBytesWithWebAudio = async (audioBytes, mimeType, options = {}) => {
             bytes: audioBytes.byteLength,
             timeoutMs,
         });
+    }).finally(() => {
+        signal.removeEventListener('abort', abort);
+        source.disconnect();
     });
 };
 
@@ -524,10 +534,11 @@ export const playAudioUrl = async (audioUrl, options = {}) => {
         await unlockPromise;
     }
 
-    resetAudioElement(audio);
     if (!isCurrentPlayback(playbackId)) {
         throw createAbortError('HTML audio playback was cancelled before load');
     }
+    resetAudioElement(audio);
+    const signal = playbackController.signal;
 
     let cleanup = () => {};
     let playbackStarted = false;
@@ -589,7 +600,13 @@ export const playAudioUrl = async (audioUrl, options = {}) => {
             reject(new Error('Audio source emptied during playback'));
         };
 
+        const cancelled = () => {
+            cleanup();
+            reject(createAbortError('Playback cancelled'));
+        };
+        signal.addEventListener('abort', cancelled, { once: true });
         cleanup = () => {
+            signal.removeEventListener('abort', cancelled);
             audio.removeEventListener('ended', handleEnded);
             audio.removeEventListener('error', handleError);
             audio.removeEventListener('abort', handleAbort);
@@ -604,6 +621,8 @@ export const playAudioUrl = async (audioUrl, options = {}) => {
         audio.addEventListener('emptied', handleEmptied);
     });
 
+    // play() may still be pending when the turn is cancelled.
+    playbackFinished.catch(() => {});
     audio.muted = false;
     audio.src = audioUrl;
     audio.load();

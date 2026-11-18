@@ -18,9 +18,10 @@ export const useWebSocketContext = () => {
     return context;
 };
 
-export const WebSocketProvider = ({ children, handlers }) => {
+export const WebSocketProvider = ({ children, handlers, sessionId }) => {
     const [isConnected, setIsConnected] = useState(false);
     const [isRegistered, setIsRegistered] = useState(false);
+    const [connectionError, setConnectionError] = useState(false);
     const socketRef = useRef(null);
     const handlersRef = useRef(handlers);
 
@@ -29,25 +30,18 @@ export const WebSocketProvider = ({ children, handlers }) => {
     }, [handlers]);
 
     useEffect(() => {
-        console.log('[WebSocket] Connecting to:', SERVER_URL + '/message');
-
-        if (!socketRef.current) {
-            // Shared Flask-SocketIO namespace.
-            const newSocket = io(`${SERVER_URL}/message`, {
-                transports: ['websocket', 'polling'],
-                reconnectionAttempts: 10,
-                reconnectionDelay: 1000,
-                timeout: 20000,
-                autoConnect: true,
-            });
-            socketRef.current = newSocket;
-        }
-
-        const socket = socketRef.current;
+        if (!sessionId) return;
+        const socket = io(`${SERVER_URL}/message`, {
+            withCredentials: true,
+            transports: ['polling', 'websocket'],
+            autoConnect: false,
+        });
+        socketRef.current = socket;
 
         const handleConnect = () => {
             console.log('[WebSocket] Connected:', socket.id);
             setIsConnected(true);
+            setConnectionError(false);
             socket.emit('register_client', { client: 'web' });
         };
 
@@ -55,12 +49,7 @@ export const WebSocketProvider = ({ children, handlers }) => {
             console.log('[WebSocket] Disconnected:', reason);
             setIsConnected(false);
             setIsRegistered(false);
-
-            setTimeout(() => {
-                if (socketRef.current && !socket.connected) {
-                    socket.connect();
-                }
-            }, 1000);
+            setConnectionError(true);
         };
 
         const handleRegistrationSuccess = () => {
@@ -71,16 +60,8 @@ export const WebSocketProvider = ({ children, handlers }) => {
 
         const handleConnectError = (error) => {
             console.error('[WebSocket] Connection error:', error);
+            setConnectionError(true);
             handlersRef.current?.handleConnectError?.(error);
-        };
-
-        const handleReconnectAttempt = (attempt) => {
-            console.log(`[WebSocket] Reconnecting... attempt ${attempt}`);
-        };
-
-        const handleReconnect = () => {
-            console.log('[WebSocket] Reconnected');
-            socket.emit('register_client', { client: 'web' });
         };
 
         const handleError = (error) => {
@@ -91,20 +72,22 @@ export const WebSocketProvider = ({ children, handlers }) => {
         socket.on('disconnect', handleDisconnect);
         socket.on('registration_success', handleRegistrationSuccess);
         socket.on('connect_error', handleConnectError);
-        socket.on('reconnect_attempt', handleReconnectAttempt);
-        socket.on('reconnect', handleReconnect);
         socket.on('error', handleError);
 
+        socket.connect();
         return () => {
             socket.off('connect', handleConnect);
             socket.off('disconnect', handleDisconnect);
             socket.off('registration_success', handleRegistrationSuccess);
             socket.off('connect_error', handleConnectError);
-            socket.off('reconnect_attempt', handleReconnectAttempt);
-            socket.off('reconnect', handleReconnect);
             socket.off('error', handleError);
+            socket.disconnect();
+            socketRef.current = null;
+            setConnectionError(false);
+            setIsConnected(false);
+            setIsRegistered(false);
         };
-    }, []);
+    }, [sessionId]);
 
     const emit = useCallback((event, data) => {
         if (socketRef.current?.connected) {
@@ -119,9 +102,10 @@ export const WebSocketProvider = ({ children, handlers }) => {
         socket: socketRef.current,
         isConnected,
         isRegistered,
+        connectionError,
         emit,
         id: socketRef.current?.id,
-    }), [emit, isConnected, isRegistered]);
+    }), [emit, isConnected, isRegistered, connectionError]);
 
     return (
         <WebSocketContext.Provider value={value}>

@@ -526,3 +526,22 @@ html {
     font-size: 30px;
   }
 }
+
+.interaction-controls {
+    position: fixed;
+    bottom: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 90vw;
+    padding: .6rem 1rem;
+    border-radius: .6rem;
+    background: #fff;
+    color: #24213b;
+    text-align: center;
+    pointer-events: auto;
+    z-index: 8;
+}
+.interaction-controls:empty { display: none; }
+.interaction-controls p { margin: .25rem 0; }
+.interaction-controls button { cursor: pointer; font: inherit; }

@@ -5,20 +5,19 @@ Flask-SocketIO server for the SHARA web deployment.
 Flask serves both the React frontend build and the WebSocket API.
 """
 
-from gevent import monkey
-# Keep native threads/queues for ThreadPoolExecutor. Google gRPC/OpenAI calls
-# are blocking and must not run on gevent's cooperative thread patch.
-monkey.patch_all(thread=False, queue=False)
-
 import base64
 import logging
 import os
+import secrets
 
+import gevent
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
+import psycopg2
 
 from auth import get_shara_name, register_user, user_exists, verify_user
 
@@ -49,7 +48,7 @@ FRONTEND_ORIGINS = [
 ]
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='')
-app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'shara-woz-secret')
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY') or secrets.token_hex(32)
 
 CORS(
     app,
@@ -57,9 +56,20 @@ CORS(
     resources={r'/api/*': {'origins': FRONTEND_ORIGINS}},
 )
 
+def _allowed_socket_origin(origin, environ):
+    if origin in FRONTEND_ORIGINS:
+        return True
+    scheme = environ.get('HTTP_X_FORWARDED_PROTO', environ.get('wsgi.url_scheme', 'http')).split(',')[0].strip()
+    host = environ.get('HTTP_X_FORWARDED_HOST', environ.get('HTTP_HOST', '')).split(',')[0].strip()
+    return origin == f"{scheme}://{host}"
+
+
+# Engine.IO supplies gevent sockets for the web server. Leave the standard
+# library native so cloud connections can be pooled across worker threads.
 socketio = SocketIO(
     app,
-    cors_allowed_origins='*',
+    cors_allowed_origins=_allowed_socket_origin,
+    async_handlers=False,
     async_mode='gevent',
     logger=False,
     engineio_logger=False,
@@ -71,7 +81,6 @@ _auth_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'], salt=AUTH_CO
 
 from db import init_schema as _init_db_schema
 from eyes.service import Eyes
-from proactive_service import ProactiveService
 from services.cloud import server as cloud_server
 from sockets.message_handler import MessageNamespace
 import state_machine
@@ -79,17 +88,13 @@ import state_machine
 _init_db_schema()
 
 eyes = Eyes(socketio_instance=socketio)
-proactive = ProactiveService(callback=state_machine.proactive_event_handler)
 
 state_machine.init(
     socketio_instance=socketio,
     server_module=cloud_server,
     eyes_instance=eyes,
-    proactive_instance=proactive,
 )
 
-socketio.on_namespace(MessageNamespace('/message'))
-logger.info('Namespace registered: /message')
 
 
 def _should_use_secure_cookie():
@@ -142,7 +147,7 @@ def _get_request_payload():
 
 def _build_session_payload():
     data = _get_request_payload()
-    login_name = (data.get('loginName') or _get_authenticated_login_name() or '').strip() or None
+    login_name = _get_authenticated_login_name()
     session_id = data.get('sessionId') or data.get('session_id')
 
     return {
@@ -166,10 +171,16 @@ def _set_auth_cookie(response, login_name: str):
     return response
 
 
+@app.errorhandler(psycopg2.Error)
+def database_error(error):
+    logger.error('Database operation failed: %s', type(error).__name__)
+    return jsonify({'error': 'No se pudo acceder a la base de datos. Vuelve a intentarlo.'}), 503
+
+
 def _build_auth_payload(login_name: str):
     return {
         'loginName': login_name,
-        'sharaName': get_shara_name(login_name),
+        'sharaName': gevent.get_hub().threadpool.apply(get_shara_name, (login_name,)),
         'isNewUser': False,
     }
 
@@ -191,11 +202,14 @@ def _get_authenticated_login_name():
     login_name = (payload.get('loginName') if isinstance(payload, dict) else '') or ''
     login_name = login_name.strip()
 
-    if not login_name or not user_exists(login_name):
+    if not login_name or not gevent.get_hub().threadpool.apply(user_exists, (login_name,)):
         logger.info('Auth cookie rejected for missing user: %s', login_name or '<empty>')
         return None
 
     return login_name
+
+
+socketio.on_namespace(MessageNamespace('/message', _get_authenticated_login_name))
 
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -207,7 +221,7 @@ def auth_login():
     if not login_name or not password:
         return jsonify({'error': 'Nombre de usuario y contrasena requeridos'}), 400
 
-    if not verify_user(login_name, password):
+    if not gevent.get_hub().threadpool.apply(verify_user, (login_name, password)):
         return jsonify({'error': 'Usuario o contrasena incorrectos'}), 401
 
     logger.info('Login successful: %s', login_name)
@@ -227,7 +241,7 @@ def auth_register():
     if len(password) < 4:
         return jsonify({'error': 'La contrasena debe tener al menos 4 caracteres'}), 400
 
-    if not register_user(login_name, password):
+    if not gevent.get_hub().threadpool.apply(register_user, (login_name, password)):
         return jsonify({'error': 'El usuario ya existe'}), 409
 
     logger.info('Registration successful: %s', login_name)
@@ -253,9 +267,9 @@ def auth_logout():
     session_data = _build_session_payload()
     login_name = session_data.get('loginName')
 
-    flushed = state_machine.on_session_logout(session_data)
+    state_machine.on_session_logout(session_data)
     if login_name:
-        logger.info('Logout successful: %s (flushed=%s)', login_name, flushed)
+        logger.info('Logout successful: %s', login_name)
     else:
         logger.info('Logout requested without active session')
 
@@ -297,7 +311,7 @@ def synthesize():
     try:
         from services.cloud.google_api import TTS_AUDIO_MIME_TYPE, text_to_speech
 
-        audio_bytes = text_to_speech(text)
+        audio_bytes = gevent.get_hub().threadpool.apply(text_to_speech, (text,))
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
         return jsonify({'audioContent': audio_b64, 'audioMimeType': TTS_AUDIO_MIME_TYPE})
     except Exception as exc:

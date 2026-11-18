@@ -1,163 +1,73 @@
-"""
-sockets/message_handler.py
-
-Socket.IO namespace /message.
-
-Events received from frontend:
-    register_client     - web client registration
-    set_login_identity  - initial login/session identity
-    client_message      - audio (base64 webm/opus blob, legacy) or text from user
-    audio_stream_start  - PCM LINEAR16 stream begins after VAD
-    audio_chunk         - PCM LINEAR16 chunk (base64 Int16 bytes)
-    audio_stream_end    - PCM stream finished, finalise streaming STT
-    user_detected       - face detected by FaceDetection.jsx
-    user_lost           - face lost
-    tts_complete        - frontend finished playing TTS audio
-    transcription_result- browser fallback transcript
-
-Events emitted to frontend:
-    registration_success
-    robot_message       - {text, state, audio (base64), continue}
-    state_update        - {state}
-    transcription_result- {text} echo of what the user said
-"""
-
+"""Authenticated Socket.IO entry points for the robot."""
 import base64
-import logging
 
+import gevent
 from flask import request
 from flask_socketio import Namespace, emit
 
 import state_machine
-
-logger = logging.getLogger('MessageHandler')
-
-# Track connected web clients: sid -> {username, loginName, sessionId, registered}
-_clients: dict = {}
+from auth import get_shara_name
 
 
 class MessageNamespace(Namespace):
+    def __init__(self, namespace, authenticated_login):
+        super().__init__(namespace)
+        self.authenticated_login = authenticated_login
 
-    def on_connect(self):
-        logger.info(f'[/message] Client connected: {request.sid}')
-        _clients[request.sid] = {
-            'registered': False,
-            'username': None,
-            'loginName': None,
-            'sessionId': None,
-        }
-        state_machine.register_session(request.sid)
+    def on_connect(self, auth=None):
+        login = self.authenticated_login()
+        if not login:
+            return False
+        name = gevent.get_hub().threadpool.spawn(get_shara_name, login).get()
+        state_machine.register_session(request.sid, login, name)
 
-    def on_disconnect(self):
-        logger.info(f'[/message] Client disconnected: {request.sid}')
-        client_data = _clients.pop(request.sid, None) or {}
-        if client_data:
-            state_machine.on_client_disconnect(request.sid, client_data)
-        else:
-            state_machine.unregister_session(request.sid)
+    def on_disconnect(self, reason=None):
+        state_machine.on_client_disconnect(request.sid)
 
     def on_register_client(self, data):
-        client_type = data if isinstance(data, str) else data.get('client', 'web')
-        logger.info(f'[/message] Registering client {request.sid} as {client_type}')
-
-        if request.sid in _clients:
-            _clients[request.sid]['registered'] = True
-
-        emit('registration_success', {'status': 'ok', 'role': client_type})
+        emit('registration_success', {'status': 'ok', 'role': 'web'})
 
     def on_set_login_identity(self, data):
-        logger.info(f'[/message] set_login_identity from {request.sid}: {data}')
+        state_machine.on_session_login(request.sid, data)
 
-        if request.sid in _clients and isinstance(data, dict):
-            _clients[request.sid]['username'] = data.get('userName')
-            _clients[request.sid]['loginName'] = data.get('loginName')
-            _clients[request.sid]['sessionId'] = data.get('sessionId')
+    def on_microphone_ready(self, data):
+        state_machine.on_microphone_ready(request.sid, data)
 
-        state_machine.on_session_login(request.sid, data or {})
+    def on_device_error(self, data):
+        state_machine.on_device_error(request.sid, data)
+
+    def on_resume_listening(self, data):
+        state_machine.on_resume(request.sid, data)
 
     def on_audio_stream_start(self, data):
-        sid = request.sid
-        logger.info(f'[/message] audio_stream_start from {sid}')
-
-        accepted = state_machine.on_audio_stream_start(sid)
-        if not accepted:
-            emit('audio_empty', {
-                'sessionId': _clients.get(request.sid, {}).get('sessionId'),
-            })
+        return state_machine.on_audio_stream_start(request.sid, data)
 
     def on_audio_chunk(self, data):
-        sid = request.sid
-        b64_data = data.get('data', '') if isinstance(data, dict) else ''
-        if not b64_data:
-            return
-
         try:
-            raw_bytes = base64.b64decode(b64_data)
-            state_machine.on_audio_chunk(raw_bytes, sid)
-        except Exception as e:
-            logger.warning(f'[/message] Failed to decode audio_chunk: {e}')
+            chunk = base64.b64decode(data['data'], validate=True)
+        except (ValueError, TypeError, KeyError):
+            return
+        if chunk:
+            state_machine.on_audio_chunk(chunk, request.sid, data)
 
     def on_audio_stream_end(self, data):
-        sid = request.sid
-        logger.info(f'[/message] audio_stream_end from {sid}')
-
-        accepted = state_machine.on_audio_stream_end(sid)
-        if not accepted:
-            logger.warning(f'[/message] audio_stream_end with no active stream for {sid}')
-            emit('audio_empty', {
-                'sessionId': _clients.get(request.sid, {}).get('sessionId'),
-            })
+        return state_machine.on_audio_stream_end(request.sid, data)
 
     def on_client_message(self, data):
-        if not isinstance(data, dict):
-            logger.warning(f'[/message] Unexpected client_message format: {type(data)}')
-            return
-
-        msg_type = data.get('type', '')
-
-        if msg_type == 'audio':
-            audio_b64 = data.get('data', '')
-            if audio_b64:
-                logger.info(f'[/message] Legacy audio blob received from {request.sid}')
-                state_machine.on_audio_message(audio_b64, request.sid)
+        if isinstance(data, dict):
+            if data.get('type') == 'audio':
+                state_machine.on_audio_message(request.sid, data)
             else:
-                logger.warning('[/message] Audio message with empty data')
-
-        elif msg_type in ('client_message', 'text'):
-            text = data.get('text', '').strip()
-            if text:
-                logger.info(f'[/message] Text received from {request.sid}: "{text}"')
-                emit('client_message', {
-                    'text': text,
-                    'sender': 'client',
-                    'sessionId': _clients.get(request.sid, {}).get('sessionId'),
-                })
-                state_machine.on_text_message(text, request.sid)
-
-        else:
-            text = data.get('text', '').strip()
-            if text:
-                state_machine.on_text_message(text, request.sid)
+                state_machine.on_text_message(request.sid, data)
 
     def on_user_detected(self, data):
-        logger.info(f'[/message] user_detected from {request.sid}: {data}')
-        state_machine.on_user_detected(request.sid, data or {})
+        state_machine.on_user_detected(request.sid, data)
 
     def on_user_lost(self, data):
-        logger.info(f'[/message] user_lost from {request.sid}: {data}')
-        state_machine.on_user_lost(request.sid, data or {})
+        state_machine.on_user_lost(request.sid, data)
 
     def on_tts_complete(self, data):
-        logger.info(f'[/message] tts_complete from {request.sid}: {data}')
-        state_machine.on_tts_complete(request.sid, data if isinstance(data, dict) else {})
+        state_machine.on_tts_complete(request.sid, data or {})
 
     def on_transcription_result(self, data):
-        text = data.get('text', '').strip() if isinstance(data, dict) else str(data).strip()
-        if text:
-            logger.info(f'[/message] transcription_result: "{text}"')
-            emit('client_message', {
-                'text': text,
-                'sender': 'client',
-                'sessionId': _clients.get(request.sid, {}).get('sessionId'),
-            })
-            state_machine.on_text_message(text, request.sid)
+        state_machine.on_text_message(request.sid, data if isinstance(data, dict) else {'text': str(data)})

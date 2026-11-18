@@ -54,7 +54,7 @@ def register_user(login_name: str, password: str) -> bool:
         if conn:
             conn.rollback()
         logger.error('Registration error for %s: %s', login_name, exc)
-        return False
+        raise
     finally:
         if conn:
             conn.close()
@@ -106,7 +106,7 @@ def get_shara_name(login_name: str):
         return row[0] if row and row[0] else None
     except Exception as exc:
         logger.error('Error fetching shara_name for %s: %s', login_name, exc)
-        return None
+        raise
     finally:
         if conn:
             conn.close()
@@ -141,3 +141,17 @@ def update_shara_name(login_name: str, shara_name: str) -> bool:
     finally:
         if conn:
             conn.close()
+
+
+def greeted_recently(login_name, seconds):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT last_greeting_at > NOW() - %s * INTERVAL '1 second' FROM users WHERE login_name = %s",
+                (seconds, login_name),
+            )
+            row = cur.fetchone()
+            return bool(row and row[0])
+    finally:
+        conn.close()

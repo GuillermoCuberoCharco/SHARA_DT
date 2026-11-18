@@ -34,7 +34,7 @@ def load_tools(filename="files/tools_config.json"):
 
 # ── Conversation history — backed by PostgreSQL ───────────────────────────────
 
-def load_conversation_history(username):
+def load_conversation_history(username, exclude_turn=None):
     """
     Load all past messages for *username* from the DB.
     Messages are returned in chronological order (created_at ASC, id ASC).
@@ -50,10 +50,10 @@ def load_conversation_history(username):
                 """
                 SELECT role, content
                 FROM   conversation_messages
-                WHERE  login_name = %s
+                WHERE  login_name = %s AND (%s::text IS NULL OR turn_id IS DISTINCT FROM %s)
                 ORDER  BY created_at ASC, id ASC
                 """,
-                (username,),
+                (username, exclude_turn, exclude_turn),
             )
             rows = cur.fetchall()
         history = [{'role': r[0], 'content': r[1]} for r in rows]
@@ -61,13 +61,13 @@ def load_conversation_history(username):
         return history
     except Exception as exc:
         logger.error('Failed to load conversation history for %s: %s', username, exc)
-        return []
+        raise
     finally:
         if conn:
             conn.close()
 
 
-def _persist_conversation_messages(username, messages, session_id=None):
+def persist_exchange(username, messages, session_id, turn_id, proactive):
     """
     Persist a request-local message batch to the DB under *username*.
     Each message becomes an individual row with an optional session_id
@@ -82,14 +82,17 @@ def _persist_conversation_messages(username, messages, session_id=None):
         with conn.cursor() as cur:
             cur.executemany(
                 """
-                INSERT INTO conversation_messages (login_name, role, content, session_id)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO conversation_messages (login_name, role, content, session_id, turn_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (login_name, turn_id, role) DO NOTHING
                 """,
                 [
-                    (username, msg['role'], msg['content'], session_id)
+                    (username, msg['role'], msg['content'], session_id, turn_id)
                     for msg in messages
                 ],
             )
+            if proactive:
+                cur.execute('UPDATE users SET last_greeting_at = NOW() WHERE login_name = %s', (username,))
         conn.commit()
         logger.info(
             'Saved %d messages for user %s (session %s)',
@@ -99,6 +102,7 @@ def _persist_conversation_messages(username, messages, session_id=None):
         if conn:
             conn.rollback()
         logger.error('Failed to save conversation history for %s: %s', username, exc)
+        raise
     finally:
         if conn:
             conn.close()
@@ -212,10 +216,10 @@ def handle_tool_call(tool_call, context_data):
     return result, robot_action
 
 
-def build_messages(input_text, context_data, history_key=None):
+def build_messages(input_text, context_data, history_key=None, turn_id=None):
     ''' Build messages with conversation history '''
 
-    messages = load_conversation_history(history_key) if history_key else []
+    messages = load_conversation_history(history_key, exclude_turn=turn_id) if history_key else []
     user_message = {"role": "user", "content": json.dumps({**context_data,
                                                            "user_input": input_text,
                                                            "timestamp": datetime.now().strftime("%d-%m-%Y %H:%M")}, ensure_ascii=False)}
@@ -241,11 +245,13 @@ def get_tools_for_context(context_data):
     return tools_to_use, requireness
 
 
-def generate_response(input_text, context_data=None, history_key=None, session_id=None):
+def generate_response(input_text, context_data=None, history_key=None, session_id=None, turn_id=None):
     ''' Generate response from user input, context data, and conversation history '''
 
     context_data = context_data or {}
-    messages, user_message = build_messages(input_text, context_data, history_key=history_key)
+    messages, user_message = build_messages(input_text, context_data, history_key, turn_id)
+    if input_text and turn_id:
+        persist_exchange(history_key, [user_message], session_id, turn_id, proactive=False)
     tools_to_use, requireness_tool = get_tools_for_context(context_data)
 
     # Create request-local completion args.
@@ -287,17 +293,11 @@ def generate_response(input_text, context_data=None, history_key=None, session_i
     
     response_text = response_dict.get("response", "").translate(str.maketrans("'", '"', '*_#'))
     
-    # Persist only the user/assistant exchange. Tool call plumbing remains
-    # request-local and is not part of the user-facing conversation history.
     assistant_message = {"role": "assistant", "content": response_text}
-    _persist_conversation_messages(
-        history_key,
-        [user_message, assistant_message],
-        session_id=session_id,
-    )
 
     # Build robot_context from parsed data (continue, robot_mood, robot_action)
     robot_context = {
+        "exchange": [user_message, assistant_message],
         "continue": response_dict.get("continue", False),
         "robot_mood": response_dict.get("robot_mood", "neutral"),
     } | robot_action

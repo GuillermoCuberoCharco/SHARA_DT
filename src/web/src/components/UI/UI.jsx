@@ -10,13 +10,13 @@
  * onRobotStateChange is called so RobotView can update the eye animation.
  * 
  * Props:
- *   sharedStream       - MediaStream from the user's camera (may be null)
  *   onRobotStateChange - Callback(stateName: string) notifying the current robot emotional state
  */
 
 import PropTypes from 'prop-types';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ANIMATION_MAPPINGS } from "../../config";
+import { SERVER_URL } from '../../config';
+import { cancelAudioPlayback, playAudioBase64 } from '../../utils/audioPlayback';
 import { useWebSocketContext } from '../../contexts/WebSocketContext';
 import '../../styles/InterfaceStyle.css';
 import FaceDetection from '../FaceDetection';
@@ -55,51 +55,6 @@ const LED_LEGEND_ITEMS = [
     },
 ];
 
-const UI_STATUS_MESSAGES = {
-    connection_error: 'Connection error',
-    connecting: 'Connecting to server',
-    recording: 'Recording audio',
-    waiting_response: 'Waiting for response',
-    speaking: 'Playing robot audio',
-    face_not_detected: 'Face not detected',
-    ready: 'Ready',
-};
-
-const getUiConsoleStatus = ({
-    connectionError,
-    isRegistered,
-    isRecording,
-    isWaitingResponse,
-    isSpeaking,
-    faceDetected,
-}) => {
-    if (!isRegistered) {
-        return 'connecting';
-    }
-
-    if (connectionError) {
-        return 'connection_error';
-    }
-
-    if (isRecording) {
-        return 'recording';
-    }
-
-    if (isWaitingResponse) {
-        return 'waiting_response';
-    }
-
-    if (isSpeaking) {
-        return 'speaking';
-    }
-
-    if (!faceDetected) {
-        return 'face_not_detected';
-    }
-
-    return 'ready';
-};
-
 const getSessionDisplayName = (sessionIdentity) => {
     const knownUserName = typeof sessionIdentity?.userName === 'string'
         ? sessionIdentity.userName.trim()
@@ -116,350 +71,147 @@ const getSessionDisplayName = (sessionIdentity) => {
     return loginName || 'Usuario';
 };
 
-const isForCurrentSession = (payload, sessionIdentity) => {
-    if (!payload?.sessionId || !sessionIdentity?.sessionId) {
-        return true;
-    }
-
-    return payload.sessionId === sessionIdentity.sessionId;
-};
-
-const SERVER_RECORDING_READY_STATE = 'listening';
-const CLIENT_TTS_MIN_TIMEOUT_MS = 8000;
-const CLIENT_TTS_MAX_TIMEOUT_MS = 50000;
-const CLIENT_TTS_MS_PER_CHAR = 90;
-const CLIENT_TTS_TIMEOUT_GRACE_MS = 4500;
-
-const createTimeoutError = (message) => {
-    const error = new Error(message);
-    error.name = 'TimeoutError';
-    return error;
-};
-
-const withTimeout = (promise, timeoutMs, message) => new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-        if (settled) {
-            return;
-        }
-
-        settled = true;
-        reject(createTimeoutError(message));
-    }, timeoutMs);
-
-    Promise.resolve(promise).then(
-        (value) => {
-            if (settled) {
-                return;
-            }
-
-            settled = true;
-            clearTimeout(timer);
-            resolve(value);
-        },
-        (error) => {
-            if (settled) {
-                return;
-            }
-
-            settled = true;
-            clearTimeout(timer);
-            reject(error);
-        },
-    );
-});
-
-const estimateTtsTimeoutMs = (text) => {
-    const textLength = String(text || '').trim().length;
-    const estimate = (textLength * CLIENT_TTS_MS_PER_CHAR) + CLIENT_TTS_TIMEOUT_GRACE_MS;
-
-    return Math.max(
-        CLIENT_TTS_MIN_TIMEOUT_MS,
-        Math.min(CLIENT_TTS_MAX_TIMEOUT_MS, estimate),
-    );
-};
-
-const UI = ({
-    sharedStream,
-    onRobotStateChange,
-    sessionIdentity,
-    onSessionIdentityChange,
-    onLogout,
-    isLoggingOut,
-}) => {
-    // Main states
-    const [connectionError, setConnectionError] = useState(false);
-    const [isWaitingResponse, setIsWaitingResponse] = useState(false);
-    const [faceDetected, setFaceDetected] = useState(false);
-    const [serverConversationState, setServerConversationState] = useState('idle');
-    const [isLedLegendOpen, setIsLedLegendOpen] = useState(() => {
-        if (typeof window === 'undefined') {
-            return true;
-        }
-
-        return !window.matchMedia('(max-width: 640px)').matches;
-    });
+const UI = ({ sessionIdentity, onSessionIdentityChange, onRobotStateChange, onLogout, isLoggingOut }) => {
+    const { socket, isRegistered, connectionError, emit } = useWebSocketContext();
+    const sessionId = sessionIdentity.sessionId;
+    const [turn, setTurn] = useState(null);
+    const live = useRef(null);
+    const playback = useRef(null);
+    const [visible, setVisible] = useState(!document.hidden);
+    const [cameraError, setCameraError] = useState('');
+    const [retry, setRetry] = useState(0);
+    const [notice, setNotice] = useState('');
     const [logoutError, setLogoutError] = useState('');
-    const lastUiStatusRef = useRef(null);
+    const [isLedLegendOpen, setIsLedLegendOpen] = useState(() => !window.matchMedia('(max-width: 640px)').matches);
+    const active = visible && isRegistered && !!turn && !isLoggingOut;
+    const capturing = turn?.state === 'listening' || turn?.state === 'recording';
+    const microphoneError = useCallback(() => setNotice('Comprueba el permiso del micrófono.'), []);
+    useAudioRecorder(active && capturing, sessionId, turn?.turnId, emit, microphoneError);
 
-    // Context and references
-    const { isConnected, isRegistered, emit, socket } = useWebSocketContext();
-
-    const handleTranscriptionComplete = useCallback(() => {
-        setIsWaitingResponse(false);
-    }, []);
-    const handleAudioSubmitted = useCallback(() => {
-        setIsWaitingResponse(true);
-    }, []);
-
-    // Audio hooks
-    const {
-        isRecording,
-        isSpeaking,
-        startRecording,
-        stopRecording,
-        handleSynthesize
-    } = useAudioRecorder(
-        handleTranscriptionComplete,
-        isWaitingResponse,
-        handleAudioSubmitted
-    );
-
-    /**
-     * Extracts the state name from the message and notifies RobotView.
-     * ANIMATION_MAPPINGS maps server state keys (e.g. 'joy') to display names,
-     * but for the eye service we pass the raw key directly.
-     */
-    const notifyRobotState = useCallback((state) => {
-        if (!state) return;
-        // Validate against known states; fall back to neutral
-        const knownState = ANIMATION_MAPPINGS[state] ? state : 'neutral';
-        onRobotStateChange?.(knownState);
-    }, [onRobotStateChange]);
-
-    const completeTtsForMessage = useCallback(async (message, source) => {
-        if (!isForCurrentSession(message, sessionIdentity)) {
-            return;
+    const stopPlayback = useCallback(() => {
+        if (playback.current) {
+            playback.current.abort();
+            playback.current = null;
+            cancelAudioPlayback('turn_ended');
         }
-
-        const messageId = message.messageId || null;
-        const timeoutMs = Number(message.ttsTimeoutMs) > 0
-            ? Number(message.ttsTimeoutMs)
-            : estimateTtsTimeoutMs(message.text);
-        let status = message.text?.trim() || message.audio ? 'played' : 'skipped_empty';
-
-        try {
-            if (message.text?.trim() || message.audio) {
-                console.log(`[SHARA][${source}]`, message.text || '[audio]');
-                await withTimeout(
-                    handleSynthesize(
-                        message.text,
-                        message.audio || null,
-                        message.audioMimeType || 'audio/mpeg',
-                        { timeoutMs },
-                    ),
-                    timeoutMs + 1500,
-                    'TTS playback timed out',
-                );
-            }
-        } catch (error) {
-            status = error?.name === 'TimeoutError' ? 'timeout' : 'failed';
-            handleSynthesize.cancel?.();
-            console.error(`[SHARA][${source}] TTS ${status}:`, error);
-        } finally {
-            emit('tts_complete', {
-                sessionId: sessionIdentity?.sessionId || null,
-                messageId,
-                status,
-            });
-            setIsWaitingResponse(false);
-        }
-    }, [emit, handleSynthesize, sessionIdentity]);
-
-    const handleRobotMessage = useCallback(async (message) => {
-        if (!isForCurrentSession(message, sessionIdentity)) {
-            return;
-        }
-
-        if (message.state) {
-            notifyRobotState(message.state);
-        }
-
-        await completeTtsForMessage(message, 'robot');
-    }, [notifyRobotState, completeTtsForMessage, sessionIdentity]);
-
-    const handleWizardMessage = useCallback(async (message) => {
-        if (!isForCurrentSession(message, sessionIdentity)) {
-            return;
-        }
-
-        if (message.state) {
-            notifyRobotState(message.state);
-        }
-
-        await completeTtsForMessage(message, 'wizard');
-    }, [notifyRobotState, completeTtsForMessage, sessionIdentity]);
-
-    const handleClientMessage = useCallback((message) => {
-        if (!isForCurrentSession(message, sessionIdentity)) {
-            return;
-        }
-
-        if (message.text?.trim()) {
-            console.log('[SHARA][client]', message.text);
-            setIsWaitingResponse(true);
-        }
-    }, [sessionIdentity]);
-
-    const canStartRecording = serverConversationState === SERVER_RECORDING_READY_STATE;
-
-    const handleFaceDetected = useCallback(() => {
-        setFaceDetected(true);
     }, []);
 
-    const handleFaceLost = useCallback(() => {
-        setFaceDetected(false);
-        if (isRecording) {
-            stopRecording();
-        }
-    }, [isRecording, stopRecording]);
-
-    const handleLogoutClick = useCallback(async () => {
-        if (!onLogout) {
-            return;
-        }
-
-        setLogoutError('');
-
-        try {
-            await onLogout();
-        } catch (error) {
-            setLogoutError(error?.message || 'No se pudo cerrar la sesión');
-        }
-    }, [onLogout]);
-
-    // Track connection status
     useEffect(() => {
-        setConnectionError(!isConnected);
-    }, [isConnected]);
-
-    useEffect(() => {
-        setServerConversationState('idle');
-        setIsWaitingResponse(false);
-    }, [sessionIdentity?.sessionId]);
-
-    useEffect(() => {
-        const nextStatus = getUiConsoleStatus({
-            connectionError,
-            isRegistered,
-            isRecording,
-            isWaitingResponse,
-            isSpeaking,
-            faceDetected,
-        });
-
-        if (lastUiStatusRef.current === nextStatus) {
-            return;
-        }
-
-        lastUiStatusRef.current = nextStatus;
-        console.log(`[SHARA][ui-status] ${UI_STATUS_MESSAGES[nextStatus]} (${nextStatus})`);
-    }, [connectionError, isRegistered, isRecording, isWaitingResponse, isSpeaking, faceDetected]);
-
-    // Register socket event listeners
-    useEffect(() => {
-        if (!socket) return;
-
-        socket.off('robot_message');
-        socket.off('wizard_message');
-        socket.off('client_message');
-        socket.off('transcription_result');
-        socket.off('session_identity_updated');
-
-        const handleSessionIdentityUpdated = (nextSessionIdentity) => {
-            if (!nextSessionIdentity?.sessionId || nextSessionIdentity.sessionId !== sessionIdentity?.sessionId) {
-                return;
-            }
-
-            onSessionIdentityChange?.((currentIdentity) => ({
-                ...(currentIdentity || {}),
-                ...nextSessionIdentity,
-            }));
-        };
-
-        const handleStateUpdate = (payload) => {
-            if (!isForCurrentSession(payload, sessionIdentity)) {
-                return;
-            }
-
-            const nextState = payload?.state || 'idle';
-            setServerConversationState(nextState);
-
-            if (nextState === 'processing_query') {
-                setIsWaitingResponse(true);
-            } else if (nextState === 'idle' || nextState === 'idle_presence' || nextState === 'listening') {
-                setIsWaitingResponse(false);
+        const visibility = () => {
+            setVisible(!document.hidden);
+            if (document.hidden) {
+                stopPlayback();
+                emit('user_lost', { sessionId, reason: 'document_hidden' });
             }
         };
+        document.addEventListener('visibilitychange', visibility);
+        return () => document.removeEventListener('visibilitychange', visibility);
+    }, [emit, sessionId, stopPlayback]);
 
-        socket.on('robot_message', handleRobotMessage);
-        socket.on('wizard_message', handleWizardMessage);
-        socket.on('client_message', handleClientMessage);
-        socket.on('transcription_result', handleClientMessage);
-        socket.on('session_identity_updated', handleSessionIdentityUpdated);
-        socket.on('state_update', handleStateUpdate);
-        const handleAudioEmpty = (payload) => {
-            if (!isForCurrentSession(payload, sessionIdentity)) {
-                return;
-            }
-
-            setIsWaitingResponse(false);
+    useEffect(() => {
+        if (!socket || !isRegistered) return;
+        const state = next => {
+            if (next.sessionId !== sessionId) return;
+            if (next.messageId !== live.current?.messageId || next.state !== 'speaking') stopPlayback();
+            live.current = next;
+            setTurn(next);
+            if (next.state === 'listening' || next.state === 'processing_query') setNotice('');
+            if (next.state === 'idle') onRobotStateChange('neutral');
         };
-
-        socket.on('audio_empty', handleAudioEmpty);
-
+        const identity = payload => {
+            if (payload.sessionId === sessionId) onSessionIdentityChange(old => ({ ...old, ...payload }));
+        };
+        const error = payload => {
+            if (payload.sessionId === sessionId && payload.turnId === live.current?.turnId) setNotice(payload.text);
+        };
+        const speak = async message => {
+            if (document.hidden || message.sessionId !== sessionId || !message.messageId ||
+                message.messageId !== live.current?.messageId || live.current.state !== 'speaking' ||
+                playback.current) return;
+            const controller = new AbortController();
+            playback.current = controller;
+            const timeout = setTimeout(() => {
+                controller.abort();
+                cancelAudioPlayback('playback_timeout');
+                if (playback.current === controller) {
+                    playback.current = null;
+                    emit('tts_complete', { sessionId, turnId: message.turnId, messageId: message.messageId, status: 'timeout' });
+                }
+            }, message.ttsTimeoutMs);
+            let status = 'failed';
+            try {
+                let audio = message.audio;
+                let mime = message.audioMimeType || 'audio/mpeg';
+                if (!audio && message.text) {
+                    const res = await fetch(`${SERVER_URL}/api/synthesize`, {
+                        method: 'POST', credentials: 'include', signal: controller.signal,
+                        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: message.text }),
+                    });
+                    if (!res.ok) throw new Error('Error de síntesis');
+                    const result = await res.json();
+                    audio = result.audioContent;
+                    mime = result.audioMimeType || mime;
+                }
+                if (!controller.signal.aborted && await playAudioBase64(audio, mime, { timeoutMs: message.ttsTimeoutMs })) {
+                    status = 'played';
+                }
+            } catch (err) {
+                if (!controller.signal.aborted) console.warn('Error de reproducción', err);
+            } finally {
+                clearTimeout(timeout);
+                if (playback.current === controller) {
+                    playback.current = null;
+                    emit('tts_complete', { sessionId, turnId: message.turnId, messageId: message.messageId, status });
+                }
+            }
+        };
+        socket.on('state_update', state);
+        socket.on('robot_message', speak);
+        socket.on('session_identity_updated', identity);
+        socket.on('interaction_error', error);
+        emit('set_login_identity', { sessionId, protocolVersion: 2 });
         return () => {
-            socket.off('robot_message');
-            socket.off('wizard_message');
-            socket.off('client_message');
-            socket.off('transcription_result');
-            socket.off('session_identity_updated', handleSessionIdentityUpdated);
-            socket.off('state_update', handleStateUpdate);
-            socket.off('audio_empty', handleAudioEmpty);
+            socket.off('state_update', state);
+            socket.off('robot_message', speak);
+            socket.off('session_identity_updated', identity);
+            socket.off('interaction_error', error);
+            live.current = null;
+            setTurn(null);
+            stopPlayback();
         };
-    }, [socket, handleClientMessage, handleRobotMessage, handleWizardMessage, onSessionIdentityChange, sessionIdentity]);
+    }, [socket, isRegistered, emit, sessionId, onSessionIdentityChange, onRobotStateChange, stopPlayback]);
 
-    useEffect(() => {
-        if (!isRegistered || !sessionIdentity?.sessionId) {
-            return;
-        }
-
-        emit('set_login_identity', sessionIdentity);
-    }, [emit, isRegistered, sessionIdentity]);
-
-    // A server transition to a passive state is authoritative. Besides stopping
-    // an active recorder, this invalidates a microphone start still awaiting
-    // getUserMedia/AudioWorklet setup.
-    useEffect(() => {
-        if (serverConversationState === 'idle' || serverConversationState === 'idle_presence') {
-            stopRecording();
-        }
-    }, [serverConversationState, stopRecording]);
-
-    // Auto-restart recording only when the backend state machine is listening.
-    useEffect(() => {
-        if (canStartRecording && !isWaitingResponse && !isRecording && !isSpeaking && faceDetected) {
-            const timer = setTimeout(() => {
-                startRecording();
-            }, 150);
-            return () => clearTimeout(timer);
-        }
-    }, [canStartRecording, isWaitingResponse, isRecording, isSpeaking, faceDetected, startRecording]);
-
+    const cameraFailed = text => {
+        setCameraError(text);
+        if (live.current) emit('device_error', { ...live.current, device: 'camera' });
+    };
+    const presence = (present, observed) => {
+        if (document.hidden || observed.turnId !== live.current?.turnId) return;
+        emit(present ? 'user_detected' : 'user_lost', {
+            sessionId, turnId: observed.turnId, presenceCheck: observed.presenceCheck, reason: 'face_timeout',
+        });
+    };
+    const handleLogoutClick = async () => {
+        setLogoutError('');
+        stopPlayback();
+        try { await onLogout(); } catch (err) { setLogoutError(err.message); }
+    };
     const sessionDisplayName = getSessionDisplayName(sessionIdentity);
-
     return (
         <div className="ui-overlay">
+            <div className="interaction-controls" aria-live="polite">
+                {!isRegistered && (connectionError
+                    ? <><p>Se perdió la conexión con SHARA.</p><button onClick={() => window.location.reload()}>Volver a conectar</button></>
+                    : <p>Conectando con SHARA…</p>)}
+                {cameraError && <><p>{cameraError}</p><button onClick={() => {
+                    setCameraError(''); setRetry(n => n + 1);
+                }}>Reintentar cámara</button></>}
+                {notice && <p>{notice}</p>}
+                {active && turn.state === 'idle_presence' && !turn.presenceCheck && !cameraError &&
+                    <button onClick={() => emit('resume_listening', { sessionId, turnId: turn.turnId })}>Retomar conversación</button>}
+                {active && turn.state === 'listening' && !turn.microphoneReady && <p>Activando micrófono…</p>}
+                {active && turn.presenceCheck && <p>Comprobando presencia…</p>}
+            </div>
             <aside
                 className={`led-legend-panel${isLedLegendOpen ? '' : ' led-legend-panel-collapsed'}`}
                 aria-label="Leyenda LED de SHARA"
@@ -537,33 +289,17 @@ const UI = ({
                 )}
             </aside>
 
-            {sharedStream && (
-                <FaceDetection
-                    onFaceDetected={handleFaceDetected}
-                    onFaceLost={handleFaceLost}
-                    stream={sharedStream}
-                    sessionIdentity={sessionIdentity}
-                />
-            )}
+            {!cameraError && <FaceDetection key={retry} active={active && !capturing}
+                turn={turn} onPresence={presence} onError={cameraFailed} />}
         </div>
     );
 };
 
 UI.propTypes = {
-    sharedStream: PropTypes.instanceOf(MediaStream),
-    onRobotStateChange: PropTypes.func,
-    sessionIdentity: PropTypes.shape({
-        sessionId: PropTypes.string,
-        loginName: PropTypes.string,
-        userName: PropTypes.string,
-        sharaName: PropTypes.string,
-        isNewUser: PropTypes.bool,
-        needsIdentification: PropTypes.bool,
-        userStatus: PropTypes.string,
-    }),
-    onSessionIdentityChange: PropTypes.func,
-    onLogout: PropTypes.func,
+    sessionIdentity: PropTypes.object.isRequired,
+    onSessionIdentityChange: PropTypes.func.isRequired,
+    onRobotStateChange: PropTypes.func.isRequired,
+    onLogout: PropTypes.func.isRequired,
     isLoggingOut: PropTypes.bool,
 };
-
 export default UI;

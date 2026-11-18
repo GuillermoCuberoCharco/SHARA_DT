@@ -69,11 +69,18 @@ const RobotView = ({ robotState, sessionIdentity }) => {
     const canvasRef = useRef(null);
     const overlayFrameRef = useRef(null);
 
-    const { socket } = useWebSocketContext();
+    const { socket, isConnected } = useWebSocketContext();
     const { setFace, refresh } = useEyeRenderer(canvasRef);
 
     const [operationalState, setOperationalState] = useState('idle');
     const [ledPos, setLedPos] = useState(null);
+
+    useEffect(() => {
+        if (!isConnected || !sessionIdentity) {
+            setOperationalState('idle');
+            setFace('neutral');
+        }
+    }, [isConnected, sessionIdentity, setFace]);
 
     const computeOverlay = useCallback(() => {
         const img = imgRef.current;
@@ -184,7 +191,8 @@ const RobotView = ({ robotState, sessionIdentity }) => {
                 return;
             }
 
-            setOperationalState(payload.state);
+            const openingMic = payload.state === 'listening' && payload.microphoneReady === false;
+            setOperationalState(openingMic ? 'idle_presence' : payload.state);
         };
         socket.on('state_update', handler);
         return () => socket.off('state_update', handler);

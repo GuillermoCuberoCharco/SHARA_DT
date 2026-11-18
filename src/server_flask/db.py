@@ -44,7 +44,7 @@ def get_connection():
             'DATABASE_URL environment variable is not set. '
             'Add it to your .env file or Render environment.'
         )
-    return psycopg2.connect(url)
+    return psycopg2.connect(url, connect_timeout=8)
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 
 -- Idempotent migration: add shara_name to existing deployments
 ALTER TABLE users ADD COLUMN IF NOT EXISTS shara_name VARCHAR(255);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_greeting_at TIMESTAMPTZ;
+ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS turn_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_turn ON conversation_messages (login_name, turn_id, role);
 
 CREATE INDEX IF NOT EXISTS idx_conv_login   ON conversation_messages (login_name);
 CREATE INDEX IF NOT EXISTS idx_conv_session ON conversation_messages (session_id);
